@@ -1,0 +1,11 @@
+
+# vscode
+.vscode
+
+# python
+
+__pycache__/
+
+# I don't wants
+
+# ...
