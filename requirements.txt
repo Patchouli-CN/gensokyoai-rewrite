@@ -1,0 +1,6 @@
+
+# 项目依赖
+loguru
+msgspec
+pytest
+pytest-asyncio
