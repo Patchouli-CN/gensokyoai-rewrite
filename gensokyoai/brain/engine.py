@@ -4,6 +4,7 @@ import time
 import msgspec
 
 from ..core.session_manager import SessionManager
+from ..prompts import get_prompt
 from ..schemas.brain_schema import BrainConclusion, BrainThinkEffort
 from ..schemas.memory_schema import MemoryItem
 from ..schemas.model_schema import Message
@@ -13,15 +14,6 @@ from .ooc_detector import OOCDetector
 
 _route_logger = LoggerManager.get_logger("BRAIN")
 """ 档位路由是模块级纯函数，独立持有 logger """
-
-_EMOTION_WORDS = ("难过", "开心", "生气", "伤心", "喜欢", "讨厌", "害怕", "哭", "笑", "感动")
-_PLOT_WORDS = ("世界", "本质", "为什么", "记得", "过去", "未来", "剧情", "故事", "命运", "秘密")
-
-_THINK_SYSTEM = (
-    "你是角色扮演引擎的决策模块。基于人设、场景与记忆，判断用户意图与情绪，"
-    "并产出一条贴合人设的初稿回复。只输出一个 JSON 对象，不要输出任何其他内容：\n"
-    '{"intent": "意图", "emotion": "情绪", "draft": "初稿回复", "confidence": 0.0}'
-)
 
 def route(snapshot: SceneSnapshot) -> BrainThinkEffort:
     """ 档位路由（架构文档 §6.4）：规则启发式打分，零模型调用。
