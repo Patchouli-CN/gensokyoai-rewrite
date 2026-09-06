@@ -1,1 +1,0 @@
-"""GensokyoAI 入口"""

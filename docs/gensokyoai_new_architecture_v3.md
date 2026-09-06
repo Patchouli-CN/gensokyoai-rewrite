@@ -527,7 +527,6 @@ gensokyoai/
 ├── brain/                    # L3 - 业务模块
 │   ├── __init__.py
 │   ├── engine.py             # @brain_module("engine")
-│   ├── router.py             # 档位路由（LOW/MID/HIGH/MAX）
 │   └── ooc_detector.py       # @brain_module("ooc_detector")
 │
 ├── responder/                # L3 - 业务模块
@@ -544,15 +543,28 @@ gensokyoai/
 │   ├── __init__.py
 │   └── monitor.py            # @health_module("monitor")
 │
+├── schemas/                  # L0 - 数据契约层（跨层共享的 msgspec 结构体，纯叶子）
+│   ├── __init__.py
+│   ├── model_schema.py       # Message / ModelConfig / CompletionResult / ToolSpec
+│   ├── scene_schema.py       # SceneSnapshot / SceneEvent
+│   ├── memory_schema.py      # MemoryItem
+│   ├── brain_schema.py       # BrainThinkEffort / BrainConclusion / OOCVerdict
+│   ├── event_schema.py       # Topic / BaseEvent
+│   └── health_schema.py      # HealthReport
+│
+├── roleplay/                 # L3 - 角色扮演领域（人设卡等领域数据与规则）
+│   ├── __init__.py
+│   └── character.py          # CharacterCard 人设卡 + YAML 加载
+│
 ├── extensions/               # 第三方/用户扩展（插件目录）
 │   ├── __init__.py
 │   └── ...
 │
-├── config/                   # 配置
-│   └── settings.py
-│
-└── main.py                   # L4 - 入口
+└── config/                   # 配置
+    └── settings.yaml
 ```
+
+> main.py 位于仓库顶层（包外），L4 入口：组装一切 + 编排主链路。gensokyoai/ 作为纯库包，不含入口。
 
 ### 7.3 分层依赖规则
 
@@ -583,11 +595,11 @@ gensokyoai/
 
 | 层级 | 模块 | 可以依赖 | 不能依赖 |
 |------|------|----------|----------|
-| **L0 叶子层** | `utils/` | 标准库、第三方库 | 项目内任何模块 |
-| **L1 基础设施层** | `core/` | `utils` | 任何业务模块 |
-| **L2 模型层** | `models/` | `core`, `utils` | 任何业务模块 |
-| **L3 业务层** | `eyes/`, `brain/`, `responder/`, `memorizer/`, `health/` | `core`, `models`, `utils` | **彼此之间不能直接 import** |
-| **L4 入口层** | `main.py` | 所有模块 | — |
+| **L0 叶子层** | `utils/`, `schemas/` | 标准库、第三方库 | 项目内任何模块 |
+| **L1 基础设施层** | `core/` | `utils`, `schemas` | 任何业务模块 |
+| **L2 模型层** | `models/` | `core`, `schemas`, `utils` | 任何业务模块 |
+| **L3 业务层** | `eyes/`, `brain/`, `responder/`, `memorizer/`, `health/`, `roleplay/` | `core`, `models`, `schemas`, `utils` | **彼此之间不能直接 import** |
+| **L4 入口层** | `main.py`（仓库顶层） | 所有模块 | — |
 
 **三条铁律：**
 
