@@ -1,7 +1,7 @@
 
 from collections import deque
-from ..utils.logger import LoggerManager
-from ..schemas.memory_schema import MemoryItem
+from ...utils.logger import LoggerManager
+from ...schemas.memory_schema import MemoryItem
 
 class MemoryManager:
     """ 

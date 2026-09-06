@@ -2,8 +2,8 @@
 
 import pytest
 
-from gensokyoai.brain.engine import BrainEngine, route
-from gensokyoai.brain.ooc_detector import OOCDetector
+from gensokyoai.core.brain.engine import BrainEngine, route
+from gensokyoai.core.brain.ooc_detector import OOCDetector
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.schemas.brain_schema import BrainThinkEffort
 from gensokyoai.schemas.memory_schema import MemoryItem

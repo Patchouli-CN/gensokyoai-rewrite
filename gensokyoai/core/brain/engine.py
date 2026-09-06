@@ -3,13 +3,13 @@ import time
 
 import msgspec
 
-from ..core.session_manager import SessionManager
-from ..prompts import get_prompt
-from ..schemas.brain_schema import BrainConclusion, BrainThinkEffort
-from ..schemas.memory_schema import MemoryItem
-from ..schemas.model_schema import Message
-from ..schemas.scene_schema import SceneSnapshot
-from ..utils.logger import LoggerManager
+from ..session_manager import SessionManager
+from ...prompts import get_prompt
+from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort
+from ...schemas.memory_schema import MemoryItem
+from ...schemas.model_schema import Message
+from ...schemas.scene_schema import SceneSnapshot
+from ...utils.logger import LoggerManager
 from .ooc_detector import OOCDetector
 
 _route_logger = LoggerManager.get_logger("BRAIN")

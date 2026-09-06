@@ -4,10 +4,10 @@ import time
 
 import msgspec
 
-from ..core.session_manager import SessionManager
-from ..schemas.brain_schema import OOCVerdict
-from ..schemas.model_schema import Message
-from ..utils.logger import LoggerManager
+from ..session_manager import SessionManager
+from ...schemas.brain_schema import OOCVerdict
+from ...schemas.model_schema import Message
+from ...utils.logger import LoggerManager
 
 _OOC_PATTERNS = ("作为一个AI", "作为一个 AI", "语言模型", "人工智能助手", "抱歉，我不能")
 """ 出现即判定 OOC 的模型自曝式话术 """

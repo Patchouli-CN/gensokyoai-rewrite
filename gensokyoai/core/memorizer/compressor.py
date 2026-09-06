@@ -1,9 +1,9 @@
 """ 记忆摘要压缩（架构文档 §3.4）"""
 
-from ..core.session_manager import SessionManager
-from ..schemas.memory_schema import MemoryItem
-from ..schemas.model_schema import Message
-from ..utils.logger import LoggerManager
+from ..session_manager import SessionManager
+from ...schemas.memory_schema import MemoryItem
+from ...schemas.model_schema import Message
+from ...utils.logger import LoggerManager
 
 _COMPRESS_SYSTEM = (
     "你是记忆压缩器。把一批对话记忆压缩成一段简短概要，"

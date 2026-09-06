@@ -2,12 +2,12 @@
 
 import time
 
-from ..core.session_manager import SessionManager
-from ..schemas.brain_schema import BrainConclusion
-from ..schemas.memory_schema import MemoryItem
-from ..schemas.model_schema import Message
-from ..schemas.scene_schema import SceneSnapshot
-from ..utils.logger import LoggerManager
+from ..session_manager import SessionManager
+from ...schemas.brain_schema import BrainConclusion
+from ...schemas.memory_schema import MemoryItem
+from ...schemas.model_schema import Message
+from ...schemas.scene_schema import SceneSnapshot
+from ...utils.logger import LoggerManager
 from .style import apply_emotion_hint
 
 class Responder:

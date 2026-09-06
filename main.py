@@ -3,16 +3,16 @@
 import asyncio
 import time
 from pathlib import Path
-from gensokyoai.brain.engine import BrainEngine, route
-from gensokyoai.brain.ooc_detector import OOCDetector
+from gensokyoai.core.brain.engine import BrainEngine, route
+from gensokyoai.core.brain.ooc_detector import OOCDetector
 from gensokyoai.core.bootstrap import discover_all
 from gensokyoai.core.config import load_config
 from gensokyoai.core.event_bus import EventBus
 from gensokyoai.core.registry import Registry
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.eyes.perceiver import ConsolePerceiver
-from gensokyoai.memorizer.manager import MemoryManager
-from gensokyoai.responder.generator import Responder
+from gensokyoai.core.memorizer.manager import MemoryManager
+from gensokyoai.core.responder.generator import Responder
 from gensokyoai.roleplay import CharacterCard, load_character
 from gensokyoai.schemas.event_schema import Topic
 from gensokyoai.schemas.memory_schema import MemoryItem
