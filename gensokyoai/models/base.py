@@ -14,32 +14,14 @@ _MAX_TOOL_ROUNDS = 8
 """ 单次 chat 内工具执行轮数上限，防止模型无限循环调工具 """
 
 def _preview(text: str, limit: int = 80) -> str:
-    """ 日志预览：长文本截断并标注总长，换行折叠。
-
-    Args:
-        text: 原始文本
-        limit: 预览字符上限
-
-    Returns:
-        str: 可读的日志片段，如 "'前80字...' (共1024字)"
-    """
+    """ 日志预览：长文本截断并标注总长，换行折叠。 """
     flat = text.replace("\n", "\\n")
     if len(flat) <= limit:
         return f"{flat!r} ({len(text)}字)"
     return f"{flat[:limit]!r}... (共{len(text)}字)"
 
 def to_openai_messages(messages: list[Message]) -> list[dict]:
-    """ 序列化内部消息为 OpenAI 兼容字典列表。
-
-    None 字段一律省略：llama-server 严格校验消息结构，
-    收到 "name": null 会报 json.exception.type_error.302。
-
-    Args:
-        messages: 内部 Message 列表
-
-    Returns:
-        list[dict]: 可直接 JSON 序列化的消息字典
-    """
+    """ 序列化内部消息为 OpenAI 兼容字典列表。 """
     out: list[dict] = []
     for m in messages:
         d: dict = {"role": m.role, "content": m.content}
@@ -60,28 +42,14 @@ def to_openai_messages(messages: list[Message]) -> list[dict]:
     return out
 
 def split_think(content: str) -> tuple[str, str | None]:
-    """ 分离回复中的 <think> 思考段与正文。
-
-    llama-server 未开 reasoning_format 自动分离时的兜底；
-    闭合标签优先，截断的未闭合思考段原样保留。
-
-    Args:
-        content: 模型原始输出
-
-    Returns:
-        tuple[str, str | None]: (正文, 思考内容；无思考段则为 None)
-    """
+    """ 分离回复中的 <think> 思考段与正文。 """
     if "</think>" not in content:
         return content, None
     think, _, body = content.partition("</think>")
     return body.strip(), think.replace("<think>", "").strip() or None
 
 class ModelProvider(ABC):
-    """ AI模型提供商。
-
-    协议保持「薄」：人设、system prompt、上下文裁剪属于 SessionManager/上层职责，
-    Provider 只负责一次纯粹的补全调用。
-    """
+    """ AI模型提供商。协议保持「薄」：人设、system prompt、上下文裁剪属于上层职责。"""
 
     @abstractmethod
     def config(self, conf: ModelConfig) -> Self:
@@ -101,28 +69,30 @@ class ModelProvider(ABC):
         """ 单次补全（无状态，调用方持有全部消息）"""
         ...
 
-class OpenAICompatProvider(ModelProvider):
-    """ OpenAI 兼容 /v1/chat/completions HTTP 基类（llama-server / vLLM / 兼容网关）。
+    def normalize_tool_calls(self, result: CompletionResult, parsed_content: dict | None = None) -> CompletionResult:
+        """ 将模型原始输出中的工具调用统一为 OpenAI 标准格式。
+        
+        Args:
+            result: 原始补全结果
+            parsed_content: 解析后的 JSON 内容（如果是 JSON 输出）
+            
+        Returns:
+            标准化后的 CompletionResult（tool_calls 字段已填充）
+        """
+        return result
 
-    子类通过覆盖 _build_result 定制响应解析（如 llama-server 的思考段分离）。
-    """
+
+class OpenAICompatProvider(ModelProvider):
+    """ OpenAI 兼容 /v1/chat/completions HTTP 基类（llama-server / vLLM / 兼容网关）。"""
 
     log_tag = "MODEL"
-    """ 日志模块标识，子类可覆盖 """
 
     def __init__(self) -> None:
         self._logger = LoggerManager.get_logger(self.log_tag)
         self._conf: ModelConfig | None = None
 
     def config(self, conf: ModelConfig) -> Self:
-        """ 更新配置。
-
-        Args:
-            conf: 模型配置（base_url / model_name 等）
-
-        Returns:
-            self，支持链式调用
-        """
+        """ 更新配置。 """
         self._conf = conf
         self._logger.info(f"模型配置更新: {conf.model_name} @ {conf.base_url}")
         return self
@@ -136,22 +106,7 @@ class OpenAICompatProvider(ModelProvider):
         stop: list[str] | None = None,
         tools: list[ToolSpec] | None = None,
     ) -> CompletionResult:
-        """ 单次补全：POST {base_url}/chat/completions。
-
-        Args:
-            messages: 完整消息列表（无状态，调用方持有）
-            max_new_tokens: 最大生成长度
-            temperature: 采样温度
-            stop: 停止序列
-            tools: 工具声明（OpenAI function calling 格式自动生成）
-
-        Returns:
-            CompletionResult: 含回复文本、token 用量与待执行的工具调用
-
-        Raises:
-            RuntimeError: 未调用 config() 或 invoker_type 不支持
-            aiohttp.ClientError: 网络/HTTP 错误
-        """
+        """ 单次补全：POST {base_url}/chat/completions。 """
         if self._conf is None:
             raise RuntimeError("模型未配置: 请先调用 config()")
         if self._conf.invoker_type != "openai":
@@ -226,21 +181,7 @@ class OpenAICompatProvider(ModelProvider):
         headers: dict,
         started: float,
     ) -> dict:
-        """ 单次 POST 并解析 JSON 响应。
-
-        Args:
-            http: 复用的 HTTP 会话（工具循环多轮共享连接）
-            url: 请求地址
-            payload: 请求体
-            headers: 请求头
-            started: 整次 chat 计时起点（用于失败日志耗时）
-
-        Returns:
-            dict: 响应 JSON
-
-        Raises:
-            aiohttp.ClientError: 网络/HTTP 错误（含非 2xx）
-        """
+        """ 单次 POST 并解析 JSON 响应。 """
         async with http.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
                 body = await resp.text()
@@ -257,19 +198,7 @@ class OpenAICompatProvider(ModelProvider):
         result: CompletionResult,
         tools: list[ToolSpec],
     ) -> list[Message]:
-        """ 执行模型请求的工具调用，回填 assistant + tool 消息。
-
-        工具内部异常由 ToolSpec.invoke/ainvoke 兜底成错误文本回传给模型，
-        不打断调用链；未知工具同样以错误文本回传。
-
-        Args:
-            messages: 当前消息列表
-            result: 请求了工具调用的补全结果
-            tools: 可用工具集
-
-        Returns:
-            list[Message]: 追加了 assistant(tool_calls) 与各 tool 结果的新列表
-        """
+        """ 执行模型请求的工具调用，回填 assistant + tool 消息。 """
         by_name = {t.tool_func.__name__: t for t in tools}
         messages = [
             *messages,
@@ -303,17 +232,7 @@ class OpenAICompatProvider(ModelProvider):
         temperature: float,
         stop: list[str] | None,
     ) -> dict:
-        """ 构造请求体；子类可覆盖注入方言参数（如 llama-server 的模板开关）。
-
-        Args:
-            messages: 内部消息列表
-            max_new_tokens: 最大生成长度
-            temperature: 采样温度
-            stop: 停止序列
-
-        Returns:
-            dict: 可直接 POST 的请求体
-        """
+        """ 构造请求体；子类可覆盖注入方言参数。 """
         payload: dict = {
             "model": self._conf.model_name if self._conf else "",
             "messages": to_openai_messages(messages),
@@ -326,14 +245,7 @@ class OpenAICompatProvider(ModelProvider):
         return payload
 
     def _build_result(self, data: dict) -> CompletionResult:
-        """ 解析 /chat/completions 响应；子类可覆盖定制。
-
-        Args:
-            data: 响应 JSON
-
-        Returns:
-            CompletionResult
-        """
+        """ 解析 /chat/completions 响应；子类可覆盖定制。 """
         choice = data["choices"][0]
         message = choice.get("message") or {}
         usage = data.get("usage") or {}

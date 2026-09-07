@@ -22,6 +22,10 @@ class ChatBackend(Protocol):
         tools: list[ToolSpec] | None = None,
     ) -> CompletionResult: ...
 
+    def normalize_tool_calls(self, result: CompletionResult, parsed_content: dict | None = None) -> CompletionResult:
+        """ 标准化工具调用格式（由 Provider 实现）"""
+        ...
+
 @dataclass(slots=True)
 class VirtualSession:
     """ 一个 owner 专属的虚拟会话（独立消息历史 + 独立预算）"""
@@ -39,18 +43,47 @@ class VirtualSession:
     """ 最近使用时间 """
 
 class SessionManager:
-    """ 一个模型实例 + 多个虚拟会话，框架层统一裁剪上下文，模块不碰上下文管理。
-
-    call() 两种模式（架构文档 §6.2 / §9.3）：
-    - stateless=True：用完即弃，不落会话历史（Brain 子模块的临时推理空间）
-    - stateless=False：累积进 owner 会话并按预算裁剪（Responder 滑动窗口）
+    """ 
+    一个模型实例 + 多个虚拟会话，框架层统一裁剪上下文，模块不碰上下文管理。
+    
+    多模型路由：每个 owner 可以绑定不同的 ChatBackend，
+    Brain 用 DeepSeek，Responder 用 Kimi，OOC 用本地小模型等。
     """
 
-    def __init__(self, backend: ChatBackend) -> None:
+    def __init__(self) -> None:
         self._logger = LoggerManager.get_logger("SESSION")
-        self._backend = backend
         self._counter = DefaultCounter()
         self._sessions: dict[str, VirtualSession] = {}
+        self._backends: dict[str, ChatBackend] = {}
+        self._default_backend: ChatBackend | None = None
+        """ 默认 backend，未指定 owner 时使用 """
+
+    def register_backend(self, owner: str, backend: ChatBackend) -> None:
+        """ 注册某个 owner 的专属 backend。
+        
+        Args:
+            owner: 模块标识，如 "brain.think" / "responder"
+            backend: 对应模型的 ChatBackend 实现
+        """
+        if owner in self._backends:
+            self._logger.warning(f"覆盖已注册的 backend: {owner}")
+        self._backends[owner] = backend
+        self._logger.info(f"注册 backend: {owner} -> {type(backend).__name__}")
+
+    def set_default_backend(self, backend: ChatBackend) -> None:
+        """ 设置默认 backend（未指定 owner 时使用）"""
+        self._default_backend = backend
+        self._logger.info(f"设置默认 backend: {type(backend).__name__}")
+
+    def _get_backend(self, owner: str) -> ChatBackend:
+        """ 获取 owner 对应的 backend，未注册则回退默认 """
+        backend = self._backends.get(owner)
+        if backend is None:
+            backend = self._default_backend
+            if backend is None:
+                raise ValueError(f"未注册 backend 且无默认 backend: {owner}")
+            self._logger.debug(f"owner={owner} 使用默认 backend")
+        return backend
 
     async def call(
         self,
@@ -63,30 +96,16 @@ class SessionManager:
         stop: list[str] | None = None,
         tools: list[ToolSpec] | None = None,
     ) -> CompletionResult:
-        """ 模块统一调用入口：拼会话 -> 预算裁剪 -> 调模型 -> 回写历史。
-
-        Args:
-            owner: 归属者标识（会话键 + 监控归因）
-            messages: 本次追加的消息（stateless 时即为完整上下文）
-            stateless: True 则用完即弃，不落会话历史
-            max_new_tokens: 生成预留 token，同时用于上下文预算裁剪
-            temperature: 采样温度
-            stop: 停止序列
-            tools: 工具声明（透传后端）
-
-        Returns:
-            CompletionResult: 模型补全结果
-
-        Raises:
-            后端模型的异常原样上抛，由调用方决定降级策略
-        """
+        """ 模块统一调用入口：按 owner 路由到对应 backend -> 拼会话 -> 预算裁剪 -> 调模型 -> 回写历史。 """
         started = time.monotonic()
+        backend = self._get_backend(owner)
+
         if stateless:
             self._logger.debug(
                 f"调用: owner={owner} 模式=无状态 消息数={len(messages)} "
                 f"max_new={max_new_tokens} temp={temperature}"
             )
-            result = await self._backend.chat(
+            result = await backend.chat(
                 messages, max_new_tokens=max_new_tokens,
                 temperature=temperature, stop=stop, tools=tools,
             )
@@ -99,7 +118,7 @@ class SessionManager:
         history_before = len(session.messages)
         session.messages.extend(messages)
         session.messages = self._trim(session.messages, session.max_tokens - max_new_tokens)
-        result = await self._backend.chat(
+        result = await backend.chat(
             session.messages, max_new_tokens=max_new_tokens,
             temperature=temperature, stop=stop, tools=tools,
         )
@@ -112,11 +131,15 @@ class SessionManager:
         )
         return result
 
-    def set_system(self, owner: str, content: str) -> None:
-        """ 设置 owner 会话的固定 system 前缀。
+    def normalize_tool_calls(self, result: CompletionResult, parsed_content: dict | None = None) -> CompletionResult:
+        """ 代理到后端 Provider 的工具调用标准化 """
+        backend = self._get_backend("normalize")  # 用哪个 backend 无所谓，反正有 normalize_tool_calls
+        if hasattr(backend, "normalize_tool_calls"):
+            return backend.normalize_tool_calls(result, parsed_content)
+        return result
 
-        前缀稳定且置于最前，有利于本地推理的 KV cache 前缀复用。
-        """
+    def set_system(self, owner: str, content: str) -> None:
+        """ 设置 owner 会话的固定 system 前缀。 """
         session = self._get_or_create(owner)
         session.messages = [m for m in session.messages if m.role != "system"]
         session.messages.insert(0, Message(role="system", content=content))

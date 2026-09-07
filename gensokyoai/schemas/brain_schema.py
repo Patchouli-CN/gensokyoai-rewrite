@@ -2,22 +2,39 @@
 
 from enum import Enum
 from typing import Literal
-
 import msgspec
-
 from .memory_schema import MemoryItem
 
 class BrainThinkEffort(Enum):
     """ 模型大脑推理力度 """
-
     OFF = "off"   # 快速路径，几乎不思考，直接透传
-    LOW = "low"   # 简单意图识别
-    MID = "mid"   # 意图 + 基础情绪/状态检查
-    HIGH = "high" # 完整推理链：意图 + 记忆检索 + 情绪推理 + OOC初检
-    MAX = "max"   # 深度思考：完整 CoT + 知识库检索 + 多重 OOC 审计
+    LOW = "low"   # 1轮思考
+    MID = "mid"   # 3轮思考
+    HIGH = "high" # 5轮思考
+    MAX = "max"   # 不限制轮数（由用户强制结束或达到 tokens 上限）
+
 
 Verdict = Literal["pass_through", "draft"]
 """ pass_through: 无需初稿 Responder 直接生成; draft: 使用 Brain 初稿 """
+
+
+class ReasoningStep(msgspec.Struct, frozen=True):
+    """ 单轮思考的中间状态（用于日志和状态追踪） """
+    round: int = 0
+    """ 当前思考轮数 """
+    thought: str = ""
+    """ 本轮的核心思考内容 """
+    need_continue_think: bool = False
+    """ 是否请求下一轮思考 """
+    action_hint: str | None = None
+    """ 当前已得出的行动指令（供 Responder 用） """
+    intent: str = ""
+    """ 当前总结的意图 """
+    emotion: str = ""
+    """ 当前总结的情绪 """
+    confidence: float = 0.5
+    """ 当前置信度 """
+
 
 class BrainConclusion(msgspec.Struct, frozen=True):
     """ Brain 产出给 Responder 的结构化结论（事件总线核心载荷，架构文档 §8.2）"""
@@ -28,7 +45,7 @@ class BrainConclusion(msgspec.Struct, frozen=True):
     emotion: str = ""
     """ 情绪提示，如 "友好" """
     draft: str | None = None
-    """ 初稿文本（verdict=draft 时才有）"""
+    """ 行动指令（verdict=draft 时才有）"""
     memory_refs: list[MemoryItem] = []
     """ 需要调用的记忆条目 """
     confidence: float = 0.0
@@ -38,9 +55,10 @@ class BrainConclusion(msgspec.Struct, frozen=True):
     ooc_flag: bool = False
     """ OOC 检测是否触发 """
     reasoning: str | None = None
-    """ 压缩后的思考摘要，仅供记忆存档 """
+    """ 压缩后的思考摘要（多轮迭代结果），仅供记忆存档 """
     timestamp: float = 0.0
     """ 产出时间 """
+
 
 class OOCVerdict(msgspec.Struct, frozen=True):
     """ OOC 检测结论 """

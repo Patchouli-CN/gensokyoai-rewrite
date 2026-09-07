@@ -1,34 +1,24 @@
 """推理引擎主循环"""
 import time
-
 import msgspec
+import asyncio
 
 from ..session_manager import SessionManager
 from ...prompts import prompt_mgr
-from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort
+from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort, ReasoningStep
 from ...schemas.memory_schema import MemoryItem
-from ...schemas.model_schema import Message
+from ...schemas.model_schema import Message, ToolSpec, CompletionResult, ToolCall
 from ...schemas.scene_schema import SceneSnapshot
 from ...utils.logger import LoggerManager
 from .ooc_detector import OOCDetector
 
 _route_logger = LoggerManager.get_logger("BRAIN")
-""" 档位路由是模块级纯函数，独立持有 logger """
 
 _EMOTION_WORDS = ("难过", "开心", "生气", "伤心", "喜欢", "讨厌", "害怕", "哭", "笑", "感动")
-""" 情感词命中 +1 分 """
 _PLOT_WORDS = ("世界", "本质", "为什么", "记得", "过去", "未来", "剧情", "故事", "命运", "秘密")
-""" 剧情词命中 +2 分（更倾向深度推理）"""
 
 def route(snapshot: SceneSnapshot) -> BrainThinkEffort:
-    """ 档位路由（架构文档 §6.4）：规则启发式打分，零模型调用。
-
-    Args:
-        snapshot: 场景快照
-
-    Returns:
-        BrainThinkEffort: 选中的推理档位
-    """
+    """ 档位路由（架构文档 §6.4）：规则启发式打分，零模型调用。 """
     text = snapshot.content
     if not text:
         return BrainThinkEffort.OFF
@@ -57,29 +47,22 @@ def route(snapshot: SceneSnapshot) -> BrainThinkEffort:
     )
     return effort
 
-class BrainEngine:
-    """ 大脑引擎。
 
-    保持薄编排：推理步骤拆到各子模块，防止淤积成原版 _impl.py 式巨石。
-    """
+class BrainEngine:
+    """ 大脑引擎。实现"接力思考"循环，显式控制推理深度。 """
 
     def __init__(
         self,
         sessions: SessionManager,
         persona: str = "",
         ooc: OOCDetector | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> None:
-        """ 初始化。
-
-        Args:
-            sessions: 上下文隔离层（由 L4 注入）
-            persona: 角色人设 system prompt（由 L4 从 roleplay 加载后传入）
-            ooc: OOC 检测器，可选；传入则对初稿做前置规则快筛
-        """
         self._logger = LoggerManager.get_logger("BRAIN")
         self._sessions = sessions
         self._persona = persona
         self._ooc = ooc
+        self._tools = tools or []
 
     async def think(
         self,
@@ -87,19 +70,7 @@ class BrainEngine:
         memories: list[MemoryItem],
         effort: BrainThinkEffort = BrainThinkEffort.OFF,
     ) -> BrainConclusion:
-        """ 执行推理链，产出结构化结论。
-
-        OFF 走零 token 快速路径；LOW 及以上调模型产出初稿（owner="brain.think"
-        无状态调用），解析失败或调用失败自动降级为快速路径。
-
-        Args:
-            snapshot: 场景快照
-            memories: 编排者检索好的相关记忆
-            effort: 推理档位（由 route() 决定）
-
-        Returns:
-            BrainConclusion: 结构化结论
-        """
+        """ 执行接力推理链，产出结构化结论。 """
         started = time.monotonic()
         self._logger.info(
             f"思考开始: 档位={effort.value} 输入={snapshot.sender}: {snapshot.content!r} "
@@ -108,7 +79,7 @@ class BrainEngine:
         if effort is BrainThinkEffort.OFF:
             conclusion = self._fast_path(snapshot)
         else:
-            conclusion = await self._think_with_model(snapshot, memories, effort)
+            conclusion = await self._relay_think(snapshot, memories, effort)
             if (
                 self._ooc is not None
                 and conclusion.draft
@@ -130,60 +101,189 @@ class BrainEngine:
             f"耗时={time.monotonic() - started:.2f}s"
         )
         if conclusion.draft:
-            self._logger.debug(f"初稿内容: {conclusion.draft}")
+            self._logger.debug(f"行动指令: {conclusion.draft}")
         return conclusion
 
-    async def _think_with_model(
+    async def _relay_think(
         self,
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
         effort: BrainThinkEffort,
     ) -> BrainConclusion:
-        """ 调模型产出初稿结论，解析失败降级为快速路径 """
+        """ 接力思考主循环：每轮询问模型是否需要继续。 """
+        max_rounds = self._get_max_rounds(effort)
         memory_text = "\n".join(f"- [{m.topic}] {m.content}" for m in memories) or "（无相关记忆）"
         context_text = "\n".join(snapshot.context_snippet[-5:]) or "（无上下文）"
-        messages = [
+
+        base_messages = [
             Message(role="system", content=prompt_mgr.render("brain.think")),
-            Message(
-                role="user",
-                content=prompt_mgr.render(
-                    "brain.think.user",
-                    persona=self._persona or "（未提供）",
-                    sender=snapshot.sender,
-                    content=snapshot.content,
-                    context=context_text,
-                    memory=memory_text,
-                ),
-            ),
+            Message(role="user", content=prompt_mgr.render(
+                "brain.think.user",
+                persona=self._persona or "（未提供）",
+                sender=snapshot.sender,
+                content=snapshot.content,
+                context=context_text,
+                memory=memory_text,
+            )),
         ]
-        try:
-            result = await self._sessions.call(
-                "brain.think",
-                messages,
-                stateless=True,
-                temperature=0.4,
-                max_new_tokens=400,
-            )
-        except Exception:
-            self._logger.exception("推理调用失败，降级为快速路径")
-            return self._fast_path(snapshot, effort)
 
-        parsed = self._parse_json(result.content)
-        if not parsed:
-            self._logger.warning(f"推理输出 JSON 解析失败，降级为快速路径: {result.content!r}")
-            return self._fast_path(snapshot, effort)
+        current_round = 0
+        previous_thought = ""
+        current_action_hint = ""
+        current_intent = ""
+        current_emotion = ""
+        current_confidence = 0.5
+        final_reasoning = ""
+        tool_result_cache = ""
+        tool_used = False
 
-        draft = parsed.get("draft") or None
+        while True:
+            current_round += 1
+            self._logger.debug(f"思考接力第 {current_round}/{max_rounds} 轮")
+
+            # 拼接当前 Prompt
+            messages = list(base_messages)
+            if previous_thought:
+                messages.append(Message(role="assistant", content=f"【第{current_round-1}轮思考】\n{previous_thought}"))
+                messages.append(Message(role="user", content="请继续推理，无需重复已得结论，给出进一步推演或最终结论。"))
+            
+            # 如果有工具结果，补充给模型
+            if tool_result_cache:
+                messages.append(Message(role="user", content=f"【工具执行结果】\n{tool_result_cache}\n请基于以上结果继续思考。"))
+                tool_result_cache = ""
+
+            try:
+                result = await self._sessions.call(
+                    "brain.think",
+                    messages,
+                    stateless=True,
+                    temperature=0.4,
+                    max_new_tokens=400,
+                    tools=self._tools,
+                )
+            except Exception:
+                self._logger.exception("推理调用失败，降级为快速路径")
+                return self._fast_path(snapshot, effort)
+
+            # 【调试】打印模型原始输出
+            self._logger.debug(f"模型原始输出: {result.content}")
+
+            parsed = self._parse_json(result.content)
+            if not parsed:
+                self._logger.warning(f"推理输出 JSON 解析失败: {result.content!r}")
+                if current_round < max_rounds:
+                    continue
+                return self._fast_path(snapshot, effort)
+
+            # 【统一工具调用处理】由 Provider 负责标准化格式
+            result = self._sessions.normalize_tool_calls(result, parsed)
+            
+            # 执行工具调用（只负责执行，不负责解析格式）
+            tool_results = []
+            if result.tool_calls:
+                tool_results = await self._execute_tool_calls(result.tool_calls)
+            
+            if tool_results:
+                tool_result_cache = "\n".join(tool_results)
+                tool_used = True
+                self._logger.info(f"工具调用结果: {tool_result_cache[:200]!r}")
+                
+                # 强制模型进入下一轮思考
+                need_continue = True
+                previous_thought = str(parsed.get("thought", previous_thought))
+                current_action_hint = str(parsed.get("action_hint", current_action_hint))
+                current_intent = str(parsed.get("intent", current_intent))
+                current_emotion = str(parsed.get("emotion", current_emotion))
+                current_confidence = float(parsed.get("confidence", 0.5))
+                final_reasoning = previous_thought
+                
+                # 如果是最后一轮，直接使用工具结果
+                if current_round >= max_rounds:
+                    self._logger.warning(f"工具调用发生在最后一轮 ({current_round}/{max_rounds})，直接使用工具结果")
+                    current_action_hint = f"{current_action_hint or ''}\n【工具结果】{tool_result_cache}"
+                    break
+                
+                continue
+
+            # 正常解析和处理
+            previous_thought = str(parsed.get("thought", previous_thought))
+            current_action_hint = str(parsed.get("action_hint", current_action_hint))
+            current_intent = str(parsed.get("intent", current_intent))
+            current_emotion = str(parsed.get("emotion", current_emotion))
+            current_confidence = float(parsed.get("confidence", 0.5))
+            need_continue = bool(parsed.get("need_continue_think", False))
+
+            final_reasoning = previous_thought
+
+            # 如果使用了工具但模型还没消化就结束，强制再思考一轮
+            if tool_used and not need_continue and current_round < max_rounds:
+                self._logger.info(f"工具结果尚未消化，强制追加一轮思考")
+                need_continue = True
+
+            if not need_continue:
+                break
+            if current_round >= max_rounds:
+                self._logger.warning(f"思考接力达到最大轮数 {max_rounds}，强制结束")
+                break
+
+        # 最终保障：如果还有工具结果没被消化，直接嵌入结论
+        if tool_result_cache:
+            self._logger.info(f"工具结果未消化，嵌入行动指令")
+            current_action_hint = f"{current_action_hint or ''}\n【工具结果】{tool_result_cache}"
+
         return BrainConclusion(
-            verdict="draft" if draft else "pass_through",
-            intent=str(parsed.get("intent", "")),
-            emotion=str(parsed.get("emotion", "")),
-            draft=draft,
+            verdict="draft" if current_action_hint else "pass_through",
+            intent=current_intent,
+            emotion=current_emotion,
+            draft=current_action_hint or None,
             memory_refs=list(memories),
-            confidence=float(parsed.get("confidence", 0.5)),
+            confidence=current_confidence,
             effort=effort,
+            reasoning=final_reasoning,
             timestamp=time.time(),
         )
+
+    async def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> list[str]:
+        """ 执行工具调用，返回结果列表（只负责执行，不负责解析格式） """
+        results = []
+        by_name = {t.tool_func.__name__: t for t in self._tools}
+        
+        for tc in tool_calls:
+            tool = by_name.get(tc.name)
+            if tool is None:
+                results.append(f"错误: 未知工具 {tc.name}")
+                self._logger.warning(f"未知工具调用: {tc.name}")
+                continue
+            
+            # 解析参数
+            try:
+                args = msgspec.json.decode(tc.arguments or "{}", type=dict)
+            except Exception:
+                self._logger.warning(f"工具参数 JSON 解析失败: {tc.name}({tc.arguments!r})")
+                args = {}
+            
+            # 执行工具
+            try:
+                if tool.is_async:
+                    output = await tool.ainvoke(**args)
+                else:
+                    output = tool.invoke(**args)
+                results.append(str(output))
+                self._logger.info(f"工具调用: {tc.name}({args}) -> {str(output)[:80]!r}")
+            except Exception as e:
+                self._logger.exception(f"工具调用失败: {tc.name}({args}) -> {e}")
+                results.append(f"错误: {type(e).__name__}: {str(e)}")
+        
+        return results
+
+    def _get_max_rounds(self, effort: BrainThinkEffort) -> int:
+        """ 将档位映射为最大思考轮数（LOW 改为 2，给工具调用留消化空间） """
+        match effort:
+            case BrainThinkEffort.LOW: return 2  # 修改：从1改为2
+            case BrainThinkEffort.MID: return 3
+            case BrainThinkEffort.HIGH: return 5
+            case BrainThinkEffort.MAX: return 999
+            case _: return 0
 
     def _fast_path(
         self, snapshot: SceneSnapshot, effort: BrainThinkEffort = BrainThinkEffort.OFF,

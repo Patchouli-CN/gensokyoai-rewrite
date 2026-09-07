@@ -3,7 +3,7 @@
 import time
 from typing import Awaitable, Callable
 
-from ..schemas.event_schema import BaseEvent
+from ..schemas.event_schema import BaseEvent, EventTopic
 from ..utils.logger import LoggerManager
 
 type EventHandler = Callable[[BaseEvent], Awaitable[None]]
@@ -23,6 +23,19 @@ class EventBus:
             self._handlers[topic].remove(handler)
 
         return _unsubscribe
+
+    def on(self, topic: str) -> Callable[[EventHandler], EventHandler]:
+        """ 装饰器：订阅事件
+        
+        用法：
+        @bus.on(EventTopic.STARTUP)
+        async def on_startup(event: BaseEvent):
+            ...
+        """
+        def decorator(handler: EventHandler) -> EventHandler:
+            self.subscribe(topic, handler)
+            return handler
+        return decorator
 
     async def publish(self, event: BaseEvent) -> None:
         """ 发布事件（依次 await 全部处理器，异常隔离）"""

@@ -1,7 +1,7 @@
 """ 数据模型模块，专门放数据模型 """
 
 from .brain_schema import BrainConclusion, BrainThinkEffort, OOCVerdict, Verdict
-from .event_schema import BaseEvent, Topic
+from .event_schema import BaseEvent, EventTopic
 from .health_schema import HealthReport
 from .memory_schema import MemoryItem
 from .model_schema import CompletionResult, Message, ModelConfig, ToolCall, ToolSpec, Usage
@@ -24,7 +24,7 @@ __all__ = [
     "SceneType",
     "ToolCall",
     "ToolSpec",
-    "Topic",
+    "EventTopic",
     "Usage",
     "Verdict",
 ]

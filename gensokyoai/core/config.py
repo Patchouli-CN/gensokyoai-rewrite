@@ -1,4 +1,4 @@
-""" 配置加载 —— msgspec 结构化 + YAML。刻意单文件极简，勿重蹈原版 7 文件 3700 行的覆辙。"""
+""" 配置加载 —— msgspec 结构化 + YAML。支持多模型路由配置。"""
 
 from pathlib import Path
 from typing import Literal
@@ -7,7 +7,7 @@ import msgspec
 import yaml
 
 class ModelSettings(msgspec.Struct, frozen=True):
-    """ 模型接入配置 """
+    """ 单个模型接入配置 """
     provider: str = "llama_cpp"
     """ 模型提供者注册名（对应 @Registry.register 的 name）"""
     base_url: str = "http://127.0.0.1:8080/v1"
@@ -31,8 +31,20 @@ class ModelSettings(msgspec.Struct, frozen=True):
 
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """ 顶层配置 """
-    model: ModelSettings = ModelSettings()
-    """ 模型配置 """
+    default_model: ModelSettings = ModelSettings()
+    """ 默认模型（未指定模块时使用）"""
+    
+    brain: ModelSettings = ModelSettings()
+    """ Brain 决策模块使用的模型 """
+    
+    responder: ModelSettings = ModelSettings()
+    """ Responder 表达模块使用的模型 """
+    
+    ooc: ModelSettings | None = None
+    """ OOC 审计使用的模型（可选，默认用 brain）"""
+    
+    memorizer: ModelSettings | None = None
+    """ 记忆压缩使用的模型（可选，默认用 brain）"""
 
 def load_config(path: str | Path) -> GensokyoConfig:
     """ 读取 YAML 配置并校验为强类型配置对象。

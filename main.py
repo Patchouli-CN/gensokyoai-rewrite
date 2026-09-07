@@ -1,47 +1,44 @@
-"""GensokyoAI 入口 —— 组装一切 + 控制台调试主链路"""
+""" 程序入口：加载配置、角色卡、初始化 SessionManager 并启动 """
 
 import asyncio
-from gensokyoai.core.bootstrap import discover_all, startup
+
 from gensokyoai.core.config import load_config
-from gensokyoai.core.registry import Registry
+from gensokyoai.core.bootstrap import discover_all
+from gensokyoai.core.session_factory import build_session_manager
 from gensokyoai.eyes.perceiver import ConsolePerceiver
-from gensokyoai.roleplay.character import load_character
 from gensokyoai.roleplay.loop import TouhouWorld
-from gensokyoai.schemas.model_schema import ModelConfig
+from gensokyoai.roleplay.character import load_character
+from gensokyoai.utils.logger import setup_logging, LoggerManager
 
-async def run(config_path: str = "config/settings.yaml", character_path: str | None = None) -> None:
-    """ Phase 1 主链路：通过 TouhouWorld 编排所有组件。 """
-    startup()
+async def main() -> None:
+    # 1. 日志
+    setup_logging("TRACE", True, "runtime.log")
+    logger = LoggerManager.get_logger("MAIN")
     
-    # 1. 基础初始化
-    config = load_config(config_path)
+    # 2. 扫描扩展
     discover_all()
+    
+    # 3. 加载配置
+    config = load_config("config/settings.yaml")
+    
+    # 4. 装配 SessionManager（多模型路由在这里完成）
+    sessions = build_session_manager(config)
+    
+    # 5. 加载角色卡
+    character = load_character("config/roles/SaigyoujiYuyuko.yaml")
 
-    # 2. 加载人设与感知器
-    character = load_character(character_path or r"config\roles\SaigyoujiYuyuko.yaml")
-    perceiver = ConsolePerceiver()
-
-    # 3. 准备模型配置
-    provider_cls = Registry.get(config.model.provider)
-    model_conf = ModelConfig(
-        base_url=config.model.base_url,
-        token=config.model.token,
-        model_name=config.model.model_name,
-        think=config.model.think,
-        streaming=config.model.streaming,
-        invoker_type=config.model.invoker_type,
-        timeout=config.model.timeout,
-    )
-
-    # 4. 实例化世界并启动
+    # 6. 初始化感知器
+    eye = ConsolePerceiver(sender="你")
+    
+    # 7. 启动世界
     world = TouhouWorld(
-        eye=perceiver,
+        eye=eye,
         character=character,
-        model_config=model_conf,
-        provider_cls=provider_cls
+        sessions=sessions,  # 直接传入装配好的
     )
     
+    logger.info("启动幻想乡...")
     await world.start()
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(main())

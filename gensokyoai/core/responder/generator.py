@@ -38,19 +38,7 @@ class Responder:
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
     ) -> str:
-        """ 在有状态会话中生成最终回复。
-
-        Args:
-            conclusion: Brain 结构化结论（意图/情绪/可选初稿）
-            snapshot: 场景快照
-            memories: 编排者检索好的相关记忆
-
-        Returns:
-            str: 最终回复文本
-
-        Raises:
-            模型后端异常原样上抛
-        """
+        """ 在有状态会话中生成最终回复。 """
         started = time.monotonic()
         self._logger.info(
             f"生成开始: 意图={conclusion.intent} 情绪={conclusion.emotion} "
@@ -62,7 +50,12 @@ class Responder:
             self._system_ready = True
 
         memory_text = "\n".join(f"- {m.content}" for m in memories) or "（无）"
+        
+        # 【修复】过滤掉假的工具调用
         draft_hint = f"初稿参考（可改写润色）: {conclusion.draft}\n" if conclusion.draft else ""
+        if conclusion.draft and '"tool"' in conclusion.draft:
+            self._logger.warning(f"检测到伪工具调用文本，丢弃: {conclusion.draft}")
+            draft_hint = ""
 
         user = prompt_mgr.render(
             "responder.user",

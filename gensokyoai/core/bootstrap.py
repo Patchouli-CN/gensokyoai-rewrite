@@ -16,7 +16,3 @@ def discover_all(packages: tuple[str, ...] = DEFAULT_PACKAGES) -> None:
     """ 扫描默认扩展包，触发装饰器注册 """
     for pkg in packages:
         auto_discover(pkg)
-
-def startup() -> None:
-    """ 启动逻辑 """
-    setup_logging("TRACE", False, "runtime.log")
