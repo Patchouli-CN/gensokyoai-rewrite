@@ -504,44 +504,8 @@ gensokyoai/
 ├── utils/                    # L0 - 叶子层，零内部依赖
 │   ├── __init__.py
 │   ├── token_counter.py      # token 计数工具
-│   ├── text_utils.py         # 文本处理工具
-│   └── logger.py             # 日志工具
-│
-├── core/                     # L1 - 基础设施层
-│   ├── __init__.py
-│   ├── registry.py           # 注册表 + 装饰器
-│   ├── event_bus.py          # 事件总线
-│   ├── session_manager.py    # VirtualSession / SessionManager
-│   ├── bootstrap.py          # 启动扫描
-│   └── config.py             # 配置加载
-│
-├── models/                   # L2 - 模型适配层
-│   ├── __init__.py
-│   └── qwen_local.py         # @model_provider("qwen_local")
-│
-├── eyes/                     # L3 - 业务模块
-│   ├── __init__.py
-│   ├── perceiver.py          # @eyes_module("qq_adapter")
-│   └── parser.py             # 消息解析
-│
-├── brain/                    # L3 - 业务模块
-│   ├── __init__.py
-│   ├── engine.py             # @brain_module("engine")
-│   └── ooc_detector.py       # @brain_module("ooc_detector")
-│
-├── responder/                # L3 - 业务模块
-│   ├── __init__.py
-│   ├── generator.py          # @responder_module("default_generator")
-│   └── style.py              # 话术风格控制
-│
-├── memorizer/                # L3 - 业务模块
-│   ├── __init__.py
-│   ├── store.py              # @memorizer_module("store")
-│   └── compressor.py         # 记忆摘要压缩
-│
-├── health/                   # L3 - 业务模块
-│   ├── __init__.py
-│   └── monitor.py            # @health_module("monitor")
+│   ├── text.py               # 文本处理工具
+│   └── logger.py             # 日志工具（LoggerManager）
 │
 ├── schemas/                  # L0 - 数据契约层（跨层共享的 msgspec 结构体，纯叶子）
 │   ├── __init__.py
@@ -550,9 +514,37 @@ gensokyoai/
 │   ├── memory_schema.py      # MemoryItem
 │   ├── brain_schema.py       # BrainThinkEffort / BrainConclusion / OOCVerdict
 │   ├── event_schema.py       # Topic / BaseEvent
+│   ├── prompt_schema.py      # Prompt
 │   └── health_schema.py      # HealthReport
 │
-├── roleplay/                 # L3 - 角色扮演领域（人设卡等领域数据与规则）
+├── prompts/                  # 提示词集中管理（PromptManager 装饰器注册，$var 渲染）
+│   ├── __init__.py
+│   └── manager.py            # 全部业务提示词模板注册于此，业务代码不写提示词
+│
+├── core/                     # L1 - 引擎内核（基建 + 与平台无关的业务流水线）
+│   ├── __init__.py
+│   ├── registry.py           # 注册表 + 装饰器
+│   ├── event_bus.py          # 事件总线
+│   ├── session_manager.py    # VirtualSession / SessionManager
+│   ├── bootstrap.py          # 启动扫描
+│   ├── config.py             # 配置加载
+│   ├── brain/                # 决策：engine（含档位路由 route）/ ooc_detector
+│   ├── responder/            # 表达：generator / style
+│   ├── memorizer/            # 记忆：manager（级联检索）/ compressor
+│   └── health/               # 监控：monitor
+│
+├── models/                   # L2 - 模型适配层
+│   ├── __init__.py
+│   ├── base.py               # ModelProvider / OpenAICompatProvider
+│   ├── llama_cpp.py          # @Registry.register("llama_cpp") llama-server
+│   └── qwen_local.py         # @Registry.register("qwen_local") 通用 OpenAI 兼容
+│
+├── eyes/                     # 边缘层 - 平台感知适配
+│   ├── __init__.py
+│   ├── perceiver.py          # Perceiver 协议 + ConsolePerceiver
+│   └── parser.py             # 消息解析
+│
+├── roleplay/                 # 边缘层 - 角色扮演领域内容
 │   ├── __init__.py
 │   └── character.py          # CharacterCard 人设卡 + YAML 加载
 │
@@ -565,6 +557,10 @@ gensokyoai/
 ```
 
 > main.py 位于仓库顶层（包外），L4 入口：组装一切 + 编排主链路。gensokyoai/ 作为纯库包，不含入口。
+>
+> 结构原则：core = 与平台无关的引擎内核（基建 + 四大流水线子包）；eyes / roleplay / models 是可替换边缘层。
+> **内核子包之间（core/brain、core/responder、core/memorizer、core/health）依然禁止互相直接 import**，
+> 通信走事件总线或 L4 注入，否则 core 会退化成一锅巨石（原版 `_impl.py` 之前车）。
 
 ### 7.3 分层依赖规则
 
@@ -596,15 +592,16 @@ gensokyoai/
 | 层级 | 模块 | 可以依赖 | 不能依赖 |
 |------|------|----------|----------|
 | **L0 叶子层** | `utils/`, `schemas/` | 标准库、第三方库 | 项目内任何模块 |
-| **L1 基础设施层** | `core/` | `utils`, `schemas` | 任何业务模块 |
-| **L2 模型层** | `models/` | `core`, `schemas`, `utils` | 任何业务模块 |
-| **L3 业务层** | `eyes/`, `brain/`, `responder/`, `memorizer/`, `health/`, `roleplay/` | `core`, `models`, `schemas`, `utils` | **彼此之间不能直接 import** |
+| **L0.5 提示词层** | `prompts/` | `schemas`, `utils` | 任何业务模块 |
+| **L1 引擎内核** | `core/`（基建 + `brain`/`responder`/`memorizer`/`health` 子包） | `core` 顶层基建, `models`, `schemas`, `prompts`, `utils` | **内核子包之间零直接 import**；不依赖 eyes/roleplay |
+| **L2 模型层** | `models/` | `core` 顶层基建, `schemas`, `utils` | 任何业务模块 |
+| **边缘层** | `eyes/`, `roleplay/` | `core` 顶层基建, `models`, `schemas`, `prompts`, `utils` | 不依赖内核业务子包 |
 | **L4 入口层** | `main.py`（仓库顶层） | 所有模块 | — |
 
 **三条铁律：**
 
 1. **只能向下依赖**：上层可以 import 下层，反过来不行
-2. **L3 业务模块之间零直接 import**：通信走事件总线（`coreregistry.py`）
+2. **业务子包之间零直接 import**：core/brain、core/responder、core/memorizer、core/health 互相禁 import，eyes/roleplay 也不得 import 内核业务子包；通信走事件总线（`core/registry.py`）或 L4 注入
 3. **`utils` 是纯叶子**：不依赖项目内任何东西
 
 **非法 import 示例：**
