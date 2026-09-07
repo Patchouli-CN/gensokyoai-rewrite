@@ -6,6 +6,20 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.3] - 2026/9/7
+
+### 新增
+ - 模型工具调用（OpenAI function calling）全链路支持：
+   - `ToolCall` 数据契约；`Message.tool_calls`（assistant 回传）/ `CompletionResult.tool_calls`（模型请求）
+   - `ToolSpec.to_openai_tool()`：从函数签名自动推导 JSON Schema（标注类型映射 + 无默认值参数进 required）
+   - `OpenAICompatProvider.chat(tools=...)` 多轮工具循环：请求 tool_calls -> 执行 -> 回填 tool 消息 -> 复请求，直至模型收尾或达轮数上限（`_MAX_TOOL_ROUNDS=8`）；多轮 token 用量累计入结果
+   - 同步 / 异步工具自动分发（`invoke` / `ainvoke`）；未知工具、参数 JSON 损坏均兜底为错误文本回传模型，不崩调用链
+   - 消息序列化支持 `assistant.tool_calls`；LlamaProvider 思考段分离时保留 `tool_calls`
+   - 工具执行日志：工具名、参数、结果预览（截断 80 字）
+
+### 测试
+ - 48 个测试全绿：新增 schema 推导 / tool_calls 序列化与响应解析 / 工具循环（同步 + 未知工具 / 异步工具 / 参数损坏降级）
+
 ## [0.0.2] - 2026/9/7
 
 ### 新增

@@ -228,9 +228,15 @@ class ModelProvider(Protocol):
         # 角色一致性相关
         consistency_mode: bool = False,          # 是否开启角色一致性模式
         character_id: str | None = None,         # 角色标识
+        # 工具调用（OpenAI function calling）
+        tools: List[ToolSpec] | None = None,     # 工具声明；Provider 层多轮循环执行
     ) -> CompletionResult:
         ...
 ```
+
+> 实现说明：工具循环在 Provider 层完成（无状态多轮）——模型请求 tool_calls -> 执行 -> 回填 tool 消息 ->
+> 复请求，直至模型收尾或达到轮数上限（8）。`ToolSpec.to_openai_tool()` 从函数签名自动推导 JSON Schema；
+> 同步/异步工具自动分发，未知工具与损坏参数兜底为错误文本回传，不崩链。
 
 ### 4.3 推理链设计
 
@@ -964,6 +970,7 @@ class ModelWorker:
 | SessionManager 统一管理 | 模块不关心上下文管理，框架层统一裁剪 |
 | VirtualSession 按 owner 隔离 | 每个子模块独立上下文，互不污染 |
 | 8K 窗口对角色扮演够用 | 精打细算 + 摘要压缩 + 滑动窗口 |
+| 工具循环在 Provider 层 | 无状态多轮，模块经 `SessionManager.call(tools=...)` 透传，无需关心协议细节 |
 | 单向依赖分层架构 | 彻底杜绝循环导入，依赖方向一目了然 |
 | 目录名=子系统，文件名=职责 | 避免命名重复，文件职责清晰 |
 
