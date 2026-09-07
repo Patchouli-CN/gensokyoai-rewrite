@@ -64,6 +64,7 @@ class LlamaProvider(OpenAICompatProvider):
                     finish_reason=result.finish_reason,
                     usage=result.usage,
                     model=result.model,
+                    tool_calls=result.tool_calls,
                 )
                 self._logger.debug(f"已分离思考段 {len(think)} 字符")
         return result

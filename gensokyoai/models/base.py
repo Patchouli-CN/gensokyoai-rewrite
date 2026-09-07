@@ -5,9 +5,13 @@ from typing import Self
 from abc import ABC, abstractmethod
 
 import aiohttp
+import msgspec
 
-from ..schemas.model_schema import CompletionResult, Message, ModelConfig, ToolSpec, Usage
+from ..schemas.model_schema import CompletionResult, Message, ModelConfig, ToolCall, ToolSpec, Usage
 from ..utils.logger import LoggerManager
+
+_MAX_TOOL_ROUNDS = 8
+""" 单次 chat 内工具执行轮数上限，防止模型无限循环调工具 """
 
 def _preview(text: str, limit: int = 80) -> str:
     """ 日志预览：长文本截断并标注总长，换行折叠。
@@ -43,6 +47,15 @@ def to_openai_messages(messages: list[Message]) -> list[dict]:
             d["name"] = m.name
         if m.tool_call_id is not None:
             d["tool_call_id"] = m.tool_call_id
+        if m.tool_calls:
+            d["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.arguments},
+                }
+                for tc in m.tool_calls
+            ]
         out.append(d)
     return out
 
@@ -130,26 +143,19 @@ class OpenAICompatProvider(ModelProvider):
             max_new_tokens: 最大生成长度
             temperature: 采样温度
             stop: 停止序列
-            tools: 工具声明（当前未实现，传非空将报错）
+            tools: 工具声明（OpenAI function calling 格式自动生成）
 
         Returns:
-            CompletionResult: 含回复文本与 token 用量
+            CompletionResult: 含回复文本、token 用量与待执行的工具调用
 
         Raises:
             RuntimeError: 未调用 config() 或 invoker_type 不支持
-            NotImplementedError: tools 暂未实现
             aiohttp.ClientError: 网络/HTTP 错误
         """
         if self._conf is None:
             raise RuntimeError("模型未配置: 请先调用 config()")
         if self._conf.invoker_type != "openai":
             raise NotImplementedError(f"调用模式 {self._conf.invoker_type} 暂未实现")
-        if tools:
-            raise NotImplementedError("工具调用暂未实现")
-
-        payload = self._build_payload(
-            messages, max_new_tokens=max_new_tokens, temperature=temperature, stop=stop,
-        )
 
         headers = {"Content-Type": "application/json"}
         if self._conf.token:
@@ -159,33 +165,135 @@ class OpenAICompatProvider(ModelProvider):
         self._logger.debug(
             f"请求发出: url={url} 模型={self._conf.model_name} 消息数={len(messages)} "
             f"max_tokens={max_new_tokens} temperature={temperature} stop={stop} "
-            f"流式=False 思考={self._conf.think}"
+            f"流式=False 思考={self._conf.think} 工具={len(tools) if tools else 0}个"
         )
         started = time.monotonic()
         timeout = aiohttp.ClientTimeout(total=self._conf.timeout)
+        result: CompletionResult | None = None
+        prompt_total = completion_total = 0
+        rounds = 0
+
         async with aiohttp.ClientSession(timeout=timeout) as http:
-            async with http.post(url, json=payload, headers=headers) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    self._logger.error(
-                        f"请求失败: url={url} status={resp.status} "
-                        f"耗时={time.monotonic() - started:.2f}s 响应体={body[:300]!r}"
-                    )
-                resp.raise_for_status()
-                data = await resp.json()
+            while True:
+                payload = self._build_payload(
+                    messages, max_new_tokens=max_new_tokens,
+                    temperature=temperature, stop=stop,
+                )
+                if tools:
+                    payload["tools"] = [t.to_openai_tool() for t in tools]
+                    payload["tool_choice"] = "auto"
+                data = await self._post_json(http, url, payload, headers, started)
+                result = self._build_result(data)
+                prompt_total += result.usage.prompt_tokens
+                completion_total += result.usage.completion_tokens
+
+                if not result.tool_calls or not tools:
+                    break
+                rounds += 1
+                if rounds > _MAX_TOOL_ROUNDS:
+                    self._logger.warning(f"工具调用超过 {_MAX_TOOL_ROUNDS} 轮，强制收尾")
+                    break
+                messages = await self._execute_tools(messages, result, tools)
+
+        assert result is not None
+        if rounds:
+            result = CompletionResult(
+                content=result.content,
+                reasoning=result.reasoning,
+                finish_reason=result.finish_reason,
+                usage=Usage(prompt_tokens=prompt_total, completion_tokens=completion_total),
+                model=result.model,
+            )
 
         elapsed = time.monotonic() - started
-        result = self._build_result(data)
         self._logger.info(
-            f"补全完成: {result.usage.prompt_tokens}+{result.usage.completion_tokens} tok "
-            f"finish={result.finish_reason} 耗时={elapsed:.2f}s 速度="
-            f"{result.usage.completion_tokens / elapsed:.1f}tok/s"
+            f"补全完成: {prompt_total}+{completion_total} tok "
+            f"finish={result.finish_reason} 工具轮数={rounds} 耗时={elapsed:.2f}s 速度="
+            f"{completion_total / elapsed:.1f}tok/s"
         )
         self._logger.debug(
             f"补全详情: 正文={_preview(result.content)} "
-            f"思考段={len(result.reasoning or '')}字 模型={result.model}"
+            f"思考段={len(result.reasoning or '')}字 模型={result.model} "
+            f"工具调用={len(result.tool_calls) if result.tool_calls else 0}个"
         )
         return result
+
+    async def _post_json(
+        self,
+        http: aiohttp.ClientSession,
+        url: str,
+        payload: dict,
+        headers: dict,
+        started: float,
+    ) -> dict:
+        """ 单次 POST 并解析 JSON 响应。
+
+        Args:
+            http: 复用的 HTTP 会话（工具循环多轮共享连接）
+            url: 请求地址
+            payload: 请求体
+            headers: 请求头
+            started: 整次 chat 计时起点（用于失败日志耗时）
+
+        Returns:
+            dict: 响应 JSON
+
+        Raises:
+            aiohttp.ClientError: 网络/HTTP 错误（含非 2xx）
+        """
+        async with http.post(url, json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                self._logger.error(
+                    f"请求失败: url={url} status={resp.status} "
+                    f"耗时={time.monotonic() - started:.2f}s 响应体={body[:300]!r}"
+                )
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def _execute_tools(
+        self,
+        messages: list[Message],
+        result: CompletionResult,
+        tools: list[ToolSpec],
+    ) -> list[Message]:
+        """ 执行模型请求的工具调用，回填 assistant + tool 消息。
+
+        工具内部异常由 ToolSpec.invoke/ainvoke 兜底成错误文本回传给模型，
+        不打断调用链；未知工具同样以错误文本回传。
+
+        Args:
+            messages: 当前消息列表
+            result: 请求了工具调用的补全结果
+            tools: 可用工具集
+
+        Returns:
+            list[Message]: 追加了 assistant(tool_calls) 与各 tool 结果的新列表
+        """
+        by_name = {t.tool_func.__name__: t for t in tools}
+        messages = [
+            *messages,
+            Message(role="assistant", content=result.content, tool_calls=result.tool_calls),
+        ]
+        for tc in result.tool_calls or []:
+            tool = by_name.get(tc.name)
+            try:
+                args = msgspec.json.decode(tc.arguments or "{}", type=dict)
+            except Exception:
+                self._logger.warning(f"工具参数 JSON 解析失败: {tc.name}({tc.arguments!r})")
+                args = {}
+
+            if tool is None:
+                output = f"错误: 未知工具 {tc.name}"
+                self._logger.warning(f"工具调用: {output}")
+            elif tool.is_async:
+                output = await tool.ainvoke(**args)
+            else:
+                output = tool.invoke(**args)
+
+            messages.append(Message(role="tool", tool_call_id=tc.id, content=str(output)))
+            self._logger.info(f"工具调用: {tc.name}({args}) -> {str(output)[:80]!r}")
+        return messages
 
     def _build_payload(
         self,
@@ -229,6 +337,14 @@ class OpenAICompatProvider(ModelProvider):
         choice = data["choices"][0]
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
+        tool_calls = [
+            ToolCall(
+                id=str(c.get("id", "")),
+                name=str((c.get("function") or {}).get("name", "")),
+                arguments=str((c.get("function") or {}).get("arguments") or "{}"),
+            )
+            for c in (message.get("tool_calls") or [])
+        ] or None
         result = CompletionResult(
             content=message.get("content") or "",
             reasoning=message.get("reasoning_content"),
@@ -238,5 +354,6 @@ class OpenAICompatProvider(ModelProvider):
                 completion_tokens=int(usage.get("completion_tokens", 0)),
             ),
             model=data.get("model") or (self._conf.model_name if self._conf else ""),
+            tool_calls=tool_calls,
         )
         return result

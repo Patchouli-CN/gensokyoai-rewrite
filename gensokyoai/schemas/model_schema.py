@@ -27,6 +27,9 @@ class ModelConfig(msgspec.Struct, frozen=True):
     extra: dict = {}
     """ 额外参数 """
 
+_JSON_TYPES: dict[type, str] = {str: "string", int: "integer", float: "number", bool: "boolean"}
+""" Python 标注 -> JSON Schema 类型映射 """
+
 @dataclass(slots=True)
 class ToolSpec:
     tool_func: ToolFunc
@@ -60,6 +63,41 @@ class ToolSpec:
         detail = str(err) if str(err) else "(这个异常没有具体内容)"
         return f"发生了错误：{type(err).__name__}: {detail}"
     
+    @property
+    def is_async(self) -> bool:
+        """ 是否为异步工具 """
+        return self._is_coro
+
+    def to_openai_tool(self) -> dict:
+        """ 转成 OpenAI tools 声明格式（llama-server / vLLM 通用）。
+
+        参数 JSON Schema 从函数签名推导：标注映射到 JSON 类型，
+        无默认值的参数进入 required。
+
+        Returns:
+            dict: {"type": "function", "function": {...}}
+        """
+        sig = inspect.signature(self.tool_func)
+        properties: dict[str, dict] = {}
+        required: list[str] = []
+        for name, param in sig.parameters.items():
+            if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                continue
+            properties[name] = {
+                "type": _JSON_TYPES.get(param.annotation, "string"),
+                "description": self.params.get(name, ""),
+            }
+            if param.default is inspect.Parameter.empty:
+                required.append(name)
+        return {
+            "type": "function",
+            "function": {
+                "name": self.tool_func.__name__,
+                "description": self.desc,
+                "parameters": {"type": "object", "properties": properties, "required": required},
+            },
+        }
+
     def prompt(self) -> str:
         lines = [
             f"# 工具 {self.tool_func.__name__}",
@@ -92,6 +130,15 @@ class ToolSpec:
         except Exception as e:
             return self._tool_err(e)
 
+class ToolCall(msgspec.Struct, frozen=True):
+    """ 模型请求的一次工具调用 """
+    id: str = ""
+    """ 调用 ID（回传 tool 消息时必须一致）"""
+    name: str = ""
+    """ 工具名 """
+    arguments: str = "{}"
+    """ 参数 JSON 字符串（OpenAI 协议约定为字符串而非对象）"""
+
 class Message(msgspec.Struct, frozen=True):
     """ 一条对话消息 """
     role: Literal["system", "user", "assistant", "tool"]
@@ -102,6 +149,8 @@ class Message(msgspec.Struct, frozen=True):
     """ 发送者名称（群聊场景区分参与者）"""
     tool_call_id: str | None = None
     """ role=tool 时对应的工具调用 ID """
+    tool_calls: list[ToolCall] | None = None
+    """ role=assistant 时模型请求的工具调用列表 """
 
 class Usage(msgspec.Struct, frozen=True):
     """ 一次调用的 token 用量 """
@@ -122,6 +171,8 @@ class CompletionResult(msgspec.Struct, frozen=True):
     """ token 用量 """
     model: str = ""
     """ 实际使用的模型 """
+    tool_calls: list[ToolCall] | None = None
+    """ 模型请求的工具调用（无则 None）"""
 
 if __name__ == "__main__":
     def get_weather(city: str, unit: str = "celsius") -> str:
