@@ -5,10 +5,10 @@ from .registry import auto_discover
 DEFAULT_PACKAGES = (
     "gensokyoai.models",
     "gensokyoai.eyes",
-    "gensokyoai.brain",
-    "gensokyoai.responder",
-    "gensokyoai.memorizer",
-    "gensokyoai.health",
+    "gensokyoai.core.brain",
+    "gensokyoai.core.responder",
+    "gensokyoai.core.memorizer",
+    "gensokyoai.core.health",
 )
 
 def discover_all(packages: tuple[str, ...] = DEFAULT_PACKAGES) -> None:
