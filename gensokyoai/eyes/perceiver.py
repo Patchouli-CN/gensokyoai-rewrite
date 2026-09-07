@@ -1,6 +1,6 @@
 """ 输入感知和场景打包 —— 场景适配器协议（架构文档 §3.1）"""
 
-import asyncio
+import aioconsole
 import time
 from abc import ABC, abstractmethod
 
@@ -37,8 +37,7 @@ class ConsolePerceiver(Perceiver):
         Raises:
             (EOFError / KeyboardInterrupt): 控制台关闭时由 input 抛出
         """
-        loop = asyncio.get_running_loop()
-        text = await loop.run_in_executor(None, input)
+        text: str = await aioconsole.ainput("输入你的消息：")
         text = text.strip()
         if not text:
             return None

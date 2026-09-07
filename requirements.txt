@@ -5,3 +5,4 @@ pyyaml
 aiohttp
 pytest
 pytest-asyncio
+aioconsole

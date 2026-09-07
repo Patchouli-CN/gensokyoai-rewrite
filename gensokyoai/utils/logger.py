@@ -121,7 +121,7 @@ class LoggerManager:
 def setup_logging(
     log_level: str = "INFO",
     log_console: bool = True,
-    log_file: Path | None = None,
+    log_file: str | Path | None = None,
     log_format: str | None = None,
     log_format_console: str | None = None,
     intercept_standard_logging: bool = True,
