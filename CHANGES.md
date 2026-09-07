@@ -6,6 +6,33 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.4] - 2026/9/8
+
+### 新增
+ - **命令子系统** `gensokyoai/command/`：标签（`<tag ...>`）与前缀（`/cmd`）双模式解析（`CommandParser`/`ParsedCommand`/`CommandType`），实例级注册表装饰器 `@command`（自动生成 usage、按签名解析参数），执行器 `CommandExecutor`、权限分级 `PermissionLevel`、结果对象 `CommandResult`
+ - **生命周期管理** `core/lifecycle.py`：`LifecycleManager` 启动顺序执行 / 关闭逆序执行回调（资源栈语义），经 EventBus 发布 `STARTUP`/`SHUTDOWN` 事件，支持 `request_stop` 供信号处理器调用
+ - **多模型路由** `core/session_factory.py`：`build_session_manager` 按配置装配 —— `default_model` 兜底，`brain`/`responder` 独立配置，`ooc`/`memorizer` 可选（缺省回落 brain），实现"Brain 用 DeepSeek、Responder 用 Kimi"式的按模块选模型
+ - **全局工具注册表** `core/registry.py` 新增 `ToolRegistry`：`@ToolRegistry.tool` 装饰器注册并自动包装 `ToolSpec`，支持外部 `ToolSpec` 注入
+ - **角色扮演主循环** `roleplay/loop.py`：`TouhouWorld` 统一组装 Eyes/Brain/Responder/Memorizer/Health/Lifecycle 与工具集，main.py 精简为纯装配入口
+ - **长期记忆持久化** `core/memorizer/store.py`：`LongMemoryStore` JSON 文件落盘 + 按主题检索
+ - **健康监控增强**：指标记录与历史查询（`HealthMetric`）、阈值告警（`HealthAlert` 事件广播）、记忆与会话占用摘要
+ - 首个角色卡 `config/roles/SaigyoujiYuyuko.yaml`（西行寺幽幽子）
+
+### 变更
+ - **SessionManager 改为无参构造 + 多模型路由**：`register_backend(owner, backend)` / `set_default_backend(...)`，每个 owner 可绑定独立 ChatBackend；新增 `normalize_tool_calls` 代理
+ - **Brain 推理升级为「接力思考」协议**：`brain.think` 提示词改为多轮 JSON 协议（`thought`/`intent`/`emotion`/`action_hint`/`confidence`/`need_continue_think`），`_relay_think` 按档位映射最大轮数（LOW=4 / MID=8 / HIGH=12 / MAX=999），前轮思考作为上下文接力；工具调用在思考循环内执行并强制消化（工具结果未消化则追加一轮）；`draft` 语义改为给 Responder 的行动指令
+ - **工具调用格式标准化下沉 Provider**：`ModelProvider.normalize_tool_calls()` 抽象，LlamaProvider 实现从解析后的 JSON（`tool_calls` 字段）或思考文本中提取工具调用 —— 小模型不吐原生 tool_calls 时的兜底
+ - MemoryManager 全面异步化：`store`/`recent`/`cascade_retrieve` 为 async，`recent` 支持关键词过滤；工作记忆 + 长期记忆双层（`work_mem_size`/`long_mem_size`）
+ - `Topic` 更名 `EventTopic`，新增 `STARTUP`/`SHUTDOWN`/`STOP_REQUESTED`；EventBus 新增 `on()` 装饰器订阅
+ - `roleplay/character.py`：新增 `Character`（包装 CharacterCard + `CharacterStats` 运行时状态 + 唯一 cid），`load_character` 返回 `Character`；示例对话结构化 `Dialogue`
+ - eyes 感知器基类抽到 `eyes/base.py`，支持 `request_stop` 优雅退出
+
+### 修复
+ - 模型工具调用相关 bug 修复（配合 normalize_tool_calls 标准化链路）
+
+### 测试
+ - 51 个测试全绿：全部用例适配新 API（SessionManager 多 backend 构造、接力思考协议、Character 包装、PromptManager 新模板），新增多模型路由与缺 backend 报错用例；roleplay 作为装配层豁免跨模块 import 禁令（但反向依赖仍被禁止）
+
 ## [0.0.3] - 2026/9/7
 
 ### 新增

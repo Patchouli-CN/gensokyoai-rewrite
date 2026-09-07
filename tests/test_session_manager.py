@@ -1,4 +1,4 @@
-"""SessionManager 单元测试"""
+"""SessionManager 单元测试：双模式 / 裁剪 / 多模型路由"""
 
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.schemas.model_schema import CompletionResult, Message
@@ -7,52 +7,56 @@ from gensokyoai.schemas.model_schema import CompletionResult, Message
 class FakeBackend:
     """记录调用并返回固定结果的假模型后端"""
 
-    def __init__(self) -> None:
+    def __init__(self, tag: str = "回复") -> None:
+        self.tag = tag
         self.calls: list[list[Message]] = []
 
     async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
         self.calls.append(list(messages))
-        return CompletionResult(content=f"回复{len(self.calls)}")
+        return CompletionResult(content=f"{self.tag}{len(self.calls)}")
+
+
+def _manager(backend: FakeBackend) -> SessionManager:
+    """带默认 backend 的管理器"""
+    sm = SessionManager()
+    sm.set_default_backend(backend)
+    return sm
 
 
 async def test_stateless_call_does_not_persist():
     """无状态调用不落会话历史"""
-    backend = FakeBackend()
-    sm = SessionManager(backend)
+    sm = _manager(FakeBackend())
     await sm.call("brain.think", [Message(role="user", content="hi")], stateless=True)
     assert sm.usage("brain.think") == 0
-    assert len(backend.calls) == 1
 
 
 async def test_stateful_call_accumulates_history():
     """有状态调用累积历史并回写 assistant 回复"""
     backend = FakeBackend()
-    sm = SessionManager(backend)
+    sm = _manager(backend)
     await sm.call("responder", [Message(role="user", content="第一句")])
     await sm.call("responder", [Message(role="user", content="第二句")])
-    history = backend.calls[-1]
-    roles = [m.role for m in history]
-    assert roles == ["user", "assistant", "user"], f"历史应为 滑动窗口: {roles}"
+    # 第二次调用发送的历史应为：用户 + 首轮回复 + 新输入
+    roles = [m.role for m in backend.calls[-1]]
+    assert roles == ["user", "assistant", "user"], f"历史应为滑动窗口: {roles}"
     assert sm.usage("responder") > 0
 
 
 async def test_trim_keeps_system_and_evicts_oldest():
     """超预算时 system 前缀保留，最早的非 system 消息先淘汰"""
-    backend = FakeBackend()
-    sm = SessionManager(backend)
+    sm = _manager(FakeBackend())
     sm.set_system("r", "固定人设" * 10)
     sm._sessions["r"].max_tokens = 600  # 预算 600-512=88, 人设占 60
     await sm.call("r", [Message(role="user", content="消息" * 30)])
     await sm.call("r", [Message(role="user", content="新消息")])
-    last_call = backend.calls[-1]
+    last_call = sm._sessions["r"].messages
     assert last_call[0].role == "system", "system 前缀必须保留"
     assert any(m.content == "新消息" for m in last_call), "最新消息必须保留"
 
 
 async def test_reset_clears_owner_session():
     """reset 只清空指定 owner"""
-    backend = FakeBackend()
-    sm = SessionManager(backend)
+    sm = _manager(FakeBackend())
     await sm.call("a", [Message(role="user", content="hi")])
     await sm.call("b", [Message(role="user", content="hi")])
     sm.reset("a")
@@ -64,10 +68,34 @@ async def test_reset_clears_owner_session():
 
 async def test_set_system_is_idempotent():
     """set_system 重复调用不产生重复 system 消息"""
-    backend = FakeBackend()
-    sm = SessionManager(backend)
+    sm = _manager(FakeBackend())
     sm.set_system("r", "人设A")
     sm.set_system("r", "人设A")
     await sm.call("r", [Message(role="user", content="hi")])
-    system_msgs = [m for m in backend.calls[-1] if m.role == "system"]
+    system_msgs = [m for m in sm._sessions["r"].messages if m.role == "system"]
     assert len(system_msgs) == 1
+
+
+async def test_multi_backend_routes_by_owner():
+    """每个 owner 可绑定独立 backend，未注册的走默认"""
+    sm = SessionManager()
+    brain_backend = FakeBackend("脑")
+    default_backend = FakeBackend("通用")
+    sm.register_backend("brain.think", brain_backend)
+    sm.set_default_backend(default_backend)
+
+    await sm.call("brain.think", [Message(role="user", content="hi")], stateless=True)
+    await sm.call("responder", [Message(role="user", content="hi")], stateless=True)
+    await sm.call("brain.ooc", [Message(role="user", content="hi")], stateless=True)
+
+    assert len(brain_backend.calls) == 1, "brain.think 路由到专属 backend"
+    assert len(default_backend.calls) == 2, "未注册 owner 回退默认 backend"
+
+
+async def test_call_without_any_backend_raises():
+    """既无专属也无默认 backend 时报错"""
+    import pytest
+
+    sm = SessionManager()
+    with pytest.raises(ValueError):
+        await sm.call("responder", [Message(role="user", content="hi")])

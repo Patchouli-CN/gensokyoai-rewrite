@@ -36,7 +36,7 @@ def test_render_static_template_is_cached():
 def test_render_json_braces_untouched():
     """JSON 示例的单花括号不被 string.Template 破坏"""
     text = prompt_mgr.render("brain.think")
-    assert '{"intent": "意图"' in text
+    assert '{"thought": "当前回合的思考内容"' in text
 
 
 def test_missing_template_raises():

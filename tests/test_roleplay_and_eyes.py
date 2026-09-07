@@ -1,28 +1,31 @@
-"""roleplay 人设卡 与 eyes 解析 单元测试"""
+"""roleplay 角色与 eyes 解析 单元测试"""
 
 import pytest
 
 from gensokyoai.eyes.parser import build_snapshot, parse_message
-from gensokyoai.roleplay import CharacterCard, load_character
+from gensokyoai.roleplay.character import Character, CharacterCard, load_character
 from gensokyoai.schemas.scene_schema import SceneEvent
 
 
 def test_load_character_from_yaml(tmp_path):
-    """从 YAML 加载人设卡并补全缺省字段"""
+    """从 YAML 加载角色并补全缺省字段"""
     card_file = tmp_path / "marisa.yaml"
     card_file.write_text(
         "name: 雾雨魔理沙\nsystem_prompt: 我是普通的魔法使\ngreeting: 哟\n", encoding="utf-8",
     )
-    card = load_character(card_file)
-    assert card.name == "雾雨魔理沙"
-    assert card.example_dialogue == []
-    assert card.motivation_weights == {}
+    character = load_character(card_file)
+    assert character.name == "雾雨魔理沙"
+    assert "魔法使" in character.prompt
+    assert character.cid, "角色 ID 应自动生成"
 
 
-def test_character_system_prompt_format():
-    """to_system_prompt 组装角色名 + 人设正文"""
+def test_character_wraps_card():
+    """Character 包装 CharacterCard，prompt 组装角色名 + 人设正文"""
     card = CharacterCard(name="魔理沙", system_prompt="普通的魔法使")
-    assert card.to_system_prompt() == "【魔理沙】\n普通的魔法使"
+    character = Character(card)
+    assert character.name == "魔理沙"
+    assert character.prompt == "【魔理沙】\n普通的魔法使"
+    assert character.status is not None
 
 
 def test_load_character_missing_file():

@@ -16,7 +16,8 @@ FORBIDDEN_CROSS_IMPORTS = {
     "core/memorizer": {"core/brain", "core/responder", "core/health", "eyes", "roleplay"},
     "core/health": {"core/brain", "core/responder", "core/memorizer", "eyes", "roleplay"},
     "eyes": {"core/brain", "core/responder", "core/memorizer", "core/health", "roleplay"},
-    "roleplay": {"core/brain", "core/responder", "core/memorizer", "core/health", "eyes"},
+    # roleplay 不设禁入清单：它是角色扮演场景的装配层（类似 L4），
+    # 允许组装 core 业务与 eyes；但反向依赖（core/eyes -> roleplay）仍然禁止。
 }
 
 CORE_TOP_FORBIDDEN = {
