@@ -279,9 +279,9 @@ class BrainEngine:
     def _get_max_rounds(self, effort: BrainThinkEffort) -> int:
         """ 将档位映射为最大思考轮数（LOW 改为 2，给工具调用留消化空间） """
         match effort:
-            case BrainThinkEffort.LOW: return 2  # 修改：从1改为2
-            case BrainThinkEffort.MID: return 3
-            case BrainThinkEffort.HIGH: return 5
+            case BrainThinkEffort.LOW: return 4  
+            case BrainThinkEffort.MID: return 8
+            case BrainThinkEffort.HIGH: return 12
             case BrainThinkEffort.MAX: return 999
             case _: return 0
 
