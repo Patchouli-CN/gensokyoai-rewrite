@@ -1,11 +1,26 @@
-"""模型层单元测试：消息序列化 / 思考段分离 / LlamaProvider 响应解析"""
+"""模型层单元测试：消息序列化 / 思考段分离 / LlamaProvider 响应解析 / 工具调用"""
 
 import msgspec
 
 from gensokyoai.core.registry import Registry
 from gensokyoai.models.base import split_think, to_openai_messages
 from gensokyoai.models.llama_cpp import LlamaProvider
-from gensokyoai.schemas.model_schema import Message
+from gensokyoai.schemas.model_schema import (
+    CompletionResult,
+    Message,
+    ModelConfig,
+    ToolSpec,
+)
+
+
+def get_weather(city: str, unit: str = "celsius") -> str:
+    """获取城市天气"""
+    return f"{city} 晴, 25度"
+
+
+async def fetch_quote(symbol: str) -> str:
+    """异步查询行情"""
+    return f"{symbol} 涨1%"
 
 
 def test_to_openai_messages_omits_none_fields():
@@ -88,3 +103,157 @@ def test_llama_payload_keeps_thinking_when_enabled():
     """think=True 时不注入开关，走模板默认"""
     payload = _llama_payload(think=True)
     assert "chat_template_kwargs" not in payload
+
+
+def test_to_openai_messages_serializes_tool_calls():
+    """assistant 消息的 tool_calls 按 OpenAI 协议序列化"""
+    from gensokyoai.schemas.model_schema import ToolCall
+
+    msgs = [Message(role="assistant", tool_calls=[
+        ToolCall(id="call_1", name="get_weather", arguments='{"city": "北京"}'),
+    ])]
+    payload = to_openai_messages(msgs)[0]
+    assert payload["tool_calls"][0] == {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": '{"city": "北京"}'},
+    }
+
+
+def test_tool_spec_openai_schema():
+    """工具声明从签名推导 JSON Schema：类型映射 + required"""
+    tool = ToolSpec(get_weather, params={"city": "城市名"})
+    schema = tool.to_openai_tool()
+    func = schema["function"]
+    assert func["name"] == "get_weather"
+    assert func["description"] == "获取城市天气"
+    props = func["parameters"]["properties"]
+    assert props["city"] == {"type": "string", "description": "城市名"}
+    assert props["unit"]["type"] == "string"
+    assert func["parameters"]["required"] == ["city"]
+
+
+def test_build_result_parses_tool_calls():
+    """响应中的 tool_calls 解析为 ToolCall 列表"""
+    provider = LlamaProvider()
+    result = provider._build_result({
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_9",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city": "上海"}'},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }],
+    })
+    assert result.tool_calls is not None
+    assert result.tool_calls[0].name == "get_weather"
+    assert result.tool_calls[0].arguments == '{"city": "上海"}'
+
+
+class _StubProvider(LlamaProvider):
+    """不发真实 HTTP，按序返回预设响应并记录请求体"""
+
+    def __init__(self, responses: list[dict]) -> None:
+        super().__init__()
+        self._responses = list(responses)
+        self.payloads: list[dict] = []
+
+    async def _post_json(self, http, url, payload, headers, started) -> dict:
+        self.payloads.append(payload)
+        return self._responses.pop(0)
+
+
+def _tool_call_response(cid: str, name: str, args: str) -> dict:
+    """构造一轮带 tool_calls 的响应"""
+    return {
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": cid, "type": "function",
+                    "function": {"name": name, "arguments": args},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }],
+        "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+    }
+
+
+def _final_response(text: str) -> dict:
+    """构造一轮普通文本响应"""
+    return {
+        "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 80, "completion_tokens": 20},
+    }
+
+
+def _configured(responses: list[dict]) -> _StubProvider:
+    """带配置的 StubProvider"""
+    return _StubProvider(responses).config(
+        ModelConfig(base_url="http://127.0.0.1:8080/v1", model_name="qwen"),
+    )
+
+
+async def test_tool_loop_executes_sync_and_unknown_tools():
+    """同步工具被执行、未知工具回传错误文本、最终拿到收尾回复与累计用量"""
+    provider = _configured([
+        _tool_call_response("call_1", "get_weather", '{"city": "北京"}'),
+        _tool_call_response("call_2", "no_such_tool", "{}"),
+        _final_response("北京今天晴"),
+    ])
+    result = await provider.chat(
+        [Message(role="user", content="北京天气？")], tools=[ToolSpec(get_weather)],
+    )
+    assert result.content == "北京今天晴"
+    assert result.usage.prompt_tokens == 50 + 50 + 80
+    assert result.usage.completion_tokens == 10 + 10 + 20
+
+    # 第一轮请求带工具声明
+    first = provider.payloads[0]
+    assert first["tools"][0]["function"]["name"] == "get_weather"
+    assert first["tool_choice"] == "auto"
+
+    # 第二轮请求追加 assistant(tool_calls) + 同步工具结果
+    second_msgs = provider.payloads[1]["messages"]
+    assert [m["role"] for m in second_msgs] == ["user", "assistant", "tool"]
+    assert "北京 晴" in second_msgs[-1]["content"]
+    assert second_msgs[-1]["tool_call_id"] == "call_1"
+
+    # 第三轮请求追加未知工具的 assistant + 错误文本回传
+    third_msgs = provider.payloads[2]["messages"]
+    assert [m["role"] for m in third_msgs] == ["user", "assistant", "tool", "assistant", "tool"]
+    assert any("未知工具" in m["content"] for m in third_msgs if m["role"] == "tool")
+
+
+async def test_tool_loop_executes_async_tool():
+    """异步工具走 ainvoke 路径"""
+    provider = _configured([
+        _tool_call_response("call_a", "fetch_quote", '{"symbol": "AAPL"}'),
+        _final_response("AAPL 涨了"),
+    ])
+    result = await provider.chat(
+        [Message(role="user", content="AAPL 行情？")], tools=[ToolSpec(fetch_quote)],
+    )
+    assert result.content == "AAPL 涨了"
+    tool_msgs = [m for m in provider.payloads[1]["messages"] if m["role"] == "tool"]
+    assert any("AAPL 涨1%" in m["content"] for m in tool_msgs)
+
+
+async def test_tool_loop_bad_arguments_json_degrades():
+    """工具参数 JSON 损坏时按空参数执行，不崩链"""
+    provider = _configured([
+        _tool_call_response("call_x", "get_weather", "不是JSON"),
+        _final_response("默认城市晴"),
+    ])
+    result = await provider.chat(
+        [Message(role="user", content="天气？")], tools=[ToolSpec(get_weather)],
+    )
+    assert result.content == "默认城市晴"
+    tool_msgs = [m for m in provider.payloads[1]["messages"] if m["role"] == "tool"]
+    # city 缺参由 ToolSpec.invoke 的异常兜底转成错误文本，而非中断
+    assert len(tool_msgs) == 1
