@@ -1,15 +1,10 @@
 """ 记忆摘要压缩（架构文档 §3.4）"""
 
 from ..session_manager import SessionManager
+from ...prompts import prompt_mgr
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message
 from ...utils.logger import LoggerManager
-
-_COMPRESS_SYSTEM = (
-    "你是记忆压缩器。把一批对话记忆压缩成一段简短概要，"
-    "只保留对角色有长期价值的关键信息（人名、承诺、事实、情感转折），"
-    "丢弃寒暄与重复内容。直接输出概要文本。"
-)
 
 class Compressor:
     """ 把一批记忆压成一段概要，控制记忆模块膨胀 """
@@ -36,7 +31,7 @@ class Compressor:
         result = await self._sessions.call(
             "memorizer.compress",
             [
-                Message(role="system", content=_COMPRESS_SYSTEM),
+                Message(role="system", content=prompt_mgr.render("memory.compress")),
                 Message(role="user", content=joined),
             ],
             stateless=True,

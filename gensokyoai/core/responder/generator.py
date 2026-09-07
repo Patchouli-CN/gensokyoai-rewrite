@@ -3,6 +3,7 @@
 import time
 
 from ..session_manager import SessionManager
+from ...prompts import prompt_mgr
 from ...schemas.brain_schema import BrainConclusion
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message
@@ -61,15 +62,16 @@ class Responder:
             self._system_ready = True
 
         memory_text = "\n".join(f"- {m.content}" for m in memories) or "（无）"
-        hint = f"意图: {conclusion.intent}；情绪: {conclusion.emotion}"
-        if conclusion.draft:
-            hint += f"\n初稿参考（可改写润色）: {conclusion.draft}"
+        draft_hint = f"初稿参考（可改写润色）: {conclusion.draft}\n" if conclusion.draft else ""
 
-        user = (
-            f"{snapshot.sender}说: {snapshot.content}\n"
-            f"[决策提示] {hint}\n"
-            f"[可用记忆]\n{memory_text}\n\n"
-            f"以角色身份直接回复："
+        user = prompt_mgr.render(
+            "responder.user",
+            sender=snapshot.sender,
+            content=snapshot.content,
+            intent=conclusion.intent,
+            emotion=conclusion.emotion,
+            draft_hint=draft_hint,
+            memory=memory_text,
         )
         result = await self._sessions.call(
             self._OWNER,

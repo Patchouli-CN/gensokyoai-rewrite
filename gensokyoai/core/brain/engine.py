@@ -4,7 +4,7 @@ import time
 import msgspec
 
 from ..session_manager import SessionManager
-from ...prompts import get_prompt
+from ...prompts import prompt_mgr
 from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message
@@ -14,6 +14,11 @@ from .ooc_detector import OOCDetector
 
 _route_logger = LoggerManager.get_logger("BRAIN")
 """ 档位路由是模块级纯函数，独立持有 logger """
+
+_EMOTION_WORDS = ("难过", "开心", "生气", "伤心", "喜欢", "讨厌", "害怕", "哭", "笑", "感动")
+""" 情感词命中 +1 分 """
+_PLOT_WORDS = ("世界", "本质", "为什么", "记得", "过去", "未来", "剧情", "故事", "命运", "秘密")
+""" 剧情词命中 +2 分（更倾向深度推理）"""
 
 def route(snapshot: SceneSnapshot) -> BrainThinkEffort:
     """ 档位路由（架构文档 §6.4）：规则启发式打分，零模型调用。
@@ -137,19 +142,24 @@ class BrainEngine:
         """ 调模型产出初稿结论，解析失败降级为快速路径 """
         memory_text = "\n".join(f"- [{m.topic}] {m.content}" for m in memories) or "（无相关记忆）"
         context_text = "\n".join(snapshot.context_snippet[-5:]) or "（无上下文）"
-        user = (
-            f"[人设]\n{self._persona or '（未提供）'}\n"
-            f"[场景] {snapshot.sender}: {snapshot.content}\n"
-            f"[最近上下文]\n{context_text}\n"
-            f"[相关记忆]\n{memory_text}"
-        )
+        messages = [
+            Message(role="system", content=prompt_mgr.render("brain.think")),
+            Message(
+                role="user",
+                content=prompt_mgr.render(
+                    "brain.think.user",
+                    persona=self._persona or "（未提供）",
+                    sender=snapshot.sender,
+                    content=snapshot.content,
+                    context=context_text,
+                    memory=memory_text,
+                ),
+            ),
+        ]
         try:
             result = await self._sessions.call(
                 "brain.think",
-                [
-                    Message(role="system", content=_THINK_SYSTEM),
-                    Message(role="user", content=user),
-                ],
+                messages,
                 stateless=True,
                 temperature=0.4,
                 max_new_tokens=400,

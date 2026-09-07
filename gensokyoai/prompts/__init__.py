@@ -1,9 +1,8 @@
-""" 提示词模块，专门放提示词。模板文件 + PromptManager 管理，提示词不散落在业务代码里。 """
+""" 提示词模块，专门放提示词。模板经 PromptManager 装饰器注册，提示词不散落在业务代码里。 """
 
-from .manager import PromptManager, get_prompt, prompt_raw
+from .manager import PromptManager, prompt_mgr
 
 __all__ = [
     "PromptManager",
-    "get_prompt",
-    "prompt_raw",
+    "prompt_mgr",
 ]

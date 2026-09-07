@@ -5,6 +5,7 @@ from .event_schema import BaseEvent, Topic
 from .health_schema import HealthReport
 from .memory_schema import MemoryItem
 from .model_schema import CompletionResult, Message, ModelConfig, ToolSpec, Usage
+from .prompt_schema import Prompt
 from .scene_schema import SceneEvent, SceneSnapshot, SceneType
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "Message",
     "ModelConfig",
     "OOCVerdict",
+    "Prompt",
     "SceneEvent",
     "SceneSnapshot",
     "SceneType",

@@ -5,19 +5,13 @@ import time
 import msgspec
 
 from ..session_manager import SessionManager
+from ...prompts import prompt_mgr
 from ...schemas.brain_schema import OOCVerdict
 from ...schemas.model_schema import Message
 from ...utils.logger import LoggerManager
 
 _OOC_PATTERNS = ("作为一个AI", "作为一个 AI", "语言模型", "人工智能助手", "抱歉，我不能")
 """ 出现即判定 OOC 的模型自曝式话术 """
-
-_AUDIT_SYSTEM = (
-    "你是角色扮演的 OOC 审计员。判断给定回复是否偏离角色人设"
-    "（是否出戏、是否暴露 AI 身份、是否符合角色性格）。"
-    "只输出一个 JSON 对象：\n"
-    '{"is_ooc": false, "confidence": 0.0, "reason": "理由"}'
-)
 
 class OOCDetector:
     """ OOC Verdict：检测回复是否偏离角色人设 """
@@ -58,8 +52,10 @@ class OOCDetector:
             result = await self._sessions.call(
                 "brain.ooc",
                 [
-                    Message(role="system", content=_AUDIT_SYSTEM),
-                    Message(role="user", content=f"[人设]\n{persona}\n[回复]\n{draft}"),
+                    Message(role="system", content=prompt_mgr.render("ooc.audit")),
+                    Message(role="user", content=prompt_mgr.render(
+                        "ooc.audit.user", persona=persona, draft=draft,
+                    )),
                 ],
                 stateless=True,
                 temperature=0.1,
