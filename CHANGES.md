@@ -6,6 +6,23 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.6] - 2026/9/9
+
+### 新增
+ - **深思考过渡语**：HIGH/MAX 档（多轮接力思考，延迟肉眼可见）在 Brain 思考前让 Responder 以角色口吻先回一句过渡语（如"唔……让我想想"）；三重门控防人机感——冷却轮数（默认 3 回合）+ 时间间隔（默认 180s）+ 概率掷骰（默认 0.6）。过渡语与正式回复共用同一个 responder 有状态会话：先入历史，正式回复能看到自己说过它、自然承接不重复；小 token（48）+ 高温度秒回，只投递显示层不写记忆
+ - **最终回复 OOC 守门**：Responder 生成后先过零成本规则快筛，命中自曝式话术才花一次纠偏重生成（`responder.correct` 指令，告知坏回复与原因后重新以角色身份回应）；纠偏后仍命中则原样输出，不死循环
+ - **后置 OOC 深审接线**：`OOCDetector.audit()` 此前无人调用，现在回复发出后异步深审（不阻塞热路径，代际令牌防迟到回写）；结论回写角色状态（`ooc_audited`/`ooc_hits`）并喂 `ooc.rate` 健康指标——滚动出戏率超过 0.5 时 HealthMonitor 自动告警
+ - 提示词模板 `responder.stall`（过渡语）/ `responder.correct`（纠偏重生成）
+ - Responder 新增 `stall(snapshot)` / `correct(bad_reply, reason)`
+ - `roleplay/__init__.py` 导出 `TouhouWorld`（此前包外无法 import）
+
+### 变更
+ - TouhouWorld 新增旋钮：`stall_probability` / `stall_cooldown_turns` / `stall_min_interval` / `ooc_retry` / `ooc_audit`（均可关闭对应行为）；OOCDetector 提为实例属性 `self.ooc` 便于替换/测试
+ - 架构文档 §8.1 主链路数据流同步（过渡语分支 + OOC 守门/深审节点）
+
+### 测试
+ - 77 个测试全绿：新增过渡语门控（档位/首回合/冷却/时间间隔/概率开关/失败吞掉）、OOC 守门（放行零调用/纠偏/仍坏保留原文/开关）、后置深审（状态回写/指标喂食/代际令牌/异常隔离）13 例
+
 ## [0.0.5] - 2026/9/9
 
 ### 新增

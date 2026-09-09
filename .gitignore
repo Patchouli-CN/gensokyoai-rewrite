@@ -8,3 +8,6 @@ __pycache__/
 
 # I don't wants
 *.log
+
+# runtime artifacts
+long_memory.json
