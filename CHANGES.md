@@ -6,6 +6,24 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.5] - 2026/9/9
+
+### 新增
+ - **主动发言（对话欲）** `roleplay/initiative.py`：原版四维对话欲的零 token 规则化移植 —— expression（表达欲）/ emotional（情绪唤起）/ relational（关系牵引：点名、@）/ situational（情境时机：悬而未决的问题 + 空闲时长）加权求和，权重来自角色卡 `motivation_weights`；TouhouWorld 后台定时评估，空闲超阈值且对话欲达标时绕过 Brain 直接驱动 Responder 开口（省思考 token）
+ - **记忆蒸馏侧链**：每 N 回合（默认 10）取最早一批工作记忆（默认 8 条，跳过核心保护项），经 Compressor 压成摘要条目（importance=0.7，入库自动落长期记忆）后遗忘原文 —— 控制工作记忆膨胀，保留剧情脉络
+ - **半截续写** `Responder`：`finish_reason=length` 时自动发起一次接续生成并拼接完整回复（小模型长回复常见截断的兜底）
+ - **开场白**：主循环启动时打出角色卡 `greeting`
+ - **代际令牌**：TouhouWorld 关闭/重置时代际 +1，在途后台任务（蒸馏/主动发言）回写前校验，杜绝迟到写入污染新会话（原版 GenerationGuard 的移植）
+ - **健康喂食**：回合粒度记录档位分布 / 记忆规模 / 回合延迟到 HealthMonitor
+ - MemoryManager 新增 `oldest(n)`（FIFO 选取，跳过核心项）与 `forget(ids)`（蒸馏后清理原文）
+
+### 变更
+ - TouhouWorld 主循环重构：用户回复走 `_busy` 互斥（避免主动发言并发抢占 responder 会话）；记忆写入改为异步侧链不阻塞回合；投递档输出清洗控制字符（记忆档保留原文）；每回合把 Brain 结论的情绪同步进 `CharacterStats`
+ - 记忆写入的会话内触发由 `await` 改为 `create_task`（回合延迟不再含记忆落盘）
+
+### 测试
+ - 64 个测试全绿：新增主动发言评估（6 例）、Responder 半截续写与情绪润色（3 例）、MemoryManager 蒸馏流程（4 例）
+
 ## [0.0.4] - 2026/9/8
 
 ### 新增
