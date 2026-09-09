@@ -146,6 +146,40 @@ class MemoryManager:
         
         return results[:max_items]
 
+    def oldest(self, n: int = 8) -> list[MemoryItem]:
+        """ 取最早的一批可蒸馏工作记忆（跳过核心保护项）。
+
+        Args:
+            n: 返回条数上限
+
+        Returns:
+            list[MemoryItem]: 按写入顺序（旧 -> 新）的记忆列表
+        """
+        out: list[MemoryItem] = []
+        for mid in self._work_mem_queue:
+            item = self._work_mem_store.get(mid)
+            if item and item.importance < _CORE_IMPORTANCE_THRESHOLD:
+                out.append(item)
+                if len(out) >= n:
+                    break
+        return out
+
+    def forget(self, memory_ids: list[str]) -> int:
+        """ 主动遗忘指定记忆（蒸馏后清理原文用）。
+
+        Args:
+            memory_ids: 要遗忘的记忆 ID 列表
+
+        Returns:
+            int: 实际删除条数
+        """
+        idset = set(memory_ids)
+        removed = sum(1 for mid in idset if self._work_mem_store.pop(mid, None) is not None)
+        if removed:
+            self._work_mem_queue = deque(m for m in self._work_mem_queue if m not in idset)
+            self._logger.debug(f"主动遗忘 {removed} 条记忆")
+        return removed
+
     def _evict_earliest(self) -> None:
         """
         智能遗忘：根据 重要性+访问次数-时间衰减 计算存活分值

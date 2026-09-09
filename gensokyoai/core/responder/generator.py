@@ -72,7 +72,20 @@ class Responder:
             max_new_tokens=1024,
             temperature=0.8,
         )
-        reply = apply_emotion_hint(result.content.strip(), conclusion.emotion)
+        content = result.content.strip()
+
+        # 半截续写：小模型长回复常见被 max_tokens 截断，续写一次拼回完整文本
+        if result.finish_reason == "length" and content:
+            self._logger.info(f"回复被截断（{len(content)}字），发起续写")
+            cont = await self._sessions.call(
+                self._OWNER,
+                [Message(role="user", content="继续，从中断处直接接续写完。不要重复已写内容。")],
+                max_new_tokens=1024,
+                temperature=0.8,
+            )
+            content = f"{content}{cont.content.strip()}".strip()
+
+        reply = apply_emotion_hint(content, conclusion.emotion)
         self._logger.info(
             f"生成完成: {len(reply)}字 耗时={time.monotonic() - started:.2f}s 回复={reply!r}"
         )
