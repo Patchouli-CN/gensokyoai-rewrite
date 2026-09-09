@@ -110,3 +110,20 @@ $memory
 
 以角色身份直接回复：
 """
+
+@prompt_mgr.prompt("responder.stall")
+def responder_stall() -> str:
+    return """
+$sender说: $content
+这句话需要认真想一想才能回答。先用角色的口吻回一句简短的过渡语（10~25字），表示你正在思考、回忆或犹豫，可以带一个小动作。
+只输出这一句过渡语，保持角色的说话习惯，不要回答内容本身，也不要解释你在做什么。
+"""
+
+@prompt_mgr.prompt("responder.correct")
+def responder_correct() -> str:
+    return """
+你刚才的回复出了戏，被系统拦截：
+$bad_reply
+原因: $reason
+忘掉它，重新以角色身份自然地回应对方刚才说的话。严禁暴露 AI 身份，严禁跳出角色。
+"""

@@ -1,6 +1,7 @@
 """ 角色扮演主循环 """
 import asyncio
 import contextlib
+import random
 import time
 from ..eyes.perceiver import Perceiver
 from ..core.brain.engine import BrainEngine, route
@@ -15,7 +16,7 @@ from ..core.registry import ToolRegistry
 from ..core.health import HealthMonitor
 from ..utils.logger import LoggerManager
 from ..utils.text import strip_control_chars
-from ..schemas.brain_schema import BrainConclusion
+from ..schemas.brain_schema import BrainConclusion, BrainThinkEffort
 from ..schemas.memory_schema import MemoryItem
 from ..schemas.model_schema import ToolSpec
 from ..schemas.scene_schema import SceneSnapshot
@@ -25,11 +26,15 @@ from .initiative import evaluate_initiative
 
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
 
+_STALL_EFFORTS = {BrainThinkEffort.HIGH, BrainThinkEffort.MAX}
+""" 值得垫过渡语的档位：多轮接力思考，延迟肉眼可见 """
+
 class TouhouWorld:
     """
     扮演主循环 (Role-Play Loop)
     负责协调 Eyes, Brain, Responder 和 Memorizer 的完整生命周期。
-    支持生命周期管理（启动/关闭回调）、记忆蒸馏、主动发言（对话欲）。
+    支持生命周期管理（启动/关闭回调）、记忆蒸馏、主动发言（对话欲）、
+    深思考过渡语与 OOC 守门/后置深审。
     """
 
     def __init__(
@@ -44,6 +49,11 @@ class TouhouWorld:
         initiative_interval: float = 30.0,
         idle_threshold: float = 180.0,
         urge_threshold: float = 0.35,
+        stall_probability: float = 0.6,
+        stall_cooldown_turns: int = 3,
+        stall_min_interval: float = 180.0,
+        ooc_retry: bool = True,
+        ooc_audit: bool = True,
     ) -> None:
         """
         Args:
@@ -56,6 +66,11 @@ class TouhouWorld:
             initiative_interval: 主动发言评估周期（秒）
             idle_threshold: 触发主动发言评估的最小空闲（秒）
             urge_threshold: 对话欲阈值，达到才开口
+            stall_probability: 深思考前垫过渡语的概率（0 关闭该行为）
+            stall_cooldown_turns: 两次过渡语之间的最小回合间隔
+            stall_min_interval: 两次过渡语之间的最小时间间隔（秒）
+            ooc_retry: 最终回复命中 OOC 规则时是否花一次纠偏重生成
+            ooc_audit: 是否在回复发出后跑异步 OOC 深审（不阻塞热路径）
         """
         self.logger = LoggerManager.get_logger("TOUHOU WORLD")
         self.eye = eye
@@ -73,10 +88,11 @@ class TouhouWorld:
         all_tools = self._setup_tools(external_tools)
 
         # 初始化业务模块
+        self.ooc = OOCDetector(self.sessions)
         self.brain = BrainEngine(
             sessions=self.sessions,
             persona=character.prompt,
-            ooc=OOCDetector(self.sessions),
+            ooc=self.ooc,
             tools=all_tools
         )
 
@@ -89,6 +105,13 @@ class TouhouWorld:
         self._idle_threshold = idle_threshold
         self._urge_threshold = urge_threshold
 
+        # --- 过渡语 / OOC 旋钮 ---
+        self._stall_probability = stall_probability
+        self._stall_cooldown_turns = stall_cooldown_turns
+        self._stall_min_interval = stall_min_interval
+        self._ooc_retry = ooc_retry
+        self._ooc_audit = ooc_audit
+
         # --- 运行时状态 ---
         self._generation = 0
         """ 代际令牌：后台任务（蒸馏/主动发言）持任务发起时的代际，
@@ -97,6 +120,10 @@ class TouhouWorld:
         self._distill_counter = 0
         self._busy = False
         """ 主链路生成中标志：避免主动发言与用户回复并发抢同一个 responder 会话 """
+        self._stall_last_turn = -10**9
+        """ 上次垫过渡语的回合号（冷却门控用）"""
+        self._stall_last_time = float("-inf")
+        """ 上次垫过渡语的时刻（冷却门控用）"""
 
         # 注册记忆写入侧链
         self.bus.subscribe(EventTopic.MEMORY_WRITE, self._handle_memory_write)
@@ -185,19 +212,23 @@ class TouhouWorld:
                 self._last_activity = time.monotonic()
                 self._busy = True
                 try:
-                    # 2. 决策阶段 (Brain)
+                    # 2. 决策阶段 (Brain)；深思考前先垫一句角色过渡语遮延迟
                     memories = await self.memory.recent(5)
                     effort = route(snapshot)
+                    await self._maybe_stall(snapshot, effort, turn)
                     conclusion = await self.brain.think(snapshot, memories, effort)
 
-                    # 3. 表达阶段 (Responder)
+                    # 3. 表达阶段 (Responder)；OOC 规则守门，命中才纠偏重生成
                     reply = await self.responder.respond(conclusion, snapshot, memories)
+                    reply = await self._guard_ooc(reply)
                 finally:
                     self._busy = False
 
                 # 4. 输出与记录（投递档清洗控制字符；记忆档保留原文）
                 print(f"\n{self.character.name}: {strip_control_chars(reply)}\n")
                 self._remember_turn(snapshot, reply)
+                if self._ooc_audit:
+                    asyncio.create_task(self._audit_reply(reply))
 
                 # 5. 角色状态跟踪 + 健康喂食
                 if conclusion.emotion:
@@ -257,6 +288,95 @@ class TouhouWorld:
             }
         )
         await self.health.record_metric("turn.latency_s", time.monotonic() - t_start, unit="s")
+
+    def _should_stall(self, effort: BrainThinkEffort, turn: int) -> bool:
+        """ 是否值得垫过渡语：仅深思考档、非开局、出了冷却期、再掷中概率。
+
+        Args:
+            effort: 本回合推理档位
+            turn: 当前回合号（从 1 起）
+
+        Returns:
+            bool: True 表示先垫一句过渡语
+        """
+        if effort not in _STALL_EFFORTS:
+            return False
+        if turn <= 1:
+            return False
+        if turn - self._stall_last_turn < self._stall_cooldown_turns:
+            return False
+        if time.monotonic() - self._stall_last_time < self._stall_min_interval:
+            return False
+        return random.random() < self._stall_probability
+
+    async def _maybe_stall(self, snapshot: SceneSnapshot, effort: BrainThinkEffort, turn: int) -> None:
+        """ 深思考前垫一句角色口吻过渡语（如"唔……让我想想"），掩盖接力思考延迟。
+
+        三重门控防止人机感：冷却轮数 + 时间间隔 + 概率掷骰。
+        过渡语只投递显示层，不写记忆（对 Brain 是噪音）；
+        但它进了 responder 有状态会话，正式回复能看到它、自然承接不重复。
+        """
+        if not self._should_stall(effort, turn):
+            return
+        try:
+            line = await self.responder.stall(snapshot)
+        except Exception:
+            self.logger.exception("过渡语生成失败（跳过，不影响主链路）")
+            return
+        if not line:
+            return
+        self._stall_last_turn = turn
+        self._stall_last_time = time.monotonic()
+        print(f"\n{self.character.name}: {strip_control_chars(line)}\n")
+        self.logger.info(f"过渡语已投递: {line!r}")
+
+    async def _guard_ooc(self, reply: str) -> str:
+        """ 最终回复的 OOC 规则守门：零成本快筛，命中才花一次纠偏重生成。
+
+        Args:
+            reply: Responder 生成的最终回复
+
+        Returns:
+            str: 守门后的回复（纠偏成功返回新文本，否则原样）
+        """
+        if not (self._ooc_retry and reply):
+            return reply
+        hit = self.ooc.pre_filter(reply)
+        if not hit.is_ooc:
+            return reply
+        self.logger.warning(f"最终回复命中 OOC 规则（{hit.reason}），发起一次纠偏")
+        try:
+            corrected = await self.responder.correct(reply, hit.reason)
+        except Exception:
+            self.logger.exception("OOC 纠偏重生成失败，原样输出")
+            return reply
+        if corrected and not self.ooc.pre_filter(corrected).is_ooc:
+            flags = int(self.character.status.extra.get("ooc_flags", 0)) + 1
+            self.character.status.update(ooc_flags=flags)
+            return corrected
+        self.logger.error(f"纠偏后仍命中 OOC，原样输出: {corrected[:60]!r}")
+        return reply
+
+    async def _audit_reply(self, reply: str) -> None:
+        """ 后置 OOC 深审（异步侧链，不阻塞回复）。
+
+        审计结论不撤回已发出的文本，只回写角色状态与 ooc.rate 健康指标
+        （滚动出戏率超过阈值 0.5 时 HealthMonitor 自动告警）。
+
+        Args:
+            reply: 已发出的最终回复
+        """
+        gen = self._generation
+        try:
+            verdict = await self.ooc.audit(reply, self.character.prompt)
+            if gen != self._generation:
+                return
+            audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
+            hits = int(self.character.status.extra.get("ooc_hits", 0)) + (1 if verdict.is_ooc else 0)
+            self.character.status.update(ooc_audited=audited, ooc_hits=hits)
+            await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
+        except Exception:
+            self.logger.exception("OOC 深审失败（不影响主链路）")
 
     async def _distill(self) -> None:
         """ 记忆蒸馏：把最早一批工作记忆压缩成摘要条目，然后遗忘原文。

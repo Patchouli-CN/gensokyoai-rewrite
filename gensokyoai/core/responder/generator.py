@@ -90,3 +90,57 @@ class Responder:
             f"生成完成: {len(reply)}字 耗时={time.monotonic() - started:.2f}s 回复={reply!r}"
         )
         return reply
+
+    async def stall(self, snapshot: SceneSnapshot) -> str:
+        """ 生成一句角色口吻的思考过渡语（如"唔……让我想想"）。
+
+        与正式回复共用同一个有状态会话：过渡语先入历史，正式回复
+        能看到自己说过它，自然承接而不重复。小 token + 高温度，秒回。
+
+        Args:
+            snapshot: 触发深度思考的场景快照
+
+        Returns:
+            过渡语文本；生成结果为空时返回空字符串
+        """
+        started = time.monotonic()
+        if not self._system_ready and self._persona:
+            self._sessions.set_system(self._OWNER, self._persona)
+            self._system_ready = True
+        user = prompt_mgr.render(
+            "responder.stall", sender=snapshot.sender, content=snapshot.content,
+        )
+        result = await self._sessions.call(
+            self._OWNER, [Message(role="user", content=user)],
+            max_new_tokens=48, temperature=0.95,
+        )
+        line = result.content.strip().strip('"“” \n')
+        self._logger.info(
+            f"过渡语生成: {line!r} 耗时={time.monotonic() - started:.2f}s"
+        )
+        return line
+
+    async def correct(self, bad_reply: str, reason: str) -> str:
+        """ OOC 纠偏重生成：告知模型刚才哪里出戏，重新以角色身份回复。
+
+        有状态会话里"坏回复"已在历史中，这里只需追加纠偏指令。
+
+        Args:
+            bad_reply: 被拦截的出戏回复
+            reason: OOC 判定理由
+
+        Returns:
+            重新生成的回复文本
+        """
+        started = time.monotonic()
+        self._logger.warning(f"OOC 纠偏重生成: 原因={reason!r} 原回复={bad_reply[:60]!r}")
+        user = prompt_mgr.render("responder.correct", bad_reply=bad_reply, reason=reason)
+        result = await self._sessions.call(
+            self._OWNER, [Message(role="user", content=user)],
+            max_new_tokens=1024, temperature=0.8,
+        )
+        reply = result.content.strip()
+        self._logger.info(
+            f"纠偏完成: {len(reply)}字 耗时={time.monotonic() - started:.2f}s 回复={reply!r}"
+        )
+        return reply

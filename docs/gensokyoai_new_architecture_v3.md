@@ -700,6 +700,12 @@ Eyes 产出场景快照（~500 tok）
 Memorizer 检索 + 摘要（~1500 tok）
     |
     v
+深思考档位（HIGH/MAX）？ --是--> Responder 垫一句角色过渡语
+    |                        （同会话小 token 生成，冷却+概率门控，
+    |                         掩盖接力思考延迟；正式回复可见、自然承接）
+    否
+    |
+    v
 Brain 接收 [System Prompt + 场景 + 记忆 + 历史]
   -> SessionManager 分配独立 VirtualSession
   -> 各子模块在各自独立上下文中推理（不污染主上下文）
@@ -716,7 +722,12 @@ Responder 接收 [System Prompt + 角色设定 + Brain结论 + 最近对话]
   -> 润色生成回复（~2000 tok 预留）
     |
     v
+OOC 规则守门（零成本快筛；命中才一次纠偏重生成）
+    |
+    v
 输出
+    |
+    +-- 后置 OOC 深审（异步侧链，不阻塞输出；结论回写角色状态与 ooc.rate 健康指标）
     |
     v
 Memorizer 记录（对话 + 内心想法摘要）
