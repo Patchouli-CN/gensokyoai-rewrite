@@ -174,7 +174,7 @@ class OpenAICompatProvider(ModelProvider):
         started = time.monotonic()
         timeout = aiohttp.ClientTimeout(total=self._conf.timeout)
         result: CompletionResult | None = None
-        prompt_total = completion_total = 0
+        prompt_total = completion_total = cached_total = 0
         rounds = 0
 
         async with aiohttp.ClientSession(timeout=timeout) as http:
@@ -192,6 +192,7 @@ class OpenAICompatProvider(ModelProvider):
                 result = self._build_result(data)
                 prompt_total += result.usage.prompt_tokens
                 completion_total += result.usage.completion_tokens
+                cached_total += result.usage.cached_tokens
 
                 if not result.tool_calls or not tools:
                     break
@@ -207,7 +208,11 @@ class OpenAICompatProvider(ModelProvider):
                 content=result.content,
                 reasoning=result.reasoning,
                 finish_reason=result.finish_reason,
-                usage=Usage(prompt_tokens=prompt_total, completion_tokens=completion_total),
+                usage=Usage(
+                    prompt_tokens=prompt_total,
+                    completion_tokens=completion_total,
+                    cached_tokens=cached_total,
+                ),
                 model=result.model,
             )
 
@@ -215,7 +220,7 @@ class OpenAICompatProvider(ModelProvider):
         self._logger.info(
             f"补全完成: {prompt_total}+{completion_total} tok "
             f"finish={result.finish_reason} 工具轮数={rounds} 耗时={elapsed:.2f}s 速度="
-            f"{completion_total / elapsed:.1f}tok/s"
+            f"{completion_total / elapsed:.1f}tok/s 前缀缓存命中={cached_total}/{prompt_total} tok"
         )
         self._logger.debug(
             f"补全详情: 正文={_preview(result.content)} "
@@ -271,12 +276,16 @@ class OpenAICompatProvider(ModelProvider):
             stop=stop,
             stream=True,
         )
+        # llama-server / vLLM 默认**不在流式响应里回传 usage**（实测：不带该选项则
+        # 完全没有 usage 事件，token 计量恒为 0）。显式索取，末块才有用量可记。
+        payload["stream_options"] = {"include_usage": True}
         if tools:
             payload["tools"] = [t.to_openai_tool() for t in tools]
             payload["tool_choice"] = "auto"
 
         prompt_total = 0
         completion_total = 0
+        cached_total = 0
         finish = "stop"
 
         async with aiohttp.ClientSession(timeout=timeout) as http:
@@ -292,16 +301,24 @@ class OpenAICompatProvider(ModelProvider):
                 if usage:
                     prompt_total += int(usage.get("prompt_tokens", 0))
                     completion_total += int(usage.get("completion_tokens", 0))
+                    cached_total += int(
+                        (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+                    )
 
         elapsed = time.monotonic() - started
         self._logger.info(
-            f"流式完成: {prompt_total}+{completion_total} tok finish={finish} 耗时={elapsed:.2f}s"
+            f"流式完成: {prompt_total}+{completion_total} tok finish={finish} 耗时={elapsed:.2f}s "
+            f"前缀缓存命中={cached_total}/{prompt_total} tok"
         )
         # 末块：delta 空串，附 finish_reason 与累计用量
         yield StreamEvent(
             delta="",
             finish_reason=finish,
-            usage=Usage(prompt_tokens=prompt_total, completion_tokens=completion_total),
+            usage=Usage(
+                prompt_tokens=prompt_total,
+                completion_tokens=completion_total,
+                cached_tokens=cached_total,
+            ),
         )
 
     async def _iter_sse_events(
@@ -430,6 +447,9 @@ class OpenAICompatProvider(ModelProvider):
             usage=Usage(
                 prompt_tokens=int(usage.get("prompt_tokens", 0)),
                 completion_tokens=int(usage.get("completion_tokens", 0)),
+                cached_tokens=int(
+                    (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+                ),
             ),
             model=data.get("model") or (self._conf.model_name if self._conf else ""),
             tool_calls=tool_calls,

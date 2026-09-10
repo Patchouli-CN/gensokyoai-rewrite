@@ -190,6 +190,10 @@ class Usage(msgspec.Struct, frozen=True):
     """ 输入消耗 """
     completion_tokens: int = 0
     """ 输出消耗 """
+    cached_tokens: int = 0
+    """ 输入中命中前缀缓存的部分（llama-server 的 prompt_tokens_details.cached_tokens）；
+        用于观察 KV 前缀复用是否生效 """
+    """ 输出消耗 """
 
 
 @dataclass(slots=True)

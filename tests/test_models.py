@@ -404,3 +404,59 @@ async def test_chat_stream_base_fallback_single_event():
     assert chunks[0].delta == "整段文本"
     assert chunks[0].finish_reason == "stop"
     assert chunks[0].usage.completion_tokens == 3
+
+
+async def test_chat_stream_requests_usage_explicitly():
+    """流式请求必须显式索取 usage
+
+    实测 llama-server：不带 `stream_options` 则**完全没有 usage 事件**，
+    导致 token 计量恒为 0（健康监控与配额都统计不到 responder 用量）。
+    """
+    provider = _StreamingStub(
+        [{"choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]}]
+    ).config(ModelConfig(base_url="http://127.0.0.1:8080/v1", model_name="qwen"))
+
+    _ = [ev async for ev in provider.chat_stream([Message(role="user", content="hi")])]
+    assert provider.payloads[0]["stream_options"] == {"include_usage": True}
+
+
+async def test_chat_stream_parses_usage_and_cached_tokens():
+    """末块带 usage 时能解析 token 与前缀缓存命中量"""
+    events = [
+        {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+        {
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 80},
+            },
+        },
+    ]
+    provider = _StreamingStub(events).config(
+        ModelConfig(base_url="http://127.0.0.1:8080/v1", model_name="qwen")
+    )
+    chunks = [ev async for ev in provider.chat_stream([Message(role="user", content="hi")])]
+
+    terminal = chunks[-1]
+    assert terminal.usage is not None
+    assert terminal.usage.prompt_tokens == 100
+    assert terminal.usage.completion_tokens == 5
+    assert terminal.usage.cached_tokens == 80, "前缀缓存命中量"
+
+
+def test_build_result_parses_cached_tokens():
+    """非流式响应同样解析前缀缓存命中量"""
+    provider = LlamaProvider()
+    result = provider._build_result(
+        {
+            "choices": [{"message": {"content": "正文"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 40},
+            },
+        }
+    )
+    assert result.usage.prompt_tokens == 50
+    assert result.usage.cached_tokens == 40
