@@ -6,6 +6,20 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.13] - 2026/9/9
+
+### 修复
+ - **`SessionPersister.flush()` 改为幂等**（会话恢复的静默丢数据隐患）：
+   关闭流程的顺序是「先写最终快照 → 再 `sessions.reset_all()` 清空会话」。
+   若之后**再 flush 一次**，就会拿**已清空**的状态覆盖刚写好的存档 ——
+   快照里的 `responder_messages` 被写成空数组，**重启后对话历史全丢**（只剩工作记忆）。
+   真实应用只 flush 一次所以没踩到，但调用方多 flush 一次（或二次关闭）就会静默丢数据。
+   现已幂等：重复调用是空操作，并在日志里说明跳过。
+
+### 测试
+ - 新增 1 例：**重复 flush 不覆盖已有存档**（模拟「清空会话后再 flush」这一真实关闭顺序）
+ - 全部 186 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.12] - 2026/9/9
 
 ### 变更
