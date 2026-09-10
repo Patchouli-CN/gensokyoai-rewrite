@@ -40,3 +40,15 @@ jobs:
 
       - name: Pytest
         run: pytest -q
+
+      # 打包回归：wheel 是否含入口点与自带资源、装完是否真能跑
+      - name: Build wheel
+        run: python -m build --wheel
+
+      - name: Verify packaged entry points and bundled resources
+        run: |
+          pip install --force-reinstall --no-deps dist/*.whl
+          gensokyoai --help
+          gensokyoai-ws --help
+          cd "${{ runner.temp }}"
+          python -c "from gensokyoai.app import DEFAULT_CONFIG, resolve_resource; p = resolve_resource(DEFAULT_CONFIG); print('bundled config:', p); assert '_resources' in str(p), p"
