@@ -1,4 +1,4 @@
-""" 命令子系统抽象模块 """
+"""命令子系统抽象模块"""
 
 from .context import CommandContext
 from .decorators import CommandDefinition, command, get_command, list_commands

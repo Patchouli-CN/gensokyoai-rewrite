@@ -11,7 +11,8 @@ def test_load_character_from_yaml(tmp_path):
     """从 YAML 加载角色并补全缺省字段"""
     card_file = tmp_path / "marisa.yaml"
     card_file.write_text(
-        "name: 雾雨魔理沙\nsystem_prompt: 我是普通的魔法使\ngreeting: 哟\n", encoding="utf-8",
+        "name: 雾雨魔理沙\nsystem_prompt: 我是普通的魔法使\ngreeting: 哟\n",
+        encoding="utf-8",
     )
     character = load_character(card_file)
     assert character.name == "雾雨魔理沙"
@@ -36,12 +37,14 @@ def test_load_character_missing_file():
 
 def test_parse_message_onebot11():
     """解析 OneBot11 事件形态"""
-    event = parse_message({
-        "post_type": "message",
-        "sender": {"nickname": "小明", "user_id": 10001},
-        "raw_message": "早上好",
-        "time": 1725600000,
-    })
+    event = parse_message(
+        {
+            "post_type": "message",
+            "sender": {"nickname": "小明", "user_id": 10001},
+            "raw_message": "早上好",
+            "time": 1725600000,
+        }
+    )
     assert event.sender == "小明"
     assert event.content == "早上好"
 

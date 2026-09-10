@@ -22,7 +22,10 @@ class ScriptedBackend:
 def _conclusion(emotion: str = "好奇", draft: str | None = None) -> BrainConclusion:
     """标准测试结论"""
     return BrainConclusion(
-        intent="闲聊", emotion=emotion, draft=draft, effort=BrainThinkEffort.LOW,
+        intent="闲聊",
+        emotion=emotion,
+        draft=draft,
+        effort=BrainThinkEffort.LOW,
     )
 
 
@@ -46,10 +49,12 @@ async def test_normal_reply_single_call():
 
 async def test_truncated_reply_gets_continuation():
     """finish_reason=length 时发起续写并拼接"""
-    backend = ScriptedBackend([
-        CompletionResult(content="从前有座山，山里有座", finish_reason="length"),
-        CompletionResult(content="红魔馆，馆里住着吸血鬼姐妹。", finish_reason="stop"),
-    ])
+    backend = ScriptedBackend(
+        [
+            CompletionResult(content="从前有座山，山里有座", finish_reason="length"),
+            CompletionResult(content="红魔馆，馆里住着吸血鬼姐妹。", finish_reason="stop"),
+        ]
+    )
     sm = SessionManager()
     sm.set_default_backend(backend)
     responder = Responder(sm)

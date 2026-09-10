@@ -17,6 +17,6 @@ class DefaultCounter:
     """
 
     def count(self, text: str) -> int:
-        chinese = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        chinese = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
         other = len(text) - chinese
         return int(chinese * 1.5 + other * 0.25)

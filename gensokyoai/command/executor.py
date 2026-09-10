@@ -1,14 +1,14 @@
 # commands/executor.py
-""" 命令执行器 """
+"""命令执行器"""
 
 from .context import CommandContext
-from .decorators import CommandDefinition, CommandRegistry, list_commands
+from .decorators import CommandDefinition, CommandRegistry
 from .parser import CommandParser, CommandType, ParsedCommand
-from .result import CommandResult, CommandStatus
+from .result import CommandResult
 
 
 class CommandExecutor:
-    """ 命令执行器 """
+    """命令执行器"""
 
     def __init__(
         self,
@@ -26,7 +26,7 @@ class CommandExecutor:
         return self._registry.get(name)
 
     def _sync_parser_tags(self) -> None:
-        """ 同步命令定义到解析器 """
+        """同步命令定义到解析器"""
         for cmd in self._iter_commands():
             self.parser.register_tag(cmd.name, cmd.aliases, cmd.type, cmd.description)
             self.parser.register_prefix(cmd.name, cmd.aliases, cmd.type, cmd.description)
@@ -36,7 +36,7 @@ class CommandExecutor:
         input_text: str,
         context: CommandContext,
     ) -> tuple[list[CommandResult], str]:
-        """ 执行命令
+        """执行命令
 
         Args:
             input_text: 用户输入文本

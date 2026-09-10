@@ -12,18 +12,20 @@ from gensokyoai.schemas.scene_schema import SceneSnapshot
 
 
 class _StubBackend:
-    """ 按脚本回话的假后端，记录每次调用的参数 """
+    """按脚本回话的假后端，记录每次调用的参数"""
 
     def __init__(self, replies: list[str]) -> None:
         self.replies = list(replies)
         self.calls: list[dict] = []
 
     async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
-        self.calls.append({
-            "messages": list(messages),
-            "max_new_tokens": max_new_tokens,
-            "temperature": temperature,
-        })
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature,
+            }
+        )
         content = self.replies.pop(0) if self.replies else ""
         return CompletionResult(content=content, finish_reason="stop")
 
@@ -32,7 +34,7 @@ class _StubBackend:
 
 
 def _make_world(backend: _StubBackend, **kwargs) -> TouhouWorld:
-    """ 组一个最小可测的 TouhouWorld（eye 只需要带 _stop_requested 属性）"""
+    """组一个最小可测的 TouhouWorld（eye 只需要带 _stop_requested 属性）"""
     sessions = SessionManager()
     sessions.set_default_backend(backend)
     character = Character(CharacterCard(name="幽幽子", system_prompt="白玉楼的主人是也"))
@@ -42,16 +44,23 @@ def _make_world(backend: _StubBackend, **kwargs) -> TouhouWorld:
 
 def _snapshot(content: str = "冥界有没有好吃的点心？") -> SceneSnapshot:
     return SceneSnapshot(
-        scene_type="private_chat", sender="灵梦", content=content, is_direct=True,
+        scene_type="private_chat",
+        sender="灵梦",
+        content=content,
+        is_direct=True,
     )
 
 
 # ---------- 过渡语门控 ----------
 
+
 def test_should_stall_gating():
     """仅 HIGH/MAX 档、非首回合、出了冷却期、掷中概率才垫过渡语"""
     world = _make_world(
-        _StubBackend([]), stall_probability=1.0, stall_cooldown_turns=3, stall_min_interval=0.0,
+        _StubBackend([]),
+        stall_probability=1.0,
+        stall_cooldown_turns=3,
+        stall_min_interval=0.0,
     )
     assert not world._should_stall(BrainThinkEffort.HIGH, 1), "首回合不垫"
     assert not world._should_stall(BrainThinkEffort.LOW, 5), "浅思考档不垫"
@@ -68,7 +77,10 @@ def test_should_stall_gating():
 def test_should_stall_time_interval():
     """时间间隔未到时不垫，即使回合冷却已过"""
     world = _make_world(
-        _StubBackend([]), stall_probability=1.0, stall_cooldown_turns=0, stall_min_interval=180.0,
+        _StubBackend([]),
+        stall_probability=1.0,
+        stall_cooldown_turns=0,
+        stall_min_interval=180.0,
     )
     world._stall_last_turn = 1
     world._stall_last_time = time.monotonic()
@@ -85,7 +97,10 @@ async def test_maybe_stall_prints_and_marks(capsys):
     """垫话走 responder 会话、小 token 生成、投递显示层并记冷却"""
     backend = _StubBackend(["唔……让我想想"])
     world = _make_world(
-        backend, stall_probability=1.0, stall_cooldown_turns=3, stall_min_interval=0.0,
+        backend,
+        stall_probability=1.0,
+        stall_cooldown_turns=3,
+        stall_min_interval=0.0,
     )
     await world._maybe_stall(_snapshot(), BrainThinkEffort.HIGH, 2)
 
@@ -108,6 +123,7 @@ async def test_maybe_stall_skipped_when_gated_off(capsys):
 
 async def test_maybe_stall_swallows_backend_failure():
     """过渡语生成失败不影响主链路"""
+
     class _Boom(_StubBackend):
         async def chat(self, messages, **kwargs):
             raise RuntimeError("模型不可用")
@@ -117,6 +133,7 @@ async def test_maybe_stall_swallows_backend_failure():
 
 
 # ---------- OOC 守门 ----------
+
 
 async def test_guard_ooc_passes_clean_reply():
     """干净回复零额外调用直接放行"""
@@ -159,6 +176,7 @@ async def test_guard_ooc_disabled_by_knob():
 
 
 # ---------- OOC 后置深审 ----------
+
 
 async def test_audit_reply_records_stats():
     """深审结论回写角色状态并喂 ooc.rate 健康指标"""

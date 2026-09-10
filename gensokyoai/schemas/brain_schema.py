@@ -1,17 +1,21 @@
-""" Brain 决策层的数据契约 """
+"""Brain 决策层的数据契约"""
 
 from enum import Enum
 from typing import Literal
+
 import msgspec
+
 from .memory_schema import MemoryItem
 
+
 class BrainThinkEffort(Enum):
-    """ 模型大脑推理力度 """
-    OFF = "off"   # 快速路径，几乎不思考，直接透传
-    LOW = "low"   # 1轮思考
-    MID = "mid"   # 3轮思考
-    HIGH = "high" # 5轮思考
-    MAX = "max"   # 不限制轮数（由用户强制结束或达到 tokens 上限）
+    """模型大脑推理力度"""
+
+    OFF = "off"  # 快速路径，几乎不思考，直接透传
+    LOW = "low"  # 1轮思考
+    MID = "mid"  # 3轮思考
+    HIGH = "high"  # 5轮思考
+    MAX = "max"  # 不限制轮数（由用户强制结束或达到 tokens 上限）
 
 
 Verdict = Literal["pass_through", "draft"]
@@ -19,7 +23,8 @@ Verdict = Literal["pass_through", "draft"]
 
 
 class ReasoningStep(msgspec.Struct, frozen=True):
-    """ 单轮思考的中间状态（用于日志和状态追踪） """
+    """单轮思考的中间状态（用于日志和状态追踪）"""
+
     round: int = 0
     """ 当前思考轮数 """
     thought: str = ""
@@ -37,7 +42,8 @@ class ReasoningStep(msgspec.Struct, frozen=True):
 
 
 class BrainConclusion(msgspec.Struct, frozen=True):
-    """ Brain 产出给 Responder 的结构化结论（事件总线核心载荷，架构文档 §8.2）"""
+    """Brain 产出给 Responder 的结构化结论（事件总线核心载荷，架构文档 §8.2）"""
+
     verdict: Verdict = "pass_through"
     """ 结论类型 """
     intent: str = ""
@@ -61,7 +67,8 @@ class BrainConclusion(msgspec.Struct, frozen=True):
 
 
 class OOCVerdict(msgspec.Struct, frozen=True):
-    """ OOC 检测结论 """
+    """OOC 检测结论"""
+
     is_ooc: bool = False
     """ 是否判定 OOC """
     confidence: float = 0.0

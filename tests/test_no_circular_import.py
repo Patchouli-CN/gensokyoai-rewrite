@@ -21,8 +21,13 @@ FORBIDDEN_CROSS_IMPORTS = {
 }
 
 CORE_TOP_FORBIDDEN = {
-    "core/brain", "core/responder", "core/memorizer", "core/health",
-    "eyes", "roleplay", "models",
+    "core/brain",
+    "core/responder",
+    "core/memorizer",
+    "core/health",
+    "eyes",
+    "roleplay",
+    "models",
 }
 """ core 顶层基建（session_manager/event_bus/...）只准依赖 schemas/prompts/utils """
 
@@ -85,7 +90,8 @@ def test_no_cross_business_imports():
         for py_file in _py_files(module):
             own = _own_key(py_file)
             targets = _resolve_targets(
-                ast.parse(py_file.read_text(encoding="utf-8")), _package_of(py_file),
+                ast.parse(py_file.read_text(encoding="utf-8")),
+                _package_of(py_file),
             )
             bad = {t for t in targets if t in forbidden and t != own}
             assert not bad, f"❌ {py_file} 非法导入业务模块: {bad}"
@@ -95,7 +101,8 @@ def test_utils_is_leaf():
     """utils 是纯叶子，不依赖项目内任何模块"""
     for py_file in _py_files("utils"):
         targets = _resolve_targets(
-            ast.parse(py_file.read_text(encoding="utf-8")), _package_of(py_file),
+            ast.parse(py_file.read_text(encoding="utf-8")),
+            _package_of(py_file),
         )
         bad = targets - {"utils"}
         assert not bad, f"❌ {py_file} 依赖了项目内模块: {bad}"
@@ -106,7 +113,8 @@ def test_core_top_infra_only():
     for py_file in _py_files("core"):
         own = _own_key(py_file)
         targets = _resolve_targets(
-            ast.parse(py_file.read_text(encoding="utf-8")), _package_of(py_file),
+            ast.parse(py_file.read_text(encoding="utf-8")),
+            _package_of(py_file),
         )
         bad = {t for t in targets if t in CORE_TOP_FORBIDDEN and t != own}
         assert not bad, f"❌ {py_file} 非法依赖: {bad}"

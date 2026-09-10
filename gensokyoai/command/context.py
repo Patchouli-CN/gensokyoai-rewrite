@@ -1,4 +1,4 @@
-""" 命令执行上下文 """
+"""命令执行上下文"""
 
 from typing import TypeVar
 
@@ -9,8 +9,8 @@ from .permission import PermissionLevel
 T = TypeVar("T")
 
 
-class CommandContext(Struct,frozen=False):
-    """ 命令执行上下文 """
+class CommandContext(Struct, frozen=False):
+    """命令执行上下文"""
 
     source: str = "console"
     """ 来源标识 """
@@ -20,4 +20,3 @@ class CommandContext(Struct,frozen=False):
     """ 附加元数据 """
     permission: PermissionLevel = PermissionLevel.OWNER
     """ 调用方权限级别 """
-    

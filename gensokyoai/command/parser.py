@@ -1,5 +1,5 @@
 # commands/parser.py
-""" 命令解析器 —— 支持标签和前缀两种模式 """
+"""命令解析器 —— 支持标签和前缀两种模式"""
 
 import re
 from collections.abc import Callable
@@ -9,16 +9,16 @@ from msgspec import Struct, field
 
 
 class CommandType(Enum):
-    """ 命令类型 """
+    """命令类型"""
 
-    SYSTEM = auto()   # 系统命令 (exit, save, etc.)
-    CHAT = auto()     # 聊天命令 (think, whisper)
-    PROMPT = auto()   # 提示词命令 (know, meta, attention)
-    CUSTOM = auto()   # 自定义命令
+    SYSTEM = auto()  # 系统命令 (exit, save, etc.)
+    CHAT = auto()  # 聊天命令 (think, whisper)
+    PROMPT = auto()  # 提示词命令 (know, meta, attention)
+    CUSTOM = auto()  # 自定义命令
 
 
 class TagDefinition:
-    """ 标签定义 """
+    """标签定义"""
 
     def __init__(
         self,
@@ -40,7 +40,7 @@ class TagDefinition:
 
 
 class ParsedCommand(Struct):
-    """ 解析后的命令 """
+    """解析后的命令"""
 
     type: CommandType
     name: str
@@ -50,7 +50,7 @@ class ParsedCommand(Struct):
 
 
 class CommandParser:
-    """ 命令解析器 """
+    """命令解析器"""
 
     def __init__(self, mode: str = "smart"):
         self.mode = mode
@@ -64,8 +64,8 @@ class CommandParser:
         cmd_type: CommandType = CommandType.CUSTOM,
         description: str = "",
         handler: Callable | None = None,
-    ) -> "CommandParser":
-        """ 注册标签命令 <tag>content</tag> """
+    ) -> CommandParser:
+        """注册标签命令 <tag>content</tag>"""
         tag = TagDefinition(name, aliases, cmd_type, description, handler)
         for n in tag.all_names:
             self._tags[n.lower()] = tag
@@ -78,15 +78,15 @@ class CommandParser:
         cmd_type: CommandType = CommandType.CUSTOM,
         description: str = "",
         handler: Callable | None = None,
-    ) -> "CommandParser":
-        """ 注册前缀命令 /command """
+    ) -> CommandParser:
+        """注册前缀命令 /command"""
         tag = TagDefinition(name, aliases, cmd_type, description, handler)
         for n in tag.all_names:
             self._prefix_commands[n.lower()] = tag
         return self
 
     def parse(self, text: str) -> list[ParsedCommand]:
-        """ 解析文本中的所有命令 """
+        """解析文本中的所有命令"""
         commands = []
 
         # 1. 解析标签模式 <tag>content</tag> 和 <tag content />
@@ -131,7 +131,7 @@ class CommandParser:
         return commands
 
     def extract_clean_text(self, text: str) -> str:
-        """ 提取纯文本（移除所有命令标签） """
+        """提取纯文本（移除所有命令标签）"""
         # 移除标签
         tag_pattern = r"<[^>]+>.*?</[^>]+>|<[^>]+/>"
         text = re.sub(tag_pattern, "", text, flags=re.DOTALL)

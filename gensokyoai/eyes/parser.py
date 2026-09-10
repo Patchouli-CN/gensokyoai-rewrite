@@ -1,11 +1,12 @@
-""" 消息解析：平台原始消息 -> SceneEvent / SceneSnapshot """
+"""消息解析：平台原始消息 -> SceneEvent / SceneSnapshot"""
 
 import time
 
 from ..schemas.scene_schema import SceneEvent, SceneSnapshot, SceneType
 
+
 def parse_message(raw: dict) -> SceneEvent:
-    """ 解析平台原始消息为标准事件。
+    """解析平台原始消息为标准事件。
 
     支持 OneBot11 事件（含 post_type/raw_message 字段）与
     通用字典（{"sender", "content", "time"?}）两种形态。
@@ -32,6 +33,7 @@ def parse_message(raw: dict) -> SceneEvent:
 
     return SceneEvent(sender=sender, content=content, timestamp=float(raw.get("time", 0) or 0))
 
+
 def build_snapshot(
     scene_type: SceneType,
     events: list[SceneEvent],
@@ -40,7 +42,7 @@ def build_snapshot(
     content: str = "",
     is_direct: bool = False,
 ) -> SceneSnapshot:
-    """ 把一组事件打包成场景快照。
+    """把一组事件打包成场景快照。
 
     Args:
         scene_type: 场景类型
