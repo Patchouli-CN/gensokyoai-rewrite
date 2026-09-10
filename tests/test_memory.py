@@ -48,7 +48,9 @@ async def test_distill_flow():
 
     old = mgr.oldest(4)
     assert len(old) == 4
-    summary = MemoryItem(topic="对话摘要", content="前4条的概要", memory_type="fact", importance=0.7)
+    summary = MemoryItem(
+        topic="对话摘要", content="前4条的概要", memory_type="fact", importance=0.7
+    )
     await mgr.store(summary)
     mgr.forget([m.memory_id for m in old])
 

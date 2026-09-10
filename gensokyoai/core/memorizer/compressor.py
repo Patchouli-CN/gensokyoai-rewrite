@@ -1,20 +1,21 @@
-""" 记忆摘要压缩（架构文档 §3.4）"""
+"""记忆摘要压缩（架构文档 §3.4）"""
 
-from ..session_manager import SessionManager
 from ...prompts import prompt_mgr
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message
 from ...utils.logger import LoggerManager
+from ..session_manager import SessionManager
+
 
 class Compressor:
-    """ 把一批记忆压成一段概要，控制记忆模块膨胀 """
+    """把一批记忆压成一段概要，控制记忆模块膨胀"""
 
     def __init__(self, sessions: SessionManager) -> None:
         self._logger = LoggerManager.get_logger("MEMORY")
         self._sessions = sessions
 
     async def compress(self, entries: list[MemoryItem]) -> str:
-        """ 无状态调用模型，把一批记忆压成概要文本。
+        """无状态调用模型，把一批记忆压成概要文本。
 
         Args:
             entries: 待压缩的记忆条目
