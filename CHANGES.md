@@ -6,6 +6,33 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.18] - 2026/9/9
+
+### 修复
+ - **纯内存模式会偷偷落盘**：`MemoryManager` 在不给 `storage_dir`/`session_id` 时，
+   长期记忆路径仍被写成相对路径 `long_memory.json`（即**当前工作目录**），
+   与「同时省略表示不落盘」的说明相悖 —— 表现就是跑完测试仓库根多出一个
+   `long_memory.json`。现在纯内存模式 `long_path = None`，冷记忆只留进程内。
+ - **`LongMemoryStore` 默认值改为「不落盘」**：`file_path` 默认由 `"long_memory.json"`
+   改为 `None`，误用 `LongMemoryStore()` 不再悄悄在 CWD 写出文件；
+   新增 `path` 属性（纯内存模式返回 `None`）便于断言与观测。
+ - **长期记忆归档到子目录时静默失败**（连带发现的真缺陷）：`_sync_to_disk` 从未创建
+   父目录，归档到 `<storage_dir>/<session_id>/long_memory.json` 时目录不存在，
+   抛出的 `FileNotFoundError` 被兜底 `except` 吞掉 —— 表现为「日志说归档成功，
+   但文件永远不出现」。现在写入前 `mkdir(parents=True, exist_ok=True)`，
+   失败日志也带上完整路径。
+
+### 变更
+ - `app.build_world` 支持 `storage_dir` 透传（CLI / 测试可指定持久化根目录，
+   不再被迫落到 CWD 的 `data/`）
+
+### 测试
+ - 新增：纯内存模式绝不落盘（跑完断言 CWD 无文件）、给了 `storage_dir` 时
+   落盘位置必须是 `<dir>/<session_id>/`（原先该断言带 `or True`，形同虚设，已收紧）
+ - 测试卫生：`test_app` 的世界装配、`test_stall_and_ooc` 的存储根目录
+   一律指向 `tests/temp/`，跑完仓库根不再出现 `long_memory.json` / `data/`
+ - 全部 210 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.17] - 2026/9/9
 
 ### 修复
