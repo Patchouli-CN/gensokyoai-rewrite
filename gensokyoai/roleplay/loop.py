@@ -63,6 +63,8 @@ class TouhouWorld:
         stall_min_interval: float = 180.0,
         ooc_retry: bool = True,
         ooc_audit: bool = True,
+        tool_timeout: float = 10.0,
+        tool_max_result_chars: int = 2000,
         session_id: str = "default",
         storage_dir: str | Path = "data",
         persistence=None,
@@ -100,7 +102,20 @@ class TouhouWorld:
         self.session_id = session_id
         """ 会话标识：记忆与快照按它隔离 """
         self.memory = MemoryManager(storage_dir=storage_dir, session_id=session_id)
-        self.health = HealthMonitor(bus=self.bus)
+        self.health = HealthMonitor(
+            bus=self.bus,
+            session_provider=self._session_health,
+        )
+        """ 健康监控 + 主动干预（见 §3.5）"""
+
+        # --- 健康干预：把「监控」接成「动作」（装配层注册，core/health 不反向依赖）---
+        self.health.register_intervention("session.context_usage", self._on_context_pressure)
+        self.health.register_intervention("ooc.rate", self._on_ooc_spike)
+        self._effort_floor: BrainThinkEffort | None = None
+        """ OOC 飙升时抬高的推理档位下限；审计恢复健康后清除 """
+        self._last_total_tokens = 0
+        """ 上次采集的累计 token，用于算回合增量 """
+
         self.compressor = Compressor(sessions)
 
         # --- 组装工具：注册表（内置） + 外部传入 ---
@@ -109,7 +124,12 @@ class TouhouWorld:
         # 初始化业务模块
         self.ooc = OOCDetector(self.sessions)
         self.brain = BrainEngine(
-            sessions=self.sessions, persona=character.prompt, ooc=self.ooc, tools=all_tools
+            sessions=self.sessions,
+            persona=character.prompt,
+            ooc=self.ooc,
+            tools=all_tools,
+            tool_timeout=tool_timeout,
+            tool_max_result_chars=tool_max_result_chars,
         )
 
         self.responder = Responder(sessions=self.sessions, persona=character.prompt)
@@ -255,7 +275,7 @@ class TouhouWorld:
                 try:
                     # 2. 决策阶段 (Brain)；深思考前先垫一句角色过渡语遮延迟
                     memories = await self.memory.recent(5)
-                    effort = route(snapshot)
+                    effort = self._apply_effort_floor(route(snapshot))
                     await self._maybe_stall(snapshot, effort, turn)
                     conclusion = await self.brain.think(snapshot, memories, effort)
 
@@ -326,7 +346,11 @@ class TouhouWorld:
             )
 
     async def _record_health(self, turn: int, effort, t_start: float) -> None:
-        """回合粒度的健康指标喂食"""
+        """回合粒度的健康指标喂食：档位分布 / 记忆规模 / 延迟 / token / 上下文占用率"""
+        total = self.sessions.total_usage()
+        turn_tokens = (total.prompt_tokens + total.completion_tokens) - self._last_total_tokens
+        self._last_total_tokens = total.prompt_tokens + total.completion_tokens
+
         await self.health.record(
             {
                 "turn.count": 1,
@@ -336,6 +360,42 @@ class TouhouWorld:
             }
         )
         await self.health.record_metric("turn.latency_s", time.monotonic() - t_start, unit="s")
+        await self.health.record_metric("turn.tokens", float(turn_tokens), unit="tok")
+        await self.health.record_metric(
+            "session.context_usage", self.sessions.context_usage("responder"), unit="ratio"
+        )
+
+    def _session_health(self) -> dict[str, float]:
+        """会话摘要（供健康报告采集；作为回调注入，避免 core/health 反向依赖）。"""
+        return {
+            "total": float(len(self.sessions.owners())),
+            "context_usage": self.sessions.context_usage("responder"),
+        }
+
+    async def _on_context_pressure(self, alert) -> None:
+        """干预：上下文占用过高 → 立刻做一次记忆蒸馏，给窗口腾地方。"""
+        value = alert.metric.value if alert.metric else 0.0
+        self.logger.warning(f"上下文占用过高（{value:.0%}），触发记忆蒸馏")
+        await self._distill()
+
+    async def _on_ooc_spike(self, alert) -> None:
+        """干预：出戏率飙升 → 抬高档位下限（文档 §3.5「自动调参」）。"""
+        value = alert.metric.value if alert.metric else 0.0
+        self.logger.warning(f"出戏率偏高（{value:.2f}），推理档位下限抬到 HIGH")
+        self._effort_floor = BrainThinkEffort.HIGH
+
+    def _apply_effort_floor(self, effort: BrainThinkEffort) -> BrainThinkEffort:
+        """把路由结果抬到干预设定的档位下限（无下限时原样返回）。"""
+        if self._effort_floor is None:
+            return effort
+        order = {
+            BrainThinkEffort.OFF: 0,
+            BrainThinkEffort.LOW: 1,
+            BrainThinkEffort.MID: 2,
+            BrainThinkEffort.HIGH: 3,
+            BrainThinkEffort.MAX: 4,
+        }
+        return effort if order[effort] >= order[self._effort_floor] else self._effort_floor
 
     def _should_stall(self, effort: BrainThinkEffort, turn: int) -> bool:
         """是否值得垫过渡语：仅深思考档、非开局、出了冷却期、再掷中概率。
@@ -478,6 +538,10 @@ class TouhouWorld:
             )
             self.character.status.update(ooc_audited=audited, ooc_hits=hits)
             await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
+            if not verdict.is_ooc and self._effort_floor is not None:
+                # 审计恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
+                self._effort_floor = None
+                self.logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
         except Exception:
             self.logger.exception("OOC 深审失败（不影响主链路）")
 

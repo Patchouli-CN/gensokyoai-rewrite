@@ -1,5 +1,38 @@
 # GensokyoAI 配置文件
-model:
+#
+# 注意：键名必须与 GensokyoConfig 的字段名一致（default_model / brain / responder /
+# ooc / memorizer / resource）。此前这里写的是 `model:`，与字段名 `default_model`
+# 不匹配，msgspec 会静默忽略未知键 —— 等于什么都没配。
+default_model:
   provider: "llama_cpp"
   base_url: "http://127.0.0.1:8080/v1"
   model_name: "qwen"
+  think: false
+  streaming: true
+  context_window: 32768
+  reserve_for_output: 2048
+  tool_timeout: 10.0
+  tool_max_result_chars: 2000
+
+brain:
+  provider: "llama_cpp"
+  base_url: "http://127.0.0.1:8080/v1"
+  model_name: "qwen"
+  think: false
+
+responder:
+  provider: "llama_cpp"
+  base_url: "http://127.0.0.1:8080/v1"
+  model_name: "qwen"
+  think: false
+
+# 资源闸门：保护本地单模型（串行稀缺资源）
+resource:
+  enabled: true
+  max_concurrent: 1
+  rpm: 0
+  concurrency: 1
+  calls_per_day: 0
+  tokens_per_day: 0
+  ingress_rate: 0.0
+  ingress_burst: 0
