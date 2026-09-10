@@ -6,6 +6,23 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.15] - 2026/9/9
+
+### 变更
+ - **`BrainConclusion` 把两种「思考」分开存**（此前混为一谈、且原生思考被直接丢弃）：
+   - `_reasoning` = **工程实现**的思考：接力思考协议**收束轮**的 `thought`，
+     对外经只读属性 **`reasoning`** 暴露 —— 既有访问点（如测试断言）**无需改动**
+   - `_raw_reasoning` = **模型原生 thinking**：逐轮拼接，`think: true` 时才有，
+     对外经只读属性 **`raw_reasoning`** 暴露
+   - `_relay_think` 此前只读 `result.content`、**从不读 `result.reasoning`**，
+     原生思考段白丢；现在会逐轮收集
+   - `BrainConclusion` 不参与序列化（仅进程内传递），故 `_` 私有名不会漏进文件
+
+### 测试
+ - 新增 3 例：两种思考默认 None 且互不污染、工程实现与原生思考分别落到各自字段、
+   多轮接力时原生思考逐轮拼接而工程实现只留收束轮
+ - 全部 195 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.14] - 2026/9/9
 
 ### 新增
