@@ -57,3 +57,33 @@ async def test_distill_flow():
     assert mgr.work_mem_size == 4, "应为 2 条剩余旧记忆 + 1 条新记忆 + 1 条摘要"
     recent = await mgr.recent(1)
     assert recent[0].content == "前4条的概要"
+
+
+async def test_pure_memory_mode_never_touches_disk(tmp_path, monkeypatch):
+    """纯内存模式（不传 storage_dir/session_id）绝不落盘
+
+    回归：此前它把长期记忆写到 **CWD 下的 `long_memory.json`** ——
+    与「None 表示不落盘」的说明相悖，也是测试跑完仓库根多出该文件的元凶
+    （`LongMemoryStore` 构造时还会读回旧文件，于是污染跨次累积）。
+    """
+    monkeypatch.chdir(tmp_path)
+    mgr = MemoryManager()
+    assert mgr._long_mem_store.path is None, "纯内存模式不应有落盘路径"
+
+    # importance >= 0.6 会触发长期归档 —— 正是会写盘的那条路径
+    await mgr.store(MemoryItem(content="核心设定", importance=0.95))
+
+    assert mgr.long_mem_size == 1, "内存归档仍应生效"
+    assert not (tmp_path / "long_memory.json").exists(), "纯内存模式不应创建文件"
+
+
+async def test_file_backed_mode_writes_under_storage_dir(tmp_path, monkeypatch):
+    """给了 storage_dir 时才落盘，且落在 <dir>/<session_id>/ 下（不是 CWD）"""
+    monkeypatch.chdir(tmp_path)
+    mgr = MemoryManager(storage_dir=tmp_path, session_id="s1")
+
+    assert mgr._long_mem_store.path == tmp_path / "s1" / "long_memory.json"
+    await mgr.store(MemoryItem(content="核心设定", importance=0.95))
+
+    assert (tmp_path / "s1" / "long_memory.json").exists()
+    assert not (tmp_path / "long_memory.json").exists(), "不应落到 CWD"

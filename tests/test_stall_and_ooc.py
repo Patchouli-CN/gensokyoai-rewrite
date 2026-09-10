@@ -2,6 +2,7 @@
 
 import time
 import types
+from pathlib import Path
 
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.roleplay.character import Character, CharacterCard
@@ -9,6 +10,9 @@ from gensokyoai.roleplay.loop import TouhouWorld
 from gensokyoai.schemas.brain_schema import BrainThinkEffort, OOCVerdict
 from gensokyoai.schemas.model_schema import CompletionResult
 from gensokyoai.schemas.scene_schema import SceneSnapshot
+
+_TMP_DIR = Path(__file__).resolve().parent / "temp" / "stall-ooc"
+""" 测试用存储目录：放在 tests/temp 下（已 gitignore），不往仓库根写 data/、long_memory.json """
 
 
 class _StubBackend:
@@ -39,6 +43,7 @@ def _make_world(backend: _StubBackend, **kwargs) -> TouhouWorld:
     sessions.set_default_backend(backend)
     character = Character(CharacterCard(name="幽幽子", system_prompt="白玉楼的主人是也"))
     eye = types.SimpleNamespace(_stop_requested=True)
+    kwargs.setdefault("storage_dir", _TMP_DIR)
     return TouhouWorld(eye=eye, character=character, sessions=sessions, **kwargs)
 
 

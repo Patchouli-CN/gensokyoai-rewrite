@@ -16,6 +16,7 @@ import asyncio
 import sys
 from importlib.resources import files
 from pathlib import Path
+from typing import Any
 
 from .core.bootstrap import discover_all
 from .core.config import load_config
@@ -108,6 +109,7 @@ def build_world(
     gate: ResourceGate | None = None,
     eye: Perceiver | None = None,
     mouth: Mouth | None = None,
+    storage_dir: str | Path | None = None,
 ) -> TouhouWorld:
     """按配置装配一个可直接 `start()` 的世界（CLI / 测试共用）。
 
@@ -118,6 +120,7 @@ def build_world(
         gate: 资源闸门；None 时按配置自建
         eye: 感知器；None 时用控制台感知器
         mouth: 口层；None 时用控制台口层
+        storage_dir: 持久化根目录；None 用 TouhouWorld 默认（当前工作目录下的 `data`）
 
     Returns:
         TouhouWorld: 装配完成、可直接启动的世界
@@ -125,12 +128,16 @@ def build_world(
     sessions, character = build_session_and_character(
         config_path=config_path, character_path=character_path, gate=gate
     )
+    world_kwargs: dict[str, Any] = {}
+    if storage_dir is not None:
+        world_kwargs["storage_dir"] = storage_dir
     return TouhouWorld(
         eye=eye if eye is not None else ConsolePerceiver(sender="你"),
         character=character,
         sessions=sessions,
         mouth=mouth if mouth is not None else ConsoleMouth(),
         session_id=session_id,
+        **world_kwargs,
     )
 
 

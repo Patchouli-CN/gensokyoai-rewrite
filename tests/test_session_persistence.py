@@ -125,11 +125,14 @@ def test_memory_session_id_mismatch_raises():
         MemoryManager(session_id="s1")
 
 
-def test_memory_scoped_long_memory_path(tmp_path):
+async def test_memory_scoped_long_memory_path(tmp_path):
     """提供 session_id 时长期记忆落到 <dir>/<session_id>/long_memory.json"""
     mem = MemoryManager(storage_dir=tmp_path, session_id="abc")
-    assert (tmp_path / "abc" / "long_memory.json").exists() or True  # 懒创建
-    assert mem._long_mem_store._file_path == tmp_path / "abc" / "long_memory.json"
+    assert mem._long_mem_store.path == tmp_path / "abc" / "long_memory.json"
+
+    # 归档一条高重要性记忆后文件真的出现（懒创建）
+    await mem.store(MemoryItem(topic="t", content="核心设定", importance=0.95))
+    assert (tmp_path / "abc" / "long_memory.json").exists()
 
 
 # ---------- SessionManager 导出/导入 ----------

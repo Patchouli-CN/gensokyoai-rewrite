@@ -66,7 +66,7 @@ def test_build_session_and_character_returns_assembled_pair():
         assert owner in sessions._backends
 
 
-def test_build_world_uses_injected_io_and_session_id():
+def test_build_world_uses_injected_io_and_session_id(tmp_path):
     """注入的 eye/mouth 被采用，session_id 透传"""
     from gensokyoai.eyes.queue import QueuePerceiver
     from gensokyoai.mouth.broadcast import BroadcastMouth
@@ -78,6 +78,7 @@ def test_build_world_uses_injected_io_and_session_id():
         eye=eye,
         mouth=mouth,
         session_id="t-app",
+        storage_dir=tmp_path,
     )
 
     assert world.eye is eye
@@ -85,7 +86,7 @@ def test_build_world_uses_injected_io_and_session_id():
     assert world.session_id == "t-app"
 
 
-def test_build_world_defaults_to_console_io():
+def test_build_world_defaults_to_console_io(tmp_path):
     """不注入时默认给控制台感知器与口层"""
     from gensokyoai.eyes.perceiver import ConsolePerceiver
     from gensokyoai.mouth.console import ConsoleMouth
@@ -93,6 +94,7 @@ def test_build_world_defaults_to_console_io():
     world = build_world(
         config_path=_ROOT / DEFAULT_CONFIG,
         character_path=_ROOT / DEFAULT_CHARACTER,
+        storage_dir=tmp_path,
     )
     assert isinstance(world.eye, ConsolePerceiver)
     assert isinstance(world.mouth, ConsoleMouth)

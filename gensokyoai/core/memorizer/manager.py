@@ -51,11 +51,15 @@ class MemoryManager:
         # --- 长期记忆（冷）：JSON 落盘，按会话隔离 ---
         if (storage_dir is None) != (session_id is None):
             raise ValueError("storage_dir 与 session_id 必须同时提供")
+        long_path: Path | None
         if session_id is not None:
             assert storage_dir is not None  # 上面已校验两者成对出现
             long_path = Path(storage_dir) / session_id / "long_memory.json"
         else:
-            long_path = Path("long_memory.json")
+            # 纯内存模式：冷记忆只留进程内。此前这里指向 CWD 下的
+            # `long_memory.json`，与「None 表示不落盘」的说明相悖，
+            # 也是测试跑完仓库根多出该文件的元凶
+            long_path = None
         self.session_id = session_id or "default"
         """ 会话标识（纯内存模式固定为 default）"""
         self._long_mem_store = LongMemoryStore(long_path)
