@@ -32,6 +32,27 @@ class ModelSettings(msgspec.Struct, frozen=True):
     """ 给生成预留的 token 数 """
 
 
+class ResourceSettings(msgspec.Struct, frozen=True):
+    """资源闸门 / 限流配置（保护单模型稀缺资源）"""
+
+    enabled: bool = True
+    """ 是否启用资源闸门 """
+    max_concurrent: int = 1
+    """ 全局并发上限（本地单模型建议 1，避免并发打爆显存）"""
+    rpm: int = 0
+    """ 每租户每分钟模型调用上限；0 不限 """
+    concurrency: int = 1
+    """ 每租户并发上限 """
+    calls_per_day: int = 0
+    """ 每租户每日模型调用上限；0 不限 """
+    tokens_per_day: int = 0
+    """ 每租户每日 token 预算；0 不限 """
+    ingress_rate: float = 0.0
+    """ 入口令牌桶速率（条/秒）；0 表示关闭入口限流 """
+    ingress_burst: int = 0
+    """ 入口令牌桶容量（允许的突发条数）"""
+
+
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """顶层配置"""
 
@@ -49,6 +70,9 @@ class GensokyoConfig(msgspec.Struct, frozen=True):
 
     memorizer: ModelSettings | None = None
     """ 记忆压缩使用的模型（可选，默认用 brain）"""
+
+    resource: ResourceSettings = ResourceSettings()
+    """ 资源闸门 / 限流配置 """
 
 
 def load_config(path: str | Path) -> GensokyoConfig:

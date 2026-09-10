@@ -14,6 +14,7 @@ from .model_schema import (
     Usage,
 )
 from .prompt_schema import Prompt
+from .quota_schema import TenantQuota
 from .scene_schema import SceneEvent, SceneSnapshot, SceneType
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "SceneSnapshot",
     "SceneType",
     "StreamEvent",
+    "TenantQuota",
     "ToolCall",
     "ToolSpec",
     "EventTopic",
