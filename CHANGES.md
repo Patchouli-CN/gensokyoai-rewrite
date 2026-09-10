@@ -6,6 +6,37 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.19] - 2026/9/9
+
+### 修复
+ - **fire-and-forget 任务可能被 GC 回收**（`asyncio` 只对任务持**弱引用**）：
+   `create_task()` 的返回值无人接住时，任务可能在执行途中被垃圾回收 ——
+   官方文档对此有明确警告，表现是「跑一半消失」「`finally` 不执行」
+   「`await` 之后的代码永不运行」，而且**一点报错都没有**。
+   新增 `utils/tasks.py::TaskRegistry`（登记强引用 / 结束自动摘除 / 异常统一记录 /
+   `drain()` 与 `cancel_all()` 收尾），全项目 5 处裸 `create_task` 全部改走登记处：
+   - `TouhouWorld`：记忆投递（每回合 2 个）、记忆蒸馏、OOC 深审
+   - `MemoryManager`：淘汰转存（登记处由世界注入，与侧链一起 drain）
+   - `SessionPersister`：`_save_loop` —— 它的 `_saving` 标志在任务 `finally` 里复位，
+     任务若被回收，标志永远停在 `True`，**此后所有落盘静默失效**
+ - **关闭时在飞的保存会覆盖最终快照**（实测确认的数据丢失）：`flush()` 此前只清脏标记，
+   没管已经卡在合并窗口 `sleep` 里的保存在飞任务；它醒来后仍会无条件执行一次
+   `_write_snapshot()`，拿关闭后（会话已清空）的状态覆盖刚写好的好存档。
+   **探针实测：`responder_messages` 2 条 → 0 条，历史对话全丢。**
+   现在 `flush()` 先 `cancel_all()` 再写最终快照。
+
+### 新增
+ - `utils/tasks.py`：`TaskRegistry`（`spawn` / `pending` / `names` / `drain` / `cancel_all`）
+ - `TouhouWorld(shutdown_drain_timeout=2.0)`：关闭时等待后台侧链自然收尾的秒数，
+   超时则取消（不让慢蒸馏把关闭流程拖死）；`drain` 循环等待，覆盖任务链上新 spawn 的任务
+
+### 测试
+ - 新增 8 例：登记处强引用不变式（丢掉返回值 + 主动 `gc.collect()` 仍跑完）、
+   任务异常被记录、取消不记 ERROR、`drain` 连带等到派生任务、超时取消且 `finally` 照跑、
+   无事件循环时报错、`flush` 取消在飞保存（**已验证修复前该用例失败**）、
+   世界关闭后无遗留后台任务且两回合 4 条对话记忆不丢
+ - 全部 218 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.18] - 2026/9/9
 
 ### 修复
