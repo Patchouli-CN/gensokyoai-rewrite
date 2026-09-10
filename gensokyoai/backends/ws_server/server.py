@@ -12,14 +12,17 @@
 - **输出流式**：角色说话经 `BroadcastMouth` 逐帧广播，多端同步看到「逐字蹦」
 """
 
+import argparse
 import asyncio
+import sys
 
 from aiohttp import WSMsgType, web
 
+from ...app import build_session_and_character
 from ...core.resource import IngressLimiter
 from ...roleplay.hub import ChannelHub
 from ...schemas.scene_schema import SceneType
-from ...utils.logger import LoggerManager
+from ...utils.logger import LoggerManager, setup_logging
 from ...utils.text import strip_control_chars
 
 _logger = LoggerManager.get_logger("WS")
@@ -148,20 +151,35 @@ async def serve(
     return runner
 
 
-async def _demo() -> None:  # pragma: no cover - 手动运行入口
-    """最小可跑示例：本地起一个控制台配置的世界 + WS 服务。"""
-    from ...core.bootstrap import discover_all
-    from ...core.config import load_config
-    from ...core.session_factory import build_resource_gate, build_session_manager
-    from ...roleplay.character import load_character
+def build_parser() -> argparse.ArgumentParser:
+    """构建 WS 服务命令行解析器。
 
-    discover_all()
-    config = load_config("config/settings.yaml")
-    gate = build_resource_gate(config)
-    sessions = build_session_manager(config, gate)
-    character = load_character("config/roles/SaigyoujiYuyuko.yaml")
-    hub = ChannelHub(sessions=sessions, character=character)
-    runner = await serve(hub, limiter=IngressLimiter(rate=1.0, burst=3))
+    Returns:
+        argparse.ArgumentParser: 解析器
+    """
+    parser = argparse.ArgumentParser(
+        prog="gensokyoai-ws",
+        description="幻想乡 AI 角色扮演引擎（WebSocket 多路频道模式）",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="监听地址")
+    parser.add_argument("--port", type=int, default=8081, help="监听端口")
+    parser.add_argument("--config", default=None, help="配置文件路径（默认用仓库/包内自带）")
+    parser.add_argument("--character", default=None, help="角色卡路径（默认用仓库/包内自带）")
+    parser.add_argument("--log-level", default="INFO", help="日志级别")
+    parser.add_argument("--idle-ttl", type=float, default=600.0, help="频道空闲回收秒数")
+    return parser
+
+
+async def run_server(hub: ChannelHub, *, host: str, port: int, limiter=None) -> None:
+    """起服务并常驻，直到被取消（关闭时回收频道与 runner）。
+
+    Args:
+        hub: 频道中枢
+        host: 监听地址
+        port: 监听端口
+        limiter: 入口令牌桶
+    """
+    runner = await serve(hub, host=host, port=port, limiter=limiter)
     try:
         await asyncio.Event().wait()
     finally:
@@ -169,5 +187,45 @@ async def _demo() -> None:  # pragma: no cover - 手动运行入口
         await runner.cleanup()
 
 
+def main(argv: list[str] | None = None) -> int:
+    """WS 服务入口（`[project.scripts]` 的 `gensokyoai-ws` 指向这里）。
+
+    装配复用 `gensokyoai.app.build_world`，不再复制一份装配逻辑。
+
+    Args:
+        argv: 命令行参数；None 时取 `sys.argv[1:]`
+
+    Returns:
+        int: 进程退出码（0 正常，2 资源缺失）
+    """
+    args = build_parser().parse_args(argv)
+    setup_logging(args.log_level, True, None)
+    logger = LoggerManager.get_logger("WS")
+
+    try:
+        sessions, character = build_session_and_character(
+            config_path=args.config, character_path=args.character
+        )
+    except FileNotFoundError as err:
+        print(f"启动失败: {err}", file=sys.stderr)
+        return 2
+
+    hub = ChannelHub(
+        sessions=sessions,
+        character=character,
+        idle_ttl=args.idle_ttl,
+    )
+    logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")
+    try:
+        asyncio.run(
+            run_server(
+                hub, host=args.host, port=args.port, limiter=IngressLimiter(rate=1.0, burst=3)
+            )
+        )
+    except KeyboardInterrupt:
+        logger.info("收到中断，退出")
+    return 0
+
+
 if __name__ == "__main__":  # pragma: no cover
-    asyncio.run(_demo())
+    raise SystemExit(main())
