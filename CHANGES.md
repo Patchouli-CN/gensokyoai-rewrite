@@ -6,6 +6,26 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.10] - 2026/9/9
+
+### 变更
+ - **架构债：合并重复的模型配置结构体** —— `schemas.model_schema.ModelConfig` 与 `core.config.ModelSettings` 是两份**近乎重复**的结构体（9 个同名字段），装配时把后者传给声明收前者的 `provider.config()`，靠**鸭子类型**蒙混过关。现合并为**单一 `ModelConfig`**：
+   - 定义落在 **L0 契约层**（`schemas`）—— 跨层共享的数据本就该在此，`core/config.py` 只负责组合进 `GensokyoConfig`，`models/` 直接类型对齐
+   - `session_factory._create_backend(settings: ModelConfig)` 类型正确，鸭子类型消除
+ - **清掉两个零消费者死字段**：旧 `ModelSettings.reserve_for_output`（输出预留已由每次调用的 `max_new_tokens` 承担）与旧 `ModelConfig.extra`
+ - **`context_window` 从死字段接活**：此前声明了却**无人读取**，`VirtualSession.max_tokens` 硬编码 8192（文档说 32K 也白写）。现在打通：
+   - `SessionManager(default_context_window=...)` —— 新建会话的默认预算
+   - `set_context_window(owner, tokens)` —— 逐 owner 覆盖（非法值忽略）
+   - `register_backend(..., context_window=...)` —— 装配层一行下发
+   - 于是 `settings.yaml` 里的 `context_window: 32768` **真的生效**（验证：responder 会话预算 = 32768）
+
+### 修复
+ - `config/settings.yaml` 移除已删除的 `reserve_for_output` 键（该键本就从未被读取）
+
+### 测试
+ - 新增 8 例：模型配置单一契约、YAML 键名匹配时真的生效、键名写错被静默忽略（固化上一版 bug 的成因）、仓库 settings.yaml 键名正确、装配层下发 `context_window`、默认预算生效、`set_context_window` 覆盖与非法值忽略
+ - 全部 173 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.9] - 2026/9/9
 
 ### 新增
