@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from ..schemas.model_schema import CompletionResult, Message, StreamEvent, ToolSpec
+from ..schemas.model_schema import CompletionResult, Message, StreamEvent, ToolSpec, Usage
 from ..utils.logger import LoggerManager
 from ..utils.token_counter import DefaultCounter
 
@@ -63,6 +63,57 @@ class SessionManager:
         self._backends: dict[str, ChatBackend] = {}
         self._default_backend: ChatBackend | None = None
         """ 默认 backend，未指定 owner 时使用 """
+        self._usage: dict[str, Usage] = {}
+        """ 各 owner 的累计 token 用量（供健康监控计量）"""
+
+    def token_usage(self, owner: str) -> Usage:
+        """读取某 owner 的累计 token 用量。
+
+        Args:
+            owner: 模块标识
+
+        Returns:
+            Usage: 该 owner 的累计用量（无记录则为零值）
+        """
+        return self._usage.get(owner, Usage())
+
+    def total_usage(self) -> Usage:
+        """读取全部 owner 的累计 token 用量（供回合计量取差值）。
+
+        Returns:
+            Usage: 累计用量合计
+        """
+        prompt = sum(u.prompt_tokens for u in self._usage.values())
+        completion = sum(u.completion_tokens for u in self._usage.values())
+        return Usage(prompt_tokens=prompt, completion_tokens=completion)
+
+    def owners(self) -> list[str]:
+        """当前存在的虚拟会话 owner 列表。"""
+        return list(self._sessions)
+
+    def context_usage(self, owner: str) -> float:
+        """该 owner 会话的上下文占用率（0.0 ~ 1.0+）。
+
+        Args:
+            owner: 模块标识
+
+        Returns:
+            float: 已用 token / 该会话预算；无会话时为 0.0
+        """
+        session = self._sessions.get(owner)
+        if session is None or session.max_tokens <= 0:
+            return 0.0
+        return self.usage(owner) / session.max_tokens
+
+    def _accumulate(self, owner: str, usage: Usage | None) -> None:
+        """累计一次调用的 token 用量。"""
+        if usage is None:
+            return
+        current = self._usage.get(owner, Usage())
+        self._usage[owner] = Usage(
+            prompt_tokens=current.prompt_tokens + usage.prompt_tokens,
+            completion_tokens=current.completion_tokens + usage.completion_tokens,
+        )
 
     def register_backend(self, owner: str, backend: ChatBackend) -> None:
         """注册某个 owner 的专属 backend。
@@ -118,6 +169,7 @@ class SessionManager:
                 stop=stop,
                 tools=tools,
             )
+            self._accumulate(owner, result.usage)
             self._logger.info(
                 f"调用完成: owner={owner} 模式=无状态 耗时={time.monotonic() - started:.2f}s"
             )
@@ -134,6 +186,7 @@ class SessionManager:
             stop=stop,
             tools=tools,
         )
+        self._accumulate(owner, result.usage)
         if result.content:
             session.messages.append(Message(role="assistant", content=result.content))
         session.last_used_at = time.time()
@@ -189,6 +242,7 @@ class SessionManager:
                 if result.content:
                     session.messages.append(Message(role="assistant", content=result.content))
                 session.last_used_at = time.time()
+            self._accumulate(owner, result.usage)
             yield StreamEvent(
                 delta=result.content, finish_reason=result.finish_reason, usage=result.usage
             )
@@ -218,6 +272,8 @@ class SessionManager:
         ):
             if ev.delta:
                 parts.append(ev.delta)
+            if ev.usage is not None:
+                self._accumulate(owner, ev.usage)
             yield ev
         content = "".join(parts)
         if content:

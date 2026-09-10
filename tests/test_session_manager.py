@@ -1,7 +1,7 @@
 """SessionManager 单元测试：双模式 / 裁剪 / 多模型路由"""
 
 from gensokyoai.core.session_manager import SessionManager
-from gensokyoai.schemas.model_schema import CompletionResult, Message
+from gensokyoai.schemas.model_schema import CompletionResult, Message, Usage
 
 
 class FakeBackend:
@@ -99,3 +99,29 @@ async def test_call_without_any_backend_raises():
     sm = SessionManager()
     with pytest.raises(ValueError):
         await sm.call("responder", [Message(role="user", content="hi")])
+
+
+async def test_accumulates_token_usage():
+    """调用累计 token 用量（供健康监控按回合算差值）"""
+
+    class _UsageBackend:
+        async def chat(self, messages, **kw):
+            return CompletionResult(content="ok", usage=Usage(prompt_tokens=5, completion_tokens=7))
+
+    sm = SessionManager()
+    sm.set_default_backend(_UsageBackend())
+    await sm.call("responder", [Message(role="user", content="hi")])
+
+    assert sm.token_usage("responder") == Usage(prompt_tokens=5, completion_tokens=7)
+    assert sm.total_usage() == Usage(prompt_tokens=5, completion_tokens=7)
+    assert sm.token_usage("没调用过") == Usage()
+
+
+async def test_context_usage_ratio_and_owners():
+    """上下文占用率 = 已用 token / 预算；owners 列出活跃会话"""
+    sm = _manager(FakeBackend())
+    await sm.call("responder", [Message(role="user", content="hi")])
+
+    assert 0.0 < sm.context_usage("responder") < 1.0
+    assert sm.context_usage("不存在") == 0.0
+    assert sm.owners() == ["responder"]
