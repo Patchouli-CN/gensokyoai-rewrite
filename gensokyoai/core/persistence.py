@@ -43,12 +43,38 @@ class JsonFilePersistence:
     - 隔离区：主文件与 .bak 都损坏时移入 quarantine/ 留证，不阻塞启动
     """
 
-    def __init__(self, root_dir: str | Path = "data") -> None:
+    def __init__(self, root_dir: str | Path = "data", *, indent: int | None = 2) -> None:
+        """初始化。
+
+        Args:
+            root_dir: 存储根目录
+            indent: JSON 缩进空格数；None 或 <=0 表示紧凑单行。
+                默认 2 —— 落盘文件是给人看与 diff 的，可读性优先于体积。
+        """
         self._logger = LoggerManager.get_logger("PERSIST")
         self._root = Path(root_dir)
         self._root.mkdir(parents=True, exist_ok=True)
         self._quarantine = self._root / "quarantine"
         self._locks: dict[str, asyncio.Lock] = {}
+        self._indent = indent if indent and indent > 0 else None
+        """ 缩进宽度；None 表示输出紧凑单行 """
+
+    def _encode(self, data: Any) -> bytes:
+        """序列化为 JSON 字节。
+
+        `msgspec.json.encode` 只出紧凑格式；要缩进得再过一道 `msgspec.json.format`
+        （它才是 msgspec 的「美化」入口，`encode` 与 `Encoder` 都不收 indent）。
+
+        Args:
+            data: 待序列化对象
+
+        Returns:
+            bytes: JSON 字节；缩进模式下末尾补一个换行，文件更规整
+        """
+        content = msgspec.json.encode(data)
+        if self._indent is None:
+            return content
+        return msgspec.json.format(content, indent=self._indent) + b"\n"
 
     def _path(self, key: str) -> Path:
         """key -> 目标文件路径（key 允许带子目录分隔符）"""
@@ -67,7 +93,7 @@ class JsonFilePersistence:
         """同步落盘（在线程池中执行）"""
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        content = msgspec.json.encode(data)
+        content = self._encode(data)
         tmp = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
         try:
             tmp.write_bytes(content)

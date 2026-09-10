@@ -24,6 +24,34 @@ async def test_persistence_roundtrip(tmp_path):
     assert await backend.load("sessions/a/session") == {"turn": 3, "items": [1, 2]}
 
 
+async def test_saved_json_is_pretty_printed(tmp_path):
+    """落盘 JSON 默认带缩进与末尾换行 —— 文件是给人读和 diff 的"""
+    backend = JsonFilePersistence(tmp_path)
+    await backend.save("demo", {"turn": 3, "items": [1, 2]})
+
+    text = (tmp_path / "demo.json").read_text(encoding="utf-8")
+    assert "\n" in text, "不应挤在一行"
+    assert '  "turn": 3' in text, "应有 2 空格缩进"
+    assert text.endswith("\n"), "应以换行结尾"
+
+
+async def test_compact_mode_available(tmp_path):
+    """indent=None 时退回紧凑单行（体积敏感场景可关）"""
+    backend = JsonFilePersistence(tmp_path, indent=None)
+    await backend.save("demo", {"a": 1, "b": [1, 2]})
+
+    text = (tmp_path / "demo.json").read_text(encoding="utf-8")
+    assert text == '{"a":1,"b":[1,2]}'
+
+
+async def test_indented_json_still_roundtrips(tmp_path):
+    """缩进输出不影响读回（格式化不改变语义）"""
+    backend = JsonFilePersistence(tmp_path)
+    payload = {"nested": {"list": [{"k": "v"}]}, "n": 1}
+    await backend.save("demo", payload)
+    assert await backend.load("demo") == payload
+
+
 async def test_persistence_bak_recovery(tmp_path):
     """主文件损坏时从 .bak 恢复（.bak 保存的是上一版内容）"""
     backend = JsonFilePersistence(tmp_path)
