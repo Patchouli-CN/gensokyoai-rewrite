@@ -6,6 +6,19 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.12] - 2026/9/9
+
+### 变更
+ - **落盘 JSON 改为缩进输出**：`JsonFilePersistence` 新增 `indent` 参数（默认 2 空格），
+   落盘文件带缩进与末尾换行，便于人读与 diff；`indent=None` 可退回紧凑单行。
+   此前 `session.json` 挤成一行没法看。
+   - 实现要点：`msgspec.json.encode()` 只出紧凑格式，而且 **`encode` 与 `Encoder` 都不接受 `indent`**；
+     要美化还得再过一道 `msgspec.json.format(content, indent=N)` —— 这才是 msgspec 的美化入口
+
+### 测试
+ - 新增 3 例：默认缩进且以换行结尾、`indent=None` 退回紧凑单行、缩进输出不改变读回语义
+ - 全部 185 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.11] - 2026/9/9
 
 ### 新增
