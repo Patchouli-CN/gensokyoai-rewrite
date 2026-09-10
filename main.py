@@ -1,49 +1,10 @@
-"""程序入口：加载配置、角色卡、初始化 SessionManager 并启动"""
+"""仓库内的开发入口 —— 等价于安装后的 `gensokyoai` 命令。
 
-import asyncio
+装配逻辑已收进 `gensokyoai.app`（否则 `pip install` 后没有入口），
+这里只保留一个薄壳，方便在仓库里 `python main.py` 直接跑。
+"""
 
-from gensokyoai.core.bootstrap import discover_all
-from gensokyoai.core.config import load_config
-from gensokyoai.core.session_factory import build_session_manager
-from gensokyoai.eyes.perceiver import ConsolePerceiver
-from gensokyoai.mouth.console import ConsoleMouth
-from gensokyoai.roleplay.character import load_character
-from gensokyoai.roleplay.loop import TouhouWorld
-from gensokyoai.utils.logger import LoggerManager, setup_logging
-
-
-async def main() -> None:
-    # 1. 日志
-    setup_logging("TRACE", True, "runtime.log")
-    logger = LoggerManager.get_logger("MAIN")
-
-    # 2. 扫描扩展
-    discover_all()
-
-    # 3. 加载配置
-    config = load_config("config/settings.yaml")
-
-    # 4. 装配 SessionManager（多模型路由在这里完成）
-    sessions = build_session_manager(config)
-
-    # 5. 加载角色卡
-    character = load_character("config/roles/SaigyoujiYuyuko.yaml")
-
-    # 6. 初始化感知器
-    eye = ConsolePerceiver(sender="你")
-
-    # 7. 启动世界
-    world = TouhouWorld(
-        eye=eye,
-        character=character,
-        sessions=sessions,  # 直接传入装配好的
-        mouth=ConsoleMouth(),  # 口层：输出投递（默认控制台）
-        session_id="yuyuko-console",  # 会话标识：记忆/快照按它隔离，重启自动恢复
-    )
-
-    logger.info("启动幻想乡...")
-    await world.start()
-
+from gensokyoai.app import main
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(main())

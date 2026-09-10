@@ -1,6 +1,6 @@
 [project]
 name = "gensokyoai"
-version = "0.0.10"
+version = "0.0.11"
 description = "幻想乡 AI 角色扮演引擎（重写版）—— 用外部工程把推理与记忆挤出上下文，让小模型角色扮演更稳更快"
 readme = "README.md"
 license = { text = "MIT" }
@@ -29,7 +29,13 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.15",
     "mypy>=1.11",
+    "build>=1.2",
+    "hatchling",
 ]
+
+[project.scripts]
+gensokyoai = "gensokyoai.app:main"
+gensokyoai-ws = "gensokyoai.backends.ws_server.server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -37,6 +43,24 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["gensokyoai"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# 仓库根目录的 config/ 是唯一真相来源；打包时塞进包内作为自带的默认资源
+# （安装后 resolve_resource() 会回落到这里）
+"config" = "gensokyoai/_resources/config"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "gensokyoai/**/*.py",
+    "config/**/*.yaml",
+    "tests/**/*.py",
+    "conftest.py",
+    "main.py",
+    "pyproject.toml",
+    "README.md",
+    "CHANGES.md",
+    "LICENSE",
+]
 
 # ---------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
