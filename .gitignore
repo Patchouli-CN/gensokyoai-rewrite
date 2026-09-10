@@ -11,6 +11,7 @@ __pycache__/
 
 # runtime artifacts
 long_memory.json
+data/
 
 # 构建/工具缓存
 .mypy_cache/
