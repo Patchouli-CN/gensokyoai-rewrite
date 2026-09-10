@@ -133,6 +133,45 @@ async def test_raw_reasoning_accumulates_across_relay_rounds():
     assert conclusion.reasoning == "分析用户输入", "工程实现只保留收束轮的 thought"
 
 
+async def test_conclusion_records_reasoning_steps_per_round():
+    """每轮思考都留下 ReasoningStep 快照（轨迹留档的原始素材）"""
+    scripted = [
+        CompletionResult(content=_think_json(action_hint="先查记忆", need_continue=True)),
+        CompletionResult(content=_think_json(action_hint="可以答了", need_continue=False)),
+    ]
+    calls = {"n": 0}
+
+    class _Scripted:
+        async def chat(self, messages, **kw):
+            result = scripted[calls["n"]]
+            calls["n"] += 1
+            return result
+
+    sm = SessionManager()
+    sm.set_default_backend(_Scripted())
+    conclusion = await BrainEngine(sm).think(_snapshot("聊聊"), [], BrainThinkEffort.LOW)
+
+    steps = conclusion.reasoning_steps
+    assert [s.round for s in steps] == [1, 2], "逐轮一条，轮次从 1 起"
+    assert steps[0].thought == "分析用户输入"
+    assert steps[0].need_continue_think is True
+    assert steps[0].action_hint == "先查记忆"
+    assert steps[0].intent == "问路"
+    assert steps[0].emotion == "好奇"
+    assert steps[0].confidence == 0.8
+    assert steps[1].need_continue_think is False
+    assert steps[1].action_hint == "可以答了"
+
+
+async def test_off_effort_has_no_reasoning_steps():
+    """OFF 快速路径不走接力思考，故无步骤记录"""
+    conclusion = await BrainEngine(SessionManager()).think(
+        _snapshot("你好啊"), [], BrainThinkEffort.OFF
+    )
+    assert conclusion.reasoning_steps == []
+    assert conclusion.reasoning is None
+
+
 async def test_relay_think_continues_then_stops():
     """need_continue_think=true 时接力下一轮，false 时收束"""
     sm = SessionManager()

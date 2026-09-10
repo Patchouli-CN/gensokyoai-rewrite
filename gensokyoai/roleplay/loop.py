@@ -30,6 +30,7 @@ from ..utils.text import strip_control_chars
 from .character import Character
 from .initiative import describe_silence, evaluate_initiative
 from .persistence import CharacterStateCodec, SessionPersister
+from .trace import ReasoningTrace
 
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
 
@@ -124,6 +125,7 @@ class TouhouWorld:
         stall_min_interval: float = 180.0,
         ooc_retry: bool = True,
         ooc_audit: bool = True,
+        trace_steps: bool = True,
         tool_timeout: float = 10.0,
         tool_max_result_chars: int = 2000,
         session_id: str = "default",
@@ -240,6 +242,9 @@ class TouhouWorld:
         )
         """ 会话持久化器（启动 restore / 事件驱动保存 / 关闭 flush）"""
 
+        self.trace = ReasoningTrace(storage_dir, session_id, enabled=trace_steps)
+        """ 思考轨迹留档（每回合一行 JSONL，含逐轮 ReasoningStep）"""
+
         # 注册默认生命周期回调
         self._register_default_lifecycle()
 
@@ -348,6 +353,11 @@ class TouhouWorld:
 
                 # 4. 记录（投递已在 _express 内完成）
                 self._remember_turn(snapshot, reply)
+                if self.trace.enabled:
+                    # 一次小追加（走线程池），保证本回合轨迹已落盘、便于复盘与测试
+                    await self.trace.record(
+                        turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
+                    )
                 if self._ooc_audit:
                     asyncio.create_task(self._audit_reply(reply))
 

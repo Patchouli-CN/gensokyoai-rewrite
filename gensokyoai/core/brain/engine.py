@@ -5,7 +5,7 @@ import time
 import msgspec
 
 from ...prompts import prompt_mgr
-from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort
+from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort, ReasoningStep
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message, ToolCall, ToolSpec
 from ...schemas.scene_schema import SceneSnapshot
@@ -146,6 +146,8 @@ class BrainEngine:
         final_reasoning = ""
         raw_reasoning_parts: list[str] = []
         """ 模型原生 thinking 段（think=true 时才有；默认关闭，通常为空）"""
+        steps: list[ReasoningStep] = []
+        """ 每轮思考的快照（ReasoningStep）：轨迹留档与事后复盘的原始素材 """
         tool_result_cache = ""
         tool_used = False
 
@@ -205,6 +207,24 @@ class BrainEngine:
                 if current_round < max_rounds:
                     continue
                 return self._fast_path(snapshot, effort)
+
+            # 记录本轮思考快照（ReasoningStep）：留给轨迹留档与事后复盘。
+            # 注意：这里存的是**模型自述**的 need_continue_think；若随后因工具调用
+            # 被强制续轮，循环层面的强制不会改动本步记录（保持「模型当时怎么想」的原貌）。
+            step = ReasoningStep(
+                round=current_round,
+                thought=str(parsed.get("thought", "")),
+                need_continue_think=bool(parsed.get("need_continue_think", False)),
+                action_hint=str(parsed.get("action_hint", "")) or None,
+                intent=str(parsed.get("intent", "")),
+                emotion=str(parsed.get("emotion", "")),
+                confidence=float(parsed.get("confidence", 0.5)),
+            )
+            steps.append(step)
+            self._logger.info(
+                f"思考第 {step.round} 轮: 意图={step.intent or '—'} 情绪={step.emotion or '—'} "
+                f"续轮={step.need_continue_think} 思考={step.thought[:60]!r}"
+            )
 
             # 【统一工具调用处理】由 Provider 负责标准化格式
             result = self._sessions.normalize_tool_calls(result, parsed)
@@ -276,6 +296,7 @@ class BrainEngine:
             effort=effort,
             _reasoning=final_reasoning or None,
             _raw_reasoning="\n".join(raw_reasoning_parts) or None,
+            reasoning_steps=steps,
             timestamp=time.time(),
         )
 

@@ -73,6 +73,9 @@ class BrainConclusion(msgspec.Struct, frozen=True):
     """ 工程实现（接力思考）产出的思考摘要 """
     _raw_reasoning: str | None = None
     """ 模型原生 thinking 段（逐轮拼接；开启 think 时才有） """
+    reasoning_steps: list[ReasoningStep] = []
+    """ 每轮思考快照（接力思考逐轮记录），供轨迹留档与事后复盘；
+        OFF 快速路径与不经过接力思考的调用为空列表 """
     timestamp: float = 0.0
     """ 产出时间 """
 

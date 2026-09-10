@@ -65,7 +65,7 @@ class _EchoBackend:
         return result
 
 
-def _make_world(storage_dir, lines: list[str]) -> TouhouWorld:
+def _make_world(storage_dir, lines: list[str], **kwargs) -> TouhouWorld:
     sessions = SessionManager()
     sessions.set_default_backend(_EchoBackend())
     eye = _ScriptedEye(lines)
@@ -82,6 +82,7 @@ def _make_world(storage_dir, lines: list[str]) -> TouhouWorld:
         ooc_retry=False,
         ooc_audit=False,
         distill_every=1000,  # 关掉蒸馏避免干扰断言
+        **kwargs,
     )
 
 
@@ -152,3 +153,33 @@ async def test_world_restart_restores_character_and_runtime_state(tmp_path):
     assert world2._distill_counter == 8, "蒸馏计数应续上（若归零会是 0）"
     # monotonic 时刻跨进程无意义：恢复时应重置为「现在」而非沿用旧值
     assert world2._stall_last_time != float("-inf")
+
+
+async def test_world_writes_reasoning_trace(tmp_path):
+    """跑一回合后落一条思考轨迹（含逐轮 ReasoningStep），供事后复盘"""
+    import json
+
+    world = _make_world(tmp_path, ["第一句"])
+    await _run(world)
+
+    assert world.trace.enabled is True
+    assert world.trace.path.exists(), "应生成轨迹文件"
+
+    lines = world.trace.path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+
+    assert entry["turn"] == 1
+    assert entry["effort"] in {"low", "mid", "high", "max"}
+    assert entry["steps"], "应记录接力思考的逐轮快照"
+    assert entry["steps"][0]["round"] == 1
+    assert entry["reply"], "轨迹里带上本回合回复"
+
+
+async def test_world_trace_can_be_disabled(tmp_path):
+    """关掉开关就不落轨迹"""
+    world = _make_world(tmp_path, ["第一句"], trace_steps=False)
+    await _run(world)
+
+    assert world.trace.enabled is False
+    assert not world.trace.path.exists()
