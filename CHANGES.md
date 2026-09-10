@@ -6,6 +6,38 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.9] - 2026/9/9
+
+### 新增
+ - **统一工具执行器 `core/toolkit.py`**：`ToolExecutor` 成为全项目**唯一**的工具执行点 —— 此前 `models/base.py._execute_tools`（Provider 工具循环）与 `core/brain/engine.py._execute_tool_calls`（接力思考循环）**各写了一遍**执行逻辑，必然漂移。同时补齐四件事：
+   - **结果截断**（`max_result_chars`）：工具返回大字符串会撑爆上下文窗口，超长一律截断标注
+   - **超时**（`timeout`）：工具不再能永久挂住调用链
+   - **同步工具下线程**：`asyncio.to_thread` 执行同步工具，不再阻塞事件循环
+   - **结构化错误**：`ToolResult(ok/content/error/elapsed_s)` 取代裸字符串
+ - **内置工具 `gensokyoai/tools/`**：`get_current_time` / `get_current_dateinfo`（七曜日）/ `get_moon_phase`（八相月），`@ToolRegistry.tool` 装饰器注册；`bootstrap.DEFAULT_PACKAGES` 加入 `gensokyoai.tools`，启动即自动注册
+ - **`ToolSpec.name` / `tool_name`**：统一「注册名与函数名不一致」（`ToolRegistry` 支持 `name=` 覆盖，但 `register_external`/OpenAI 声明一律用 `__name__`）；OpenAI 声明、prompt、执行器索引统一走 `tool_name`
+ - **HealthMonitor 重构**（补齐「监控 **+ 主动干预**」的后半截）：
+   - **阈值带方向**：`MetricThreshold.lower_is_worse` 区分「越高越坏 / 越低越坏」
+   - **边沿触发 + 冷却**：指标持续超限不再每回合刷告警、不再反复触发干预
+   - **聚合摘要** `MetricSummary`：报告给 count/last/avg/min/max/p95，替代把上百条原始样本全 dump
+   - **主动干预** `register_intervention(metric, handler)`：超限时回调；回调由**装配层**注册，core/health 不反向依赖 memorizer/roleplay，分层铁律不破
+   - 推理档位分布聚合（`effort.*` → `reasoning_distribution`）
+ - **SessionManager 计量**：`token_usage(owner)` / `total_usage()` / `context_usage(owner)` / `owners()`，`call` 与 `call_stream` 累计 token
+ - 配置：`ModelConfig` / `ModelSettings` 增 `tool_timeout` 与 `tool_max_result_chars`
+
+### 变更
+ - **`TouhouWorld` 接线主动干预**：上下文占用超 80% → 触发一次记忆蒸馏腾窗口；OOC 出戏率超 0.5 → **抬高推理档位下限到 HIGH**（审计恢复健康后自动撤销，不长期烧算力）
+ - 每回合向健康喂 `turn.tokens`（累计用量差值）与 `session.context_usage`；注入 `session_provider` 供报告采集
+
+### 修复
+ - **`config/settings.yaml` 键名不匹配**：原先写 `model:`，而 `GensokyoConfig` 字段是 `default_model:`，msgspec `strict=False` **静默忽略未知键** —— 等于配置文件什么都没配（能跑是因为默认值恰好一致）。已改正并补全 `brain` / `responder` / `resource` 段
+ - HealthMonitor 移除**函数内 `import psutil`**（违反 CONTRIBUTING「不允许函数内导入」，且 psutil 并非依赖，该分支永远返回 error）
+ - HealthMonitor `_get_session_summary()` 从写死的 `{"total": 0, "active": 0}` stub 改为注入式 provider
+
+### 测试
+ - 新增 24 例：工具执行器（同步/异步执行、未知工具、坏 JSON 拒绝、异常分类、结果截断、超时、**同步下线程不阻塞事件循环**、批量一一对应、命名覆盖、内置工具注册与调用）、健康监控（阈值双向、冷却抑制、恢复重告警、干预触发与异常隔离、聚合摘要、报告含分布与注入、总线广播）、SessionManager 计量（累计用量、上下文占用率、owners）
+ - 全部 165 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.8] - 2026/9/9
 
 ### 新增
