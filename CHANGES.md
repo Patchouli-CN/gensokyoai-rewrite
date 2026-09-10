@@ -38,6 +38,13 @@
    世界关闭后无遗留后台任务且两回合 4 条对话记忆不丢
  - 全部 218 例全绿（ruff check / ruff format --check / mypy / pytest）
 
+### 变更
+ - **提示词渲染函数的类型注解收紧为 `Callable[..., str]`**：`PromptManager.prompt`
+   装饰器与 `Prompt.renderer` 两端都从裸 `Callable`（等于 `Callable[..., Any]`）改为
+   显式标注返回值。此前「不返回 `str` 的渲染函数」能静默通过 mypy，`Prompt.render()`
+   的 `-> str` 也因此只是声明、函数体不受校验；现在两端一致，坏渲染函数在注册处
+   就被 mypy 拦下（实测：收紧前无报错，收紧后 `arg-type`）
+
 ## [0.0.18] - 2026/9/9
 
 ### 修复

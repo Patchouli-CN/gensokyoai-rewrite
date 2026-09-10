@@ -16,7 +16,7 @@ class Prompt:
     template: str = ""
     """ 数据式模板字符串（含 $var 占位符）；原生式下可为空 """
     name: str = "默认文本"
-    renderer: Callable | None = None
+    renderer: Callable[..., str] | None = None
     """ 原生式渲染函数（接收 **params）；有则优先于 template """
 
     def render(self, **params) -> str:

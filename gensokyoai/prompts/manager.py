@@ -24,10 +24,10 @@ class PromptManager:
         self._enable_cache = enable_cache
 
     @classmethod
-    def prompt(cls, name: str) -> Callable[[Callable], Callable]:
+    def prompt(cls, name: str) -> Callable[[Callable[..., str]], Callable[..., str]]:
         """注册装饰器：自动识别函数是 data 式（无参）还是原生式（有参）。"""
 
-        def decorator(prompt_func: Callable) -> Callable:
+        def decorator(prompt_func: Callable[..., str]) -> Callable[..., str]:
             if name in cls._registered:
                 raise RuntimeError(f"提示词模板重复注册: {name}")
             if inspect.signature(prompt_func).parameters:
