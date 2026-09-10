@@ -65,6 +65,7 @@ class LoguruHandler(std_logging.Handler):
                 return
 
         # 把其他库的 DEBUG 降级为我们的 TRACE
+        level: str | int
         if record.levelno == std_logging.DEBUG:
             level = "TRACE"
         else:
@@ -151,8 +152,7 @@ def setup_logging(
     # 默认格式 —— 带模块前缀
     if log_format is None:
         log_format = (
-            "[ {thread.name:^12} ] | {time:HH:mm:ss} | "
-            "{extra[module]:<16} | {level:<8} | {message}"
+            "[ {thread.name:^12} ] | {time:HH:mm:ss} | {extra[module]:<16} | {level:<8} | {message}"
         )
 
     if log_format_console is None:

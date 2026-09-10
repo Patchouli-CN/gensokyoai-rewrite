@@ -1,16 +1,16 @@
 # commands/decorators.py
-""" 命令装饰器 —— 支持实例级注册表 """
+"""命令装饰器 —— 支持实例级注册表"""
 
 import inspect
 from collections.abc import Callable
-from typing import get_type_hints
+from typing import Any, get_type_hints
 
 from .parser import CommandType
 from .permission import PermissionLevel
 
 
 class CommandDefinition:
-    """ 命令定义 """
+    """命令定义"""
 
     def __init__(
         self,
@@ -45,7 +45,7 @@ class CommandDefinition:
         return f"/{self.name} " + " ".join(params) if params else f"/{self.name}"
 
     def parse_args(self, content: str) -> dict:
-        args = {}
+        args: dict[str, Any] = {}
         param_names = [p for p in self._sig.parameters if p not in ("cmd", "ctx")]
 
         if not param_names:
@@ -86,7 +86,7 @@ class CommandDefinition:
 
 
 class CommandRegistry:
-    """ 命令注册表 —— 支持实例级注册（避免全局污染） """
+    """命令注册表 —— 支持实例级注册（避免全局污染）"""
 
     def __init__(self):
         self._commands: dict[str, CommandDefinition] = {}
@@ -122,7 +122,7 @@ def command(
     permission: PermissionLevel = PermissionLevel.OWNER,
     registry: CommandRegistry | None = None,
 ):
-    """ 命令装饰器
+    """命令装饰器
 
     Args:
         name: 命令名（默认取函数名去掉 cmd_ 前缀）
