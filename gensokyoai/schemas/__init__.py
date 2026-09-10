@@ -2,7 +2,7 @@
 
 from .brain_schema import BrainConclusion, BrainThinkEffort, OOCVerdict, Verdict
 from .event_schema import BaseEvent, EventTopic
-from .health_schema import HealthReport
+from .health_schema import HealthAlert, HealthMetric, HealthReport, MetricSummary, MetricThreshold
 from .memory_schema import MemoryItem
 from .model_schema import (
     CompletionResult,
@@ -22,9 +22,13 @@ __all__ = [
     "BrainConclusion",
     "BrainThinkEffort",
     "CompletionResult",
+    "HealthAlert",
+    "HealthMetric",
     "HealthReport",
     "MemoryItem",
     "Message",
+    "MetricSummary",
+    "MetricThreshold",
     "ModelConfig",
     "OOCVerdict",
     "Prompt",
