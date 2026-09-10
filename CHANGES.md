@@ -6,6 +6,28 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.17] - 2026/9/9
+
+### 修复
+ - **流式 token 计量失效**（真机实测发现，属实测才暴露的缺陷）：
+   llama-server / vLLM **默认不在流式响应里回传 `usage`** —— 不带 `stream_options` 时
+   **完全没有 usage 事件**，于是 `流式完成: 0+0 tok`：
+   健康监控的 `turn.tokens` 对 responder 恒为 0、`ResourceGate` 的 `tokens_per_day`
+   也统计不到 responder 用量。
+   现在流式请求显式带 `stream_options: {"include_usage": true}`，末块即可拿到用量。
+   **实测对比**：修复前 `0+0 tok` → 修复后 `1376+129 tok`
+
+### 新增
+ - `Usage.cached_tokens`：解析 `prompt_tokens_details.cached_tokens`（**前缀缓存命中量**），
+   流式与非流式路径都解析并写入日志（`前缀缓存命中=N/M tok`）
+   - **实测**：responder 的 1376 个 prompt token 里 **1272 命中缓存（92.4%）** ——
+     印证了「responder 有状态会话保持稳定 system 前缀」对 KV 前缀复用的实际收益
+
+### 测试
+ - 新增 3 例：流式请求必须带 `stream_options`、流式末块解析 usage 与 cached_tokens、
+   非流式响应解析 cached_tokens
+ - 全部 208 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.16] - 2026/9/9
 
 ### 新增

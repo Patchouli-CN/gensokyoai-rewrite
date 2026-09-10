@@ -1,6 +1,6 @@
 [project]
 name = "gensokyoai"
-version = "0.0.16"
+version = "0.0.17"
 description = "幻想乡 AI 角色扮演引擎（重写版）—— 用外部工程把推理与记忆挤出上下文，让小模型角色扮演更稳更快"
 readme = "README.md"
 license = { text = "MIT" }
