@@ -6,20 +6,27 @@ from gensokyoai.prompts import PromptManager, prompt_mgr
 
 
 def test_builtin_templates_registered():
-    """业务模板在导入 manager 时即已注册"""
+    """业务模板在导入 manager 时即已注册（数据式/原生式均可）"""
     for name in (
-        "brain.think", "brain.think.user", "ooc.audit", "ooc.audit.user",
-        "memory.compress", "responder.user",
+        "brain.think",
+        "brain.think.user",
+        "ooc.audit",
+        "ooc.audit.user",
+        "memory.compress",
+        "responder.user",
     ):
-        assert prompt_mgr.raw(name).template, f"模板 {name} 不应为空"
+        assert prompt_mgr.raw(name) is not None, f"模板 {name} 未注册"
 
 
 def test_render_substitutes_placeholders():
     """$var 占位符正确替换"""
     text = prompt_mgr.render(
         "brain.think.user",
-        persona="测试人设", sender="小明", content="你好",
-        context="无上下文", memory="无记忆",
+        persona="测试人设",
+        sender="小明",
+        content="你好",
+        context="无上下文",
+        memory="无记忆",
     )
     assert "测试人设" in text
     assert "小明: 你好" in text
@@ -54,6 +61,7 @@ def test_duplicate_registration_raises():
         return "一"
 
     with pytest.raises(RuntimeError):
+
         @mgr.prompt("dup")
         def _second() -> str:
             return "二"
@@ -63,3 +71,19 @@ def test_manager_instances_share_registry():
     """注册表挂在类上，多实例共享已注册模板"""
     mgr2 = PromptManager(enable_cache=False)
     assert mgr2.render("memory.compress") == prompt_mgr.render("memory.compress")
+
+
+def test_native_renderer_supports_loop_and_condition():
+    """原生式模板：条件/循环直接在 Python 里写，不依赖模板语法"""
+    mgr = PromptManager()
+
+    @mgr.prompt("native.demo")
+    def native_demo(items, emphasize=False, **_) -> str:
+        body = "\n".join(f"- {i}" for i in items)
+        return f"{'★ 重要 ★\n' if emphasize else ''}{body}"
+
+    out = mgr.render("native.demo", items=["a", "b", "c"], emphasize=True)
+    assert "★ 重要 ★" in out
+    assert "- a" in out and "- b" in out and "- c" in out
+    # 强调关闭时无标记
+    assert "★" not in mgr.render("native.demo", items=["a"], emphasize=False)

@@ -1,65 +1,77 @@
-""" 提示词集中管理 —— 模板文件 + 占位符渲染。
-模板为 prompts/ 下的 .txt 文件，文件名（去扩展名）即模板名。
-占位符用 {{var}} 双花括号语法，模板里的 JSON 示例等单层花括号按字面处理。
+"""提示词集中管理 —— 装饰器注册模板 + 双模渲染（string.Template / 原生 Python）。
+
+模板在本文件内用 `@prompt_mgr.prompt(name)` 装饰器内联注册。
+- 无参函数（data 式）：返回含 `$var` 占位符的模板字符串，渲染用 `string.Template.safe_substitute(**params)`;
+  未传入的 `$var` 原样保留（不抛 KeyError），字面 `$` 需 `$$` 转义。
+- 有参函数（原生式）：接收 `**params`，直接拼字符串——条件/循环/分支全程原生 Python。
+
+装饰器按 `inspect.signature` 判断是否接收参数，两种风格自动共存。
 """
 
+import inspect
+from collections.abc import Callable
+
 from ..schemas.prompt_schema import Prompt
-from typing import Callable
+
 
 class PromptManager:
-    """ 提示词模板管理器：按名加载模板并渲染。支持装饰器注册，内置简单缓存机制。 """
-    
+    """提示词模板管理器：按名渲染。支持装饰器注册、缓存。"""
+
     _registered: dict[str, Prompt] = {}
-    
+
     def __init__(self, enable_cache: bool = True) -> None:
         self._cache: dict[str, str] = {}
         self._enable_cache = enable_cache
-        
+
     @classmethod
-    def prompt(cls, name: str) -> Callable[[Callable[[], str]], Callable[[], str]]:
-        """ 注册装饰器 """
-        def decorator(prompt_func: Callable[[], str]) -> Callable[[], str]:
-            template_str = prompt_func()
+    def prompt(cls, name: str) -> Callable[[Callable], Callable]:
+        """注册装饰器：自动识别函数是 data 式（无参）还是原生式（有参）。"""
+
+        def decorator(prompt_func: Callable) -> Callable:
             if name in cls._registered:
                 raise RuntimeError(f"提示词模板重复注册: {name}")
-            cls._registered[name] = Prompt(name=name, template=template_str)
+            if inspect.signature(prompt_func).parameters:
+                # 原生式：渲染时直接调用函数（不缓存，参数多变）
+                cls._registered[name] = Prompt(name=name, renderer=prompt_func)
+            else:
+                # 数据式：注册期取模板字符串，渲染时 string.Template 替换
+                cls._registered[name] = Prompt(name=name, template=prompt_func())
             return prompt_func
+
         return decorator
-    
+
     def render(self, name: str, **params) -> str:
-        """ 返回渲染后的文本。 """
-        if self._enable_cache and not params and name in self._cache:
-            return self._cache[name]
+        """渲染指定模板。原生式直接传给模板函数，data 式做 $var 替换。"""
         if name not in self._registered:
             raise KeyError(f"未找到提示词模板: {name}")
-        result = self._registered[name].render(**params)
+        prompt = self._registered[name]
+        if prompt.renderer is not None:
+            return prompt.renderer(**params)
+        if self._enable_cache and not params and name in self._cache:
+            return self._cache[name]
+        result = prompt.render(**params)
         if self._enable_cache and not params:
             self._cache[name] = result
         return result
-    
+
     def raw(self, name: str) -> Prompt:
-        """ 返回原始 Prompt 对象，用于调试或查看元数据 """
+        """返回原始 Prompt 对象，用于调试或查看元数据。"""
         if name not in self._registered:
             raise KeyError(f"未找到提示词模板: {name}")
         return self._registered[name]
+
 
 prompt_mgr = PromptManager()
 
 
 @prompt_mgr.prompt("brain.think.user")
-def brain_think_user() -> str:
-    return """
-[人设]
-$persona
-
-[场景] $sender: $content
-
-[最近上下文]
-$context
-
-[相关记忆]
-$memory
-"""
+def brain_think_user(persona, sender, content, context, memory, **_) -> str:
+    return (
+        f"[人设]\n{persona}\n\n"
+        f"[场景] {sender}: {content}\n\n"
+        f"[最近上下文]\n{context}\n\n"
+        f"[相关记忆]\n{memory}"
+    )
 
 
 @prompt_mgr.prompt("brain.think")
@@ -83,14 +95,8 @@ def mem_compress() -> str:
 
 
 @prompt_mgr.prompt("ooc.audit.user")
-def ooc_audit_user() -> str:
-    return """
-[人设]
-$persona
-
-[回复]
-$draft
-"""
+def ooc_audit_user(persona, draft, **_) -> str:
+    return f"[人设]\n{persona}\n\n[回复]\n{draft}"
 
 
 @prompt_mgr.prompt("ooc.audit")
@@ -101,29 +107,30 @@ def ooc_audit() -> str:
 
 
 @prompt_mgr.prompt("responder.user")
-def responder() -> str:
-    return """
-$sender说: $content
-[决策提示] 意图: $intent ；情绪: $emotion ；
-$draft_hint [可用记忆]
-$memory
+def responder_user(sender, content, intent, emotion, draft_hint, memory, **_) -> str:
+    return (
+        f"{sender}说: {content}\n"
+        f"[决策提示] 意图: {intent}；情绪: {emotion}；\n"
+        f"{draft_hint}[可用记忆]\n"
+        f"{memory}\n\n"
+        f"以角色身份直接回复：\n"
+    )
 
-以角色身份直接回复：
-"""
 
 @prompt_mgr.prompt("responder.stall")
-def responder_stall() -> str:
-    return """
-$sender说: $content
-这句话需要认真想一想才能回答。先用角色的口吻回一句简短的过渡语（10~25字），表示你正在思考、回忆或犹豫，可以带一个小动作。
-只输出这一句过渡语，保持角色的说话习惯，不要回答内容本身，也不要解释你在做什么。
-"""
+def responder_stall(sender, content, **_) -> str:
+    return (
+        f"{sender}说: {content}\n"
+        f"这句话需要认真想一想才能回答。先用角色的口吻回一句简短的过渡语（10~25字），表示你正在思考、回忆或犹豫，可以带一个小动作。\n"
+        f"只输出这一句过渡语，保持角色的说话习惯，不要回答内容本身，也不要解释你在做什么。\n"
+    )
+
 
 @prompt_mgr.prompt("responder.correct")
-def responder_correct() -> str:
-    return """
-你刚才的回复出了戏，被系统拦截：
-$bad_reply
-原因: $reason
-忘掉它，重新以角色身份自然地回应对方刚才说的话。严禁暴露 AI 身份，严禁跳出角色。
-"""
+def responder_correct(bad_reply, reason, **_) -> str:
+    return (
+        f"你刚才的回复出了戏，被系统拦截：\n"
+        f"{bad_reply}\n"
+        f"原因: {reason}\n"
+        f"忘掉它，重新以角色身份自然地回应对方刚才说的话。严禁暴露 AI 身份，严禁跳出角色。\n"
+    )
