@@ -176,6 +176,22 @@ async def test_world_writes_reasoning_trace(tmp_path):
     assert entry["reply"], "轨迹里带上本回合回复"
 
 
+async def test_world_drains_background_tasks_on_shutdown(tmp_path):
+    """关闭时后台侧链必须收尾：登记处清空，且投放的记忆都已落地
+
+    记忆投递 / 蒸馏 / OOC 审计都是 fire-and-forget 的侧链。若不登记强引用，
+    任务可能执行途中被 GC 回收 —— 表现为「这一回合的记忆凭空消失」且毫无报错。
+    """
+    world = _make_world(tmp_path, ["第一句", "第二句"])
+    await _run(world)
+
+    assert world._tasks.pending == 0, "主循环退出后不应遗留后台任务"
+
+    recent = await world.memory.recent(20)
+    dialogues = [m.content for m in recent if m.content.startswith(("灵梦:", "幽幽子:"))]
+    assert len(dialogues) == 4, f"两回合应有 4 条对话记忆，实际 {dialogues}"
+
+
 async def test_world_trace_can_be_disabled(tmp_path):
     """关掉开关就不落轨迹"""
     world = _make_world(tmp_path, ["第一句"], trace_steps=False)

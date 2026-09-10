@@ -26,6 +26,7 @@ from ..schemas.memory_schema import MemoryItem
 from ..schemas.model_schema import ToolSpec
 from ..schemas.scene_schema import SceneSnapshot
 from ..utils.logger import LoggerManager
+from ..utils.tasks import TaskRegistry
 from ..utils.text import strip_control_chars
 from .character import Character
 from .initiative import describe_silence, evaluate_initiative
@@ -131,6 +132,7 @@ class TouhouWorld:
         session_id: str = "default",
         storage_dir: str | Path = "data",
         persistence=None,
+        shutdown_drain_timeout: float = 2.0,
     ) -> None:
         """
         Args:
@@ -151,6 +153,7 @@ class TouhouWorld:
             session_id: 会话标识，记忆与会话快照按它隔离（多群/多用户各自一个 id）
             storage_dir: 持久化根目录
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
+            shutdown_drain_timeout: 关闭时等待后台侧链收尾的秒数，超时则取消
         """
         self.logger = LoggerManager.get_logger("TOUHOU WORLD")
         self.eye = eye
@@ -164,7 +167,13 @@ class TouhouWorld:
         self.sessions = sessions
         self.session_id = session_id
         """ 会话标识：记忆与快照按它隔离 """
-        self.memory = MemoryManager(storage_dir=storage_dir, session_id=session_id)
+        self._tasks = TaskRegistry("WORLD")
+        """ 后台侧链（记忆投递 / 蒸馏 / OOC 审计）的强引用登记处：
+        `asyncio` 只对任务持弱引用，不登记就可能执行途中被 GC 回收；
+        关闭时也靠它统一取消并等在途任务收尾 """
+        self.memory = MemoryManager(
+            storage_dir=storage_dir, session_id=session_id, tasks=self._tasks
+        )
         self.health = HealthMonitor(
             bus=self.bus,
             session_provider=self._session_health,
@@ -210,6 +219,8 @@ class TouhouWorld:
         self._stall_min_interval = stall_min_interval
         self._ooc_retry = ooc_retry
         self._ooc_audit = ooc_audit
+        self._shutdown_drain_timeout = shutdown_drain_timeout
+        """ 关闭时等后台侧链收尾的秒数 """
 
         # --- 运行时状态 ---
         self._generation = 0
@@ -359,7 +370,7 @@ class TouhouWorld:
                         turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
                     )
                 if self._ooc_audit:
-                    asyncio.create_task(self._audit_reply(reply))
+                    self._tasks.spawn(self._audit_reply(reply), name="ooc-audit")
 
                 # 5. 角色状态跟踪 + 健康喂食
                 if conclusion.emotion:
@@ -370,7 +381,7 @@ class TouhouWorld:
                 self._distill_counter += 1
                 if self._distill_counter >= self._distill_every:
                     self._distill_counter = 0
-                    asyncio.create_task(self._distill())
+                    self._tasks.spawn(self._distill(), name="distill")
 
                 latency = time.monotonic() - t_start
                 self.logger.info(f"回合 {turn} 完成 | 延迟: {latency:.2f}s | 档位: {effort.value}")
@@ -392,6 +403,11 @@ class TouhouWorld:
             initiative_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await initiative_task
+            # 侧链收尾：先给一小段自然完成的机会（本回合的记忆写入应落盘），
+            # 超时则取消 —— 不能让慢蒸馏把关闭流程拖住
+            if self._tasks.pending:
+                self.logger.info(f"等待后台侧链收尾: {self._tasks.names()}")
+                await self._tasks.drain(timeout=self._shutdown_drain_timeout)
             if not self.lifecycle._stopped:
                 await self.lifecycle.shutdown()
 
@@ -402,7 +418,11 @@ class TouhouWorld:
             await self.mouth.send(self.character.name, greeting)
 
     def _remember_turn(self, snapshot: SceneSnapshot, reply: str) -> None:
-        """把本回合的用户输入与角色回复投递到记忆总线（异步侧链）"""
+        """把本回合的用户输入与角色回复投递到记忆总线（异步侧链）。
+
+        投递任务必须登记：这些任务同时驱动「记忆写入」与「持久化置脏」，
+        被 GC 回收等于这一回合的记忆凭空消失，且不会有任何报错。
+        """
         user_mem = MemoryItem(
             topic="对话", content=f"{snapshot.sender}: {snapshot.content}", memory_type="dialogue"
         )
@@ -413,8 +433,11 @@ class TouhouWorld:
             relate_ids={user_mem.memory_id},
         )
         for item in [user_mem, char_mem]:
-            asyncio.get_running_loop().create_task(
-                self.bus.publish(EventBus.new(EventTopic.MEMORY_WRITE, source="loop", payload=item))
+            self._tasks.spawn(
+                self.bus.publish(
+                    EventBus.new(EventTopic.MEMORY_WRITE, source="loop", payload=item)
+                ),
+                name="memory-write",
             )
 
     async def _record_health(self, turn: int, effort, t_start: float) -> None:

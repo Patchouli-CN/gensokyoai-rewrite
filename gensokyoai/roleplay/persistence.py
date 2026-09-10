@@ -28,6 +28,7 @@ from ..schemas.event_schema import EventTopic
 from ..schemas.memory_schema import MemoryItem
 from ..schemas.model_schema import Message
 from ..utils.logger import LoggerManager
+from ..utils.tasks import TaskRegistry
 
 _SCHEMA_VERSION = 2
 """ 会话文件格式版本（v2 起增加 character_state / world_runtime 段；旧档缺失时按默认跳过）"""
@@ -167,6 +168,9 @@ class SessionPersister:
         self._stopped = False
         self._flushed = False
         """ 是否已写过最终快照（保证 flush 幂等）"""
+        self._tasks = TaskRegistry("PERSIST")
+        """ 后台保存在飞任务的强引用登记处 —— 没有它，`_save_loop` 若被 GC 回收，
+        `_saving` 就永远停在 True，此后所有落盘静默失效 """
         self.turn_count = 0
         """ 已持久化的回合数（从恢复文件续计）"""
 
@@ -191,7 +195,7 @@ class SessionPersister:
         self._dirty.set()
         if not self._saving:
             self._saving = True
-            asyncio.get_running_loop().create_task(self._save_loop())
+            self._tasks.spawn(self._save_loop(), name="persist-save")
 
     async def _save_loop(self) -> None:
         """单飞保存循环：窗口期内的新脏标记合并进同一次落盘"""
@@ -282,6 +286,9 @@ class SessionPersister:
         **幂等**：重复调用是空操作。关闭流程的顺序是「先写快照、再清空会话」，
         若之后再次 flush，就会拿**已清空**的状态覆盖掉刚写好的好存档
         （`responder_messages` 会被写成空数组，历史对话全丢）。
+
+        同理，**在飞的后台保存在这里必须先取消**：`_save_loop` 可能正卡在合并窗口的
+        `sleep` 里，醒来后会拿关闭后的状态再写一次，同样会把好存档覆盖掉。
         """
         if self._flushed:
             self._logger.debug("已有最终快照，跳过重复 flush")
@@ -289,6 +296,10 @@ class SessionPersister:
         self._flushed = True
         self._stopped = True
         self._dirty.clear()
+        # 先置 _stopped 再取消：_save_loop 的 finally 会检查该标志，不会把脏标记再立起来
+        cancelled = await self._tasks.cancel_all()
+        if cancelled:
+            self._logger.debug(f"取消在飞保存任务 {cancelled} 个，改由最终快照接管")
         try:
             await self._write_snapshot()
             self._logger.info("关闭前会话快照已落盘")

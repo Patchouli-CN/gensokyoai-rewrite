@@ -4,13 +4,13 @@
 并用遗忘曲线 (重要性 + 访问次数 + 时间衰减) 决定淘汰。
 """
 
-import asyncio
 import time
 from collections import deque
 from pathlib import Path
 
 from ...schemas.memory_schema import MemoryItem
 from ...utils.logger import LoggerManager
+from ...utils.tasks import TaskRegistry
 from .store import LongMemoryStore
 
 # 核心设定，不可遗忘
@@ -32,6 +32,7 @@ class MemoryManager:
         *,
         storage_dir: str | Path | None = None,
         session_id: str | None = None,
+        tasks: TaskRegistry | None = None,
     ) -> None:
         """初始化。
 
@@ -40,8 +41,11 @@ class MemoryManager:
             storage_dir: 持久化根目录；None 表示不落盘（纯内存，兼容旧用法）
             session_id: 会话标识，长期记忆落到 <storage_dir>/<session_id>/long_memory.json；
                 与 storage_dir 必须同时提供或同时省略
+            tasks: 后台任务登记处；None 时自建。调用方（如 TouhouWorld）传入自己的
+                登记处，可让淘汰转存的任务与其侧链一起被 drain
         """
         self._logger = LoggerManager.get_logger("MEMORY")
+        self._tasks = tasks if tasks is not None else TaskRegistry("MEMORY")
 
         # --- 工作记忆（短期）：当前活跃的对话 ---
         self._work_mem_store: dict[str, MemoryItem] = {}
@@ -282,8 +286,8 @@ class MemoryManager:
             # 从队列里清理（FIFO 里可能有残留，但不影响正确性，访问时若不存在直接跳过）
             if min_item:  # 空检查
                 if min_item.importance > 0.3:
-                    # 有价值，转入长期记忆，异步落盘
-                    asyncio.create_task(self._long_mem_store.dump([min_item]))
+                    # 有价值，转入长期记忆，异步落盘（登记强引用，避免被 GC 回收）
+                    self._tasks.spawn(self._long_mem_store.dump([min_item]), name="long-dump")
                     self._logger.debug(f"记忆转存为长期记忆: {min_item.content[:30]}")
                 else:
                     self._logger.debug(f"记忆已彻底遗忘: {min_item.content[:30]} (fire and forget)")

@@ -373,6 +373,43 @@ async def test_double_flush_does_not_clobber_snapshot(tmp_path):
     assert second["responder_messages"][0]["content"] == "第一句"
 
 
+async def test_flush_cancels_inflight_save(tmp_path):
+    """flush 必须先取消在飞的保存任务 —— 否则它醒来后会把好存档再覆盖一次
+
+    时序：事件置脏 -> 后台保存任务卡在合并窗口的 sleep 里 -> 关闭流程 flush 写好最终快照
+    -> 会话被清空 -> 那个还在飞的任务醒来，拿清空后的状态又写一遍，
+    `responder_messages` 就变成空数组、历史对话全丢。
+    """
+    persister, bus, sessions = _make_persister(tmp_path)
+    sessions.import_messages(
+        "responder",
+        [Message(role="user", content="第一句"), Message(role="assistant", content="回应")],
+    )
+    await bus.publish(
+        EventBus.new(
+            EventTopic.MEMORY_WRITE,
+            source="loop",
+            payload=MemoryItem(topic="对话", content="关闭前的记忆", memory_type="dialogue"),
+        )
+    )
+    assert persister._tasks.pending == 1, "事件应已唤起在飞保存任务"
+    # 关键时序：让保存任务先跑起来、卡进合并窗口的 sleep 里。
+    # 若它还停在 while 判断上，flush 清掉脏标记后它会直接退出，覆盖就复现不出来了。
+    await asyncio.sleep(0.01)
+    assert persister._tasks.pending == 1, "保存任务应仍在合并窗口内"
+
+    await persister.flush()
+    assert persister._tasks.pending == 0, "flush 应把在飞保存任务收掉"
+
+    # 模拟关闭流程：快照写完后会话被清空；若在飞任务没被取消，它会在此时覆盖存档
+    sessions.reset_all()
+    await asyncio.sleep(0.3)
+
+    data = await persister._backend.load(persister._key)
+    assert len(data["responder_messages"]) == 2, "最终快照不应被迟到的保存覆盖"
+    assert data["work_memory"][0]["content"] == "关闭前的记忆"
+
+
 # ---------- 附加状态 codec ----------
 
 
