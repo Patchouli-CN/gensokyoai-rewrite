@@ -28,7 +28,7 @@ from ..schemas.event_schema import EventTopic
 from ..schemas.memory_schema import MemoryItem
 from ..schemas.model_schema import Message
 from ..utils.logger import LoggerManager
-from ..utils.tasks import TaskRegistry
+from ..utils.tasks import TaskManager
 
 _SCHEMA_VERSION = 2
 """ 会话文件格式版本（v2 起增加 character_state / world_runtime 段；旧档缺失时按默认跳过）"""
@@ -168,8 +168,8 @@ class SessionPersister:
         self._stopped = False
         self._flushed = False
         """ 是否已写过最终快照（保证 flush 幂等）"""
-        self._tasks = TaskRegistry("PERSIST")
-        """ 后台保存在飞任务的强引用登记处 —— 没有它，`_save_loop` 若被 GC 回收，
+        self._tasks = TaskManager("PERSIST")
+        """ 后台保存在飞任务的管理器 —— 没有它，`_save_loop` 若被 GC 回收，
         `_saving` 就永远停在 True，此后所有落盘静默失效 """
         self.turn_count = 0
         """ 已持久化的回合数（从恢复文件续计）"""

@@ -26,7 +26,7 @@ from ..schemas.memory_schema import MemoryItem
 from ..schemas.model_schema import ToolSpec
 from ..schemas.scene_schema import SceneSnapshot
 from ..utils.logger import LoggerManager
-from ..utils.tasks import TaskRegistry
+from ..utils.tasks import TaskManager
 from ..utils.text import strip_control_chars
 from .character import Character
 from .initiative import describe_silence, evaluate_initiative
@@ -167,8 +167,8 @@ class TouhouWorld:
         self.sessions = sessions
         self.session_id = session_id
         """ 会话标识：记忆与快照按它隔离 """
-        self._tasks = TaskRegistry("WORLD")
-        """ 后台侧链（记忆投递 / 蒸馏 / OOC 审计）的强引用登记处：
+        self._tasks = TaskManager("WORLD")
+        """ 后台侧链（记忆投递 / 蒸馏 / OOC 审计）的任务管理器：
         `asyncio` 只对任务持弱引用，不登记就可能执行途中被 GC 回收；
         关闭时也靠它统一取消并等在途任务收尾 """
         self.memory = MemoryManager(

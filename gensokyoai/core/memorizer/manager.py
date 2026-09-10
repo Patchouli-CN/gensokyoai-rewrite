@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ...schemas.memory_schema import MemoryItem
 from ...utils.logger import LoggerManager
-from ...utils.tasks import TaskRegistry
+from ...utils.tasks import TaskManager
 from .store import LongMemoryStore
 
 # 核心设定，不可遗忘
@@ -32,7 +32,7 @@ class MemoryManager:
         *,
         storage_dir: str | Path | None = None,
         session_id: str | None = None,
-        tasks: TaskRegistry | None = None,
+        tasks: TaskManager | None = None,
     ) -> None:
         """初始化。
 
@@ -41,11 +41,11 @@ class MemoryManager:
             storage_dir: 持久化根目录；None 表示不落盘（纯内存，兼容旧用法）
             session_id: 会话标识，长期记忆落到 <storage_dir>/<session_id>/long_memory.json；
                 与 storage_dir 必须同时提供或同时省略
-            tasks: 后台任务登记处；None 时自建。调用方（如 TouhouWorld）传入自己的
-                登记处，可让淘汰转存的任务与其侧链一起被 drain
+            tasks: 后台任务管理器；None 时自建。调用方（如 TouhouWorld）传入自己的
+                管理器，可让淘汰转存的任务与其侧链一起被 drain
         """
         self._logger = LoggerManager.get_logger("MEMORY")
-        self._tasks = tasks if tasks is not None else TaskRegistry("MEMORY")
+        self._tasks = tasks if tasks is not None else TaskManager("MEMORY")
 
         # --- 工作记忆（短期）：当前活跃的对话 ---
         self._work_mem_store: dict[str, MemoryItem] = {}

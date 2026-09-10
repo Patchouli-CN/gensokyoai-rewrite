@@ -1,4 +1,4 @@
-"""后台任务登记处 —— 让 fire-and-forget 任务持有一份强引用。
+"""后台任务管理器 —— 让 fire-and-forget 任务持有一份强引用。
 
 **为什么需要它**：`asyncio` 的事件循环对任务只持**弱引用**。`asyncio.create_task()`
 的返回值若无人接住，任务可能在执行途中被垃圾回收 —— CPython 上的表现是
@@ -9,7 +9,7 @@ a task disappearing mid-execution.*）。
 本项目的后果尤其严重：`SessionPersister` 的 `_saving` 标志在任务 `finally` 里复位，
 任务若被回收，标志永远停在 `True`，此后**所有落盘静默失效**。
 
-因此凡是「不想 await、丢到后台去跑」的协程，一律走 `TaskRegistry.spawn()`：
+因此凡是「不想 await、丢到后台去跑」的协程，一律走 `TaskManager.spawn()`：
 
 - 登记强引用，任务结束自动摘除（不会无限增长）
 - 异常统一记录，避免 `Task exception was never retrieved` 这类只有 GC 时才冒出来的告警
@@ -24,12 +24,12 @@ from typing import Any
 from .logger import LoggerManager
 
 
-class TaskRegistry:
-    """后台任务登记处：持强引用 + 统一异常记录 + 批量收尾。
+class TaskManager:
+    """后台任务管理器：持强引用 + 统一异常记录 + 批量收尾。
 
     典型用法::
 
-        tasks = TaskRegistry("WORLD")
+        tasks = TaskManager("WORLD")
         tasks.spawn(self._distill())          # 不必接返回值
         await tasks.drain(timeout=2.0)        # 关闭时等在途任务收尾
     """
@@ -48,14 +48,14 @@ class TaskRegistry:
     def spawn(
         self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
     ) -> asyncio.Task[Any]:
-        """把协程丢到后台执行，并在本登记处保留强引用。
+        """把协程丢到后台执行，并在本管理器登记强引用。
 
         Args:
             coro: 待执行协程
             name: 任务名；None 时用 `<label>-<序号>`
 
         Returns:
-            asyncio.Task: 任务句柄（调用方可以不接 —— 登记处已持引用）
+            asyncio.Task: 任务句柄（调用方可以不接 —— 管理器已持引用）
 
         Raises:
             RuntimeError: 当前没有运行中的事件循环
