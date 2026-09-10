@@ -6,6 +6,27 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.16] - 2026/9/9
+
+### 新增
+ - **启用 `ReasoningStep`：思考轨迹留档**（该 schema 此前**全项目从未被构造过**，是死代码）
+   - `_relay_think` 每轮解析成功后记录一条 `ReasoningStep`
+     （`round` / `thought` / `need_continue_think` / `action_hint` / `intent` / `emotion` / `confidence`），
+     随 `BrainConclusion.reasoning_steps` 带出
+     - 记录的是**模型自述**的 `need_continue_think`；若随后因工具调用被强制续轮，
+       循环层面的强制**不改动本步** —— 保留「模型当时怎么想」的原貌
+   - 每轮追加一条可读日志：`思考第 N 轮: 意图=… 情绪=… 续轮=… 思考=…`
+   - 新增 **`roleplay/trace.py` 的 `ReasoningTrace`**：每回合一行 JSONL，含逐轮步骤、
+     **两份 reasoning**（工程实现 / 模型原生）与本回合回复；
+     落 `<storage_dir>/traces/<session_id>.jsonl`，**按 5MB 轮转**保留上一代（`.1`）
+   - `TouhouWorld(trace_steps=True)` 可整体关闭；留档失败只记日志，**绝不影响主链路**
+
+### 测试
+ - 新增 10 例：轨迹 JSONL 结构（含 steps 与两份 reasoning）、逐回合追加、超限轮转、
+   关闭开关不写、写盘失败隔离、会话文件隔离；Brain 侧每轮一条 `ReasoningStep`、
+   OFF 快速路径无步骤、世界跑一回合后落轨迹、开关生效
+ - 全部 205 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.15] - 2026/9/9
 
 ### 变更
