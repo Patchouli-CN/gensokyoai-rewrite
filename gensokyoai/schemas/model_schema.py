@@ -11,28 +11,40 @@ type ToolFunc = Callable[..., Any] | Callable[..., Awaitable[Any]]
 
 
 class ModelConfig(msgspec.Struct, frozen=True):
-    """模型配置"""
+    """模型配置 —— **单一来源**。
 
-    base_url: str
-    """ 模型请求URL """
+    此前有 `schemas.ModelConfig` 与 `core.config.ModelSettings` 两个近乎重复的结构体，
+    装配时把后者传给声明收前者的 `provider.config()`，靠鸭子类型蒙混。现已合并：
+
+    - **装配 / 路由**：`provider` 决定用哪个 Provider 注册项；`context_window` 定会话预算
+    - **Provider 调用**：地址 / 模型名 / think / streaming / 超时 / 工具限制
+
+    顺带清掉两个**零消费者**的死字段：旧 `ModelSettings.reserve_for_output`
+    与旧 `ModelConfig.extra`（输出预留已由每次调用的 `max_new_tokens` 承担）。
+    """
+
+    provider: str = "llama_cpp"
+    """ Provider 注册名（对应 @Registry.register 的 name）"""
+    base_url: str = "http://127.0.0.1:8080/v1"
+    """ OpenAI 兼容服务地址（llama.cpp server / vLLM）"""
     token: str | None = None
-    """ 模型访问token """
-    model_name: str = "gpt-4"
+    """ 模型访问 token """
+    model_name: str = "qwen"
     """ 使用的模型名称 """
     think: bool = False
     """ 是否思考 """
     streaming: bool = True
-    """ 是否流式传输 """
+    """ 是否允许流式投递 """
     invoker_type: Literal["openai", "openai-responses", "claude"] = "openai"
     """ 调用模式 """
-    timeout: float = 30.0  # 新增：超时时间
-    """ 请求超时时间(秒) """
+    timeout: float = 120.0
+    """ 请求超时时间（秒）"""
+    context_window: int = 32768
+    """ 模型上下文窗口 —— 该模型下会话的 token 预算（由装配层下发到 SessionManager）"""
     tool_timeout: float = 10.0
     """ 单次工具执行超时（秒）；与 core.toolkit 默认值保持一致 """
     tool_max_result_chars: int = 2000
     """ 工具结果最大字符数，超出截断（保护上下文窗口）"""
-    extra: dict = {}
-    """ 额外参数 """
 
 
 _JSON_TYPES: dict[type, str] = {str: "string", int: "integer", float: "number", bool: "boolean"}

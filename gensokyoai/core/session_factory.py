@@ -1,7 +1,8 @@
 """SessionManager 装配工厂 —— 根据配置创建并装配多模型路由"""
 
+from ..schemas.model_schema import ModelConfig
 from ..utils.logger import LoggerManager
-from .config import GensokyoConfig, ModelSettings
+from .config import GensokyoConfig
 from .registry import Registry
 from .resource import GatedBackend, ResourceGate
 from .session_manager import SessionManager
@@ -55,41 +56,50 @@ def build_session_manager(
     Returns:
         已经装配好多个 backend 的 SessionManager
     """
-    sessions = SessionManager()
+    sessions = SessionManager(default_context_window=config.default_model.context_window)
 
     # 1. 创建默认 backend
     default_provider = Registry.get(config.default_model.provider)
     default_backend = _maybe_gate(default_provider().config(config.default_model), gate)
     sessions.set_default_backend(default_backend)
-    _logger.info(f"默认模型: {config.default_model.model_name} ({config.default_model.provider})")
+    _logger.info(
+        f"默认模型: {config.default_model.model_name} ({config.default_model.provider}) "
+        f"窗口={config.default_model.context_window}"
+    )
 
     # 2. 注册 Brain 模型
     brain_backend = _create_backend(config.brain, gate)
-    sessions.register_backend("brain.think", brain_backend)
+    sessions.register_backend(
+        "brain.think", brain_backend, context_window=config.brain.context_window
+    )
     _logger.info(f"Brain 模型: {config.brain.model_name} ({config.brain.provider})")
 
     # 3. 注册 Responder 模型
     responder_backend = _create_backend(config.responder, gate)
-    sessions.register_backend("responder", responder_backend)
+    sessions.register_backend(
+        "responder", responder_backend, context_window=config.responder.context_window
+    )
     _logger.info(f"Responder 模型: {config.responder.model_name} ({config.responder.provider})")
 
     # 4. 注册 OOC 模型（可选，默认用 brain）
     ooc_settings = config.ooc or config.brain
     ooc_backend = _create_backend(ooc_settings, gate)
-    sessions.register_backend("brain.ooc", ooc_backend)
+    sessions.register_backend("brain.ooc", ooc_backend, context_window=ooc_settings.context_window)
     _logger.info(f"OOC 模型: {ooc_settings.model_name} ({ooc_settings.provider})")
 
     # 5. 注册记忆压缩模型（可选，默认用 brain）
     mem_settings = config.memorizer or config.brain
     mem_backend = _create_backend(mem_settings, gate)
-    sessions.register_backend("memorizer.compress", mem_backend)
+    sessions.register_backend(
+        "memorizer.compress", mem_backend, context_window=mem_settings.context_window
+    )
     _logger.info(f"Memorizer 模型: {mem_settings.model_name} ({mem_settings.provider})")
 
     return sessions
 
 
-def _create_backend(settings: ModelSettings, gate: ResourceGate | None = None):
-    """根据 ModelSettings 创建 backend 实例（可选包一层资源闸门）"""
+def _create_backend(settings: ModelConfig, gate: ResourceGate | None = None):
+    """根据 ModelConfig 创建 backend 实例（可选包一层资源闸门）"""
     provider_cls = Registry.get(settings.provider)
     backend = provider_cls().config(settings)
     return _maybe_gate(backend, gate)

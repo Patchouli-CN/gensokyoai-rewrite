@@ -125,3 +125,21 @@ async def test_context_usage_ratio_and_owners():
     assert 0.0 < sm.context_usage("responder") < 1.0
     assert sm.context_usage("不存在") == 0.0
     assert sm.owners() == ["responder"]
+
+
+async def test_default_context_window_applies_to_new_sessions():
+    """default_context_window 作为新建会话的默认预算"""
+    sm = SessionManager(default_context_window=2048)
+    sm.set_default_backend(FakeBackend())
+    await sm.call("responder", [Message(role="user", content="hi")])
+    assert sm._sessions["responder"].max_tokens == 2048
+
+
+async def test_set_context_window_overrides_and_ignores_invalid():
+    """set_context_window 覆盖预算；非法值（<=0）被忽略"""
+    sm = SessionManager(default_context_window=1000)
+    sm.set_context_window("responder", 4000)
+    assert sm._sessions["responder"].max_tokens == 4000
+
+    sm.set_context_window("responder", 0)
+    assert sm._sessions["responder"].max_tokens == 4000, "非法值不应改动预算"

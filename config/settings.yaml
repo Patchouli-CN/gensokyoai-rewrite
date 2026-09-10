@@ -10,7 +10,6 @@ default_model:
   think: false
   streaming: true
   context_window: 32768
-  reserve_for_output: 2048
   tool_timeout: 10.0
   tool_max_result_chars: 2000
 

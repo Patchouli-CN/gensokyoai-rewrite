@@ -56,13 +56,15 @@ class SessionManager:
     Brain 用 DeepSeek，Responder 用 Kimi，OOC 用本地小模型等。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, default_context_window: int = 8192) -> None:
         self._logger = LoggerManager.get_logger("SESSION")
         self._counter = DefaultCounter()
         self._sessions: dict[str, VirtualSession] = {}
         self._backends: dict[str, ChatBackend] = {}
         self._default_backend: ChatBackend | None = None
         """ 默认 backend，未指定 owner 时使用 """
+        self._default_context_window = default_context_window
+        """ 新建会话的默认上下文预算（装配层可用 set_context_window 逐 owner 覆盖）"""
         self._usage: dict[str, Usage] = {}
         """ 各 owner 的累计 token 用量（供健康监控计量）"""
 
@@ -115,16 +117,21 @@ class SessionManager:
             completion_tokens=current.completion_tokens + usage.completion_tokens,
         )
 
-    def register_backend(self, owner: str, backend: ChatBackend) -> None:
+    def register_backend(
+        self, owner: str, backend: ChatBackend, *, context_window: int | None = None
+    ) -> None:
         """注册某个 owner 的专属 backend。
 
         Args:
             owner: 模块标识，如 "brain.think" / "responder"
             backend: 对应模型的 ChatBackend 实现
+            context_window: 该 owner 的上下文预算（None 表示沿用默认）
         """
         if owner in self._backends:
             self._logger.warning(f"覆盖已注册的 backend: {owner}")
         self._backends[owner] = backend
+        if context_window is not None:
+            self.set_context_window(owner, context_window)
         self._logger.info(f"注册 backend: {owner} -> {type(backend).__name__}")
 
     def set_default_backend(self, backend: ChatBackend) -> None:
@@ -321,6 +328,18 @@ class SessionManager:
         session.messages = [m for m in session.messages if m.role != "system"]
         session.messages.insert(0, Message(role="system", content=content))
 
+    def set_context_window(self, owner: str, tokens: int) -> None:
+        """设置某 owner 会话的上下文预算（装配层按模型配置下发）。
+
+        Args:
+            owner: 模块标识
+            tokens: 预算 token 数；<= 0 时忽略
+        """
+        if tokens <= 0:
+            return
+        self._get_or_create(owner).max_tokens = tokens
+        self._logger.debug(f"会话预算设置: owner={owner} max_tokens={tokens}")
+
     def reset(self, owner: str) -> None:
         """清空某个 owner 的会话"""
         self._sessions.pop(owner, None)
@@ -337,15 +356,16 @@ class SessionManager:
         return sum(self._counter.count(m.content) for m in session.messages)
 
     def _get_or_create(self, owner: str) -> VirtualSession:
-        """取会话，不存在则创建"""
+        """取会话，不存在则创建（用管理器默认的上下文预算）"""
         if owner not in self._sessions:
             now = time.time()
             self._sessions[owner] = VirtualSession(
                 session_id=f"{owner}-{uuid.uuid4().hex[:8]}",
                 owner=owner,
+                max_tokens=self._default_context_window,
                 created_at=now,
             )
-            self._logger.debug(f"创建虚拟会话: {owner}")
+            self._logger.debug(f"创建虚拟会话: {owner} 预算={self._default_context_window}tok")
         return self._sessions[owner]
 
     def _trim(self, messages: list[Message], budget: int) -> list[Message]:
