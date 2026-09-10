@@ -343,3 +343,28 @@ async def test_persister_survives_corrupt_archive(tmp_path):
     key_path = persister._backend._path(persister._key)
     key_path.write_bytes(msgspec.json.encode({"turn_count": "not-a-number", "work_memory": []}))
     assert await persister.restore() is False
+
+
+async def test_double_flush_does_not_clobber_snapshot(tmp_path):
+    """重复 flush 是空操作 —— 否则关闭流程清空会话后再 flush 会把好存档覆盖成空
+
+    关闭顺序是「先写快照、再 reset_all 清空会话」；若之后又被 flush 一次，
+    快照里的 responder_messages 会被写成空数组，历史对话全丢。
+    """
+    persister, _, sessions = _make_persister(tmp_path)
+    sessions.import_messages(
+        "responder",
+        [Message(role="user", content="第一句"), Message(role="assistant", content="回应")],
+    )
+
+    await persister.flush()
+    first = await persister._backend.load(persister._key)
+    assert len(first["responder_messages"]) == 2, "首次 flush 应写入会话历史"
+
+    # 模拟关闭流程：会话被清空后又被 flush 一次
+    sessions.reset_all()
+    await persister.flush()
+
+    second = await persister._backend.load(persister._key)
+    assert len(second["responder_messages"]) == 2, "重复 flush 不应覆盖已有存档"
+    assert second["responder_messages"][0]["content"] == "第一句"

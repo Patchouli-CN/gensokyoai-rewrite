@@ -71,6 +71,8 @@ class SessionPersister:
         self._dirty = asyncio.Event()
         self._saving = False
         self._stopped = False
+        self._flushed = False
+        """ 是否已写过最终快照（保证 flush 幂等）"""
         self.turn_count = 0
         """ 已持久化的回合数（从恢复文件续计）"""
 
@@ -164,7 +166,16 @@ class SessionPersister:
         return True
 
     async def flush(self) -> None:
-        """立即同步落盘最终快照（优雅关闭用），并停止事件触发的保存。"""
+        """立即同步落盘最终快照（优雅关闭用），并停止事件触发的保存。
+
+        **幂等**：重复调用是空操作。关闭流程的顺序是「先写快照、再清空会话」，
+        若之后再次 flush，就会拿**已清空**的状态覆盖掉刚写好的好存档
+        （`responder_messages` 会被写成空数组，历史对话全丢）。
+        """
+        if self._flushed:
+            self._logger.debug("已有最终快照，跳过重复 flush")
+            return
+        self._flushed = True
         self._stopped = True
         self._dirty.clear()
         try:
