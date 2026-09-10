@@ -6,6 +6,36 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.7] - 2026/9/9
+
+### 新增
+ - **工程护栏**：新增 `pyproject.toml`（项目元数据 + 依赖 + `[tool.ruff]`/`[tool.mypy]`/`[tool.pytest.ini_options]`）与 `.github/workflows/ci.yml`（ruff check + ruff format --check + mypy + pytest）；全代码库一次性 `ruff format` 归一、`ruff check` 清零、`mypy` 清零（16 处类型债修掉）；pytest 配置从 `pytest.ini` 并入 `pyproject`。`requires-python = ">=3.14"`（代码用了 `uuid.uuid7()`）
+ - **口层（输出投递层）**：与 `eyes` 输入层对称的 `gensokyoai/mouth/` —— 眼睛看（eyes），脑子想（brain），嘴巴说（mouth）。`Mouth` 抽象（`send` 完整投递 + `begin`/`delta`/`end` 流式接口，基类提供缓冲兜底），内置实现 `ConsoleMouth`（控制台逐块即时打印，`supports_streaming=True`）作为默认
+ - **主动发言优化**：`CharacterCard` 新增 `expression_base`（表达欲基线/话痨度 0~1），`evaluate_initiative` 用它替代写死的 0.5；新增 `describe_silence()`（零 token）按「悬着问题 / 长时间沉默 / 普通」三档生成自然的冷场环境描述，替换主动发言里写死的「（周围安静下来了）」——幽幽子卡设为 0.7
+ - **提示词双模渲染**：`Prompt` 支持原生式 `renderer`（接收 `**params` 的 Python 函数），`PromptManager.prompt` 按 `inspect.signature` 自动识别——无参=数据式（`$var` + `string.Template`），有参=原生式（直接拼字符串，条件/循环/分支全程原生 Python）；现有模板全部转为原生 Python 函数
+ - **模型流式能力（投递层地基层）**：`models/base.py` 的 `ModelProvider` 新增 `supports_streaming`（默认 False）与 `chat_stream()`（基类兜底实现整段一次性产出，子类覆盖做真流式）；`OpenAICompatProvider` 落实真 SSE 流式 `chat_stream()`（`_iter_sse_events` 逐块解析 `data:` 事件，测试可覆写），末块附 `finish_reason` 与累计 `usage`
+ - `schemas/model_schema.py` 新增 `StreamEvent`（正文块 `delta` + 末块 `finish_reason`/`usage`），并在 `schemas/__init__.py` 导出
+ - `_build_payload` 增加 `stream` 参数：**缓冲路径恒 `False`（不受配置影响），仅投递层 `chat_stream()` 置 `True`**
+ - `models/llama_cpp.py`：`_build_payload` 兼容 `stream` 参数并保留 `think=False` 的模板思考开关
+
+### 变更
+ - **控制台真流式**：`SessionManager` 新增 `call_stream()`（路由到 `backend.chat_stream`，后端无 `chat_stream` 时回退 `chat()` 单块），`Responder` 新增 `respond_stream()`（逐块 yield 文本，含半截续写流式拼接与情绪润色尾缀）；`TouhouWorld` 抽出统一的 `_express()` 表达+投递入口（**主循环与主动发言共用**），按 `mouth.supports_streaming` 分流——流式走 `_deliver_stream`（`mouth.begin/delta/end` 逐块显示，OOC 预审因见不到完整文本而跳过、靠后置深审兜底），非流式保持原 `respond()`+OOC 守门+`send()`
+ - **接力思考上限收紧（防打转）**：`_get_max_rounds` 从 LOW=4/MID=8/HIGH=12/MAX=999 收紧为 LOW=2/MID=3/HIGH=5/MAX=8 —— MAX 不再近乎无限打转，简单档缩短等待
+ - `TouhouWorld` 输出改为走 `mouth`（新增可注入 `mouth: Mouth | None = None`，缺省 `ConsoleMouth`）：主回复 / 开场白 `_greet`（改 async）/ 过渡语 `_maybe_stall` / 主动发言 `_try_speak` 的 `print(...)` 全部替换为 `await self.mouth.send(...)`
+ - `main.py` 注入 `ConsoleMouth()`（与 `eye` 对称）
+ - `ModelConfig.streaming` 原本是「死字段」（配置里有、Provider 却硬编码 `stream: False`），现经 `OpenAICompatProvider.supports_streaming` 接活为「该后端是否允许流式投递」的真实开关
+ - 内部模块（brain/ooc/记忆压缩）仍走 `chat()` 缓冲路径，一行未改；流式仅供投递层（给用户看的那一条）使用
+
+### 修复
+ - `utils/logger.py`：`LoggerManager._cache: dict[str, loguru.Logger]` 的注解改为惰性字符串 —— loguru 0.7.3 不再公开 `loguru.Logger`（仅私有 `_Logger`），原注解在模块导入时抛 `AttributeError`，导致整个包不可 import（此问题先于本次改动存在）
+ - `conftest.py`（新增）：修复 `tmp_path` 用例在受限沙箱/CI 报 `PermissionError` 的问题 —— 覆写 `tmp_path` 夹具，把测试临时目录建在工作区内 `.ws_pytest_tmp`（`os.makedirs` 默认 mode，可写；绕开 `tempfile.mkdtemp` 的 0o700 只读 mode 与 pytest 默认写到系统 Temp 的限制），用后即删
+
+### 测试
+ - 新增口层用例：基类流式缓冲兜底 / ConsoleMouth 支持流式 / send 完整打印 / 流式逐块效果；新增模型流式用例：SSE 事件逐块解析与末块 finish/usage、基类 `chat_stream()` 兜底整段、`supports_streaming` 反映配置、`chat()` 缓冲路径 `stream=False`、LlamaProvider 流式保留 `think` 开关；非 tmp_path 用例 79 例全绿
+ - `test_world_persistence_e2e` 的 `_EchoBackend` 升级为贴合当前架构：对 brain.think 接力思考返回合法 JSON（need_continue_think=false，一轮收尾，不再烧轮次）；最终回复用独立 reply 计数器，与大脑接力调用解耦，使「回复1/回复2」断言成立 —— 该测试此前因假后端未跟上接力思考协议而断言失败（非业务回归）
+ - 新增流式投递用例：call_stream 走真流式逐块 + 末块 finish/usage、后端无 chat_stream 时回退 chat() 单块、respond_stream 逐块产出 + 情绪「愤怒」尾缀「！」、半截续写流式拼接、`_express` 流式投递（主动发言同款路径，控制台逐块显示）；brain 接力思考上限封闭断言（LOW=2 / MAX<=8）
+ - 全部 114 例全绿（含此前受沙箱 tmp_path 限制的持久化用例）
+
 ## [0.0.6] - 2026/9/9
 
 ### 新增
