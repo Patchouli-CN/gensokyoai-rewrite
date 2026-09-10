@@ -6,6 +6,28 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.8] - 2026/9/9
+
+### 新增
+ - **资源闸门与限流**（`core/resource.py` + `schemas/quota_schema.py`）：设计锚点是「本地单模型是串行稀缺资源，多路的本质是排队+路由而非并行」——
+   - `ResourceGate`：全局并发 + 每租户速率（rpm）/ 每日调用 / 每日 token 配额，超限抛 `QuotaExceeded`（带 `retry_after`），不静默丢弃
+   - `IngressLimiter`：入口令牌桶，按用户早拒（不占模型资源）
+   - `GatedBackend`：包住 `ChatBackend`，把每次调用汇入闸门（**装配处一行接入**，对 SessionManager 完全透明）
+   - `tenant_scope()`（contextvars）：世界任务包在 `tenant_scope(channel_id)` 里，任务内模型调用自动归属租户，**无需把身份穿透 SessionManager**
+   - `ResourceSettings` 配置段 + `build_resource_gate()`；`build_session_manager(config, gate=None)` 可选接线
+ - **多路频道中枢**（`roleplay/hub.py`）：`ChannelHub` 以「频道 = 场景 = 世界」为单位做多路复用与世界注册表，连接挂载/退订、频道空闲 TTL 回收（走世界自身优雅关闭，落盘记忆与会话）；`WorldFactory` 可注入，默认工厂每频道一个 `session_id`（持久化天然隔离）
+ - **`eyes/queue.py` `QueuePerceiver`**：N 路输入合流成一条快照流（多路复用的输入接合点），带背压保护与停止唤醒
+ - **`mouth/broadcast.py` `BroadcastMouth`**：输出广播给频道所有在线连接（多路复用的输出接合点），支持流式 `begin/delta/end` 逐帧广播
+ - **WebSocket 服务后端**（`backends/ws_server/`）：aiohttp 入口 `/ws/{channel}` 与 `/ws`，`WsSink` 作为连接订阅者，入口限流超速回 `notice` 帧；`serve()` 非阻塞启动、`_demo()` 可直接跑
+
+### 变更
+ - `GensokyoConfig` 增 `resource` 配置段
+ - `build_session_manager` 支持传入资源闸门，逐个 backend 包 `GatedBackend`
+
+### 测试
+ - 新增 27 例：资源闸门（速率窗口/每日预算/被拒不计数/全局串行/租户记账/流式兜底）、频道中枢（多路合流/广播一致/频道隔离/空闲回收/端到端默认世界）、队列感知器（取用/停止/满队丢弃）、广播口（逐帧/失败摘除）、WS 服务（路由/投递/真实 TestServer 端到端/入口限流 notice）
+ - 全部 141 例全绿（ruff check / ruff format --check / mypy / pytest 四项通过）
+
 ## [0.0.7] - 2026/9/9
 
 ### 新增
