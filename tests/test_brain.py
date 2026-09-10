@@ -56,6 +56,13 @@ def test_route_empty_is_off():
     assert route(_snapshot("")) is BrainThinkEffort.OFF
 
 
+def test_get_max_rounds_bounded():
+    """思考接力上限封闭，不出现 999 类打转值；LOW 至少 2 给工具留消化空间"""
+    engine = BrainEngine(SessionManager())
+    assert engine._get_max_rounds(BrainThinkEffort.LOW) == 2
+    assert engine._get_max_rounds(BrainThinkEffort.MAX) <= 8, "MAX 应封闭上限，不再无限打转"
+
+
 async def test_think_off_uses_fast_path_without_model_call():
     """OFF 档零模型调用，走快速路径透传"""
     backend = FakeBackend('{"thought": "x"}')
