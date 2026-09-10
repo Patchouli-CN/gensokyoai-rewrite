@@ -11,3 +11,24 @@ __pycache__/
 
 # runtime artifacts
 long_memory.json
+
+# 构建/工具缓存
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# pytest temp (conftest puts it in workspace)
+temp/
+.pytest_tmp/
+.ws_pytest_tmp/
+.pytest_basetmp/
+
+# sandbox 探针/残留临时目录（沙箱拒绝删除，gitignore 以免入库）
+.__p*/
+.ws_probe*/
+

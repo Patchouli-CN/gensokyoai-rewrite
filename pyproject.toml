@@ -1,0 +1,76 @@
+[project]
+name = "gensokyoai"
+version = "0.0.7"
+description = "幻想乡 AI 角色扮演引擎（重写版）—— 用外部工程把推理与记忆挤出上下文，让小模型角色扮演更稳更快"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.14"
+keywords = ["ai", "roleplay", "gensokyo", "llm", "local-model"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Games/Entertainment",
+]
+
+dependencies = [
+    "aiohttp>=3.9",
+    "msgspec",
+    "loguru",
+    "pyyaml",
+    "aioconsole",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.15",
+    "mypy>=1.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gensokyoai"]
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+# ------------------------------------------------------------------ ruff
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # 行宽交给 formatter
+    "E731",   # 允许 lambda 赋值（少量场景更清晰）
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+# ------------------------------------------------------------------ mypy
+[tool.mypy]
+python_version = "3.14"
+ignore_missing_imports = true
+# 宽松起步：先只做基础检查，避免一次性淹没在历史类型债里；后续逐步收紧
+check_untyped_defs = true
+disallow_untyped_defs = false
+warn_unused_ignores = false
+warn_redundant_casts = false
+no_implicit_optional = true
+exclude = ["^temp/", "^tests/"]
