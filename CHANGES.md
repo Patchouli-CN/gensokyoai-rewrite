@@ -6,6 +6,34 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [0.0.11] - 2026/9/9
+
+### 新增
+ - **装配入口收进包内 + console 入口（让「package 方式调用」真正可用）**：
+   此前装配逻辑写在**仓库根目录**的 `main.py` 里，而 wheel 只打包 `gensokyoai/` ——
+   `pip install` 之后既没有可执行命令、配置文件也不在包里，**装完根本跑不起来**。
+   - `gensokyoai/app.py`：`build_session_and_character()`（会话 + 角色）、`build_world()`（完整世界），
+     装配路径可被 CLI / WebSocket 后端 / 测试复用
+   - `main(argv)`：控制台 CLI（`--config` / `--character` / `--session` / `--log-level` / `--log-file`），
+     `[project.scripts]` 的 `gensokyoai` 指向它；资源缺失时返回退出码 2 并给可读提示，不抛裸栈
+   - `resolve_resource()`：**优先工作目录**（仓库内开发用可随意改的 `config/`），
+     **回落包内自带资源**（安装后），返回绝对路径
+ - **`[project.scripts]`**：`gensokyoai`（控制台）与 `gensokyoai-ws`（WebSocket 多路频道）
+ - **资源打包**：`[tool.hatch.build.targets.wheel.force-include]` 把仓库根 `config/`
+   映射进 wheel 的 `gensokyoai/_resources/config/` —— **单一真相来源仍在仓库根**，不复制第二份
+ - WebSocket 后端新增 `main()`（`--host` / `--port` / `--idle-ttl` / `--config` / `--character`），
+   装配复用 `app.build_session_and_character()`，去掉原先复制的一份装配逻辑
+ - dev extras 增 `build` + `hatchling`（可本地构建 wheel）
+
+### 变更
+ - `main.py` 变为薄壳（装配已收进包）：`from gensokyoai.app import main`
+
+### 测试
+ - 新增 9 例：资源解析优先工作目录且返回绝对路径、**回落包内自带资源（模拟安装后）**、
+   缺失时报可读错误、会话+角色装配齐全、世界装配注入 IO 与 session_id、默认控制台 IO、
+   CLI 默认值与覆盖、资源缺失返回退出码 2、WS 入口参数与复用
+ - 全部 182 例全绿（ruff check / ruff format --check / mypy / pytest）
+
 ## [0.0.10] - 2026/9/9
 
 ### 变更
