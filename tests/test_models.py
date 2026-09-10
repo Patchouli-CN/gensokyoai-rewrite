@@ -3,13 +3,19 @@
 import msgspec
 
 from gensokyoai.core.registry import Registry
-from gensokyoai.models.base import split_think, to_openai_messages
+from gensokyoai.models.base import (
+    ModelProvider,
+    OpenAICompatProvider,
+    split_think,
+    to_openai_messages,
+)
 from gensokyoai.models.llama_cpp import LlamaProvider
 from gensokyoai.schemas.model_schema import (
     CompletionResult,
     Message,
     ModelConfig,
     ToolSpec,
+    Usage,
 )
 
 
@@ -54,10 +60,14 @@ def test_split_think_without_tags():
 def test_llama_provider_build_result_splits_inline_think():
     """server 未分离思考段时，LlamaProvider 从正文剥离 <think>"""
     provider = LlamaProvider()
-    result = provider._build_result({
-        "choices": [{"message": {"content": "<think>思考中</think>正文回复"}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    })
+    result = provider._build_result(
+        {
+            "choices": [
+                {"message": {"content": "<think>思考中</think>正文回复"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+    )
     assert result.content == "正文回复"
     assert result.reasoning == "思考中"
 
@@ -65,9 +75,11 @@ def test_llama_provider_build_result_splits_inline_think():
 def test_llama_provider_prefers_reasoning_content():
     """server 已分离 reasoning_content 时直接采用，不再动正文"""
     provider = LlamaProvider()
-    result = provider._build_result({
-        "choices": [{"message": {"content": "正文", "reasoning_content": "服务端思考"}}],
-    })
+    result = provider._build_result(
+        {
+            "choices": [{"message": {"content": "正文", "reasoning_content": "服务端思考"}}],
+        }
+    )
     assert result.content == "正文"
     assert result.reasoning == "服务端思考"
 
@@ -88,7 +100,10 @@ def _llama_payload(think: bool) -> dict:
         ModelConfig(base_url="http://127.0.0.1:8080/v1", model_name="qwen", think=think),
     )
     return provider._build_payload(
-        [Message(role="user", content="你好")], max_new_tokens=400, temperature=0.4, stop=None,
+        [Message(role="user", content="你好")],
+        max_new_tokens=400,
+        temperature=0.4,
+        stop=None,
     )
 
 
@@ -109,9 +124,14 @@ def test_to_openai_messages_serializes_tool_calls():
     """assistant 消息的 tool_calls 按 OpenAI 协议序列化"""
     from gensokyoai.schemas.model_schema import ToolCall
 
-    msgs = [Message(role="assistant", tool_calls=[
-        ToolCall(id="call_1", name="get_weather", arguments='{"city": "北京"}'),
-    ])]
+    msgs = [
+        Message(
+            role="assistant",
+            tool_calls=[
+                ToolCall(id="call_1", name="get_weather", arguments='{"city": "北京"}'),
+            ],
+        )
+    ]
     payload = to_openai_messages(msgs)[0]
     assert payload["tool_calls"][0] == {
         "id": "call_1",
@@ -136,19 +156,28 @@ def test_tool_spec_openai_schema():
 def test_build_result_parses_tool_calls():
     """响应中的 tool_calls 解析为 ToolCall 列表"""
     provider = LlamaProvider()
-    result = provider._build_result({
-        "choices": [{
-            "message": {
-                "content": "",
-                "tool_calls": [{
-                    "id": "call_9",
-                    "type": "function",
-                    "function": {"name": "get_weather", "arguments": '{"city": "上海"}'},
-                }],
-            },
-            "finish_reason": "tool_calls",
-        }],
-    })
+    result = provider._build_result(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_9",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": '{"city": "上海"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+    )
     assert result.tool_calls is not None
     assert result.tool_calls[0].name == "get_weather"
     assert result.tool_calls[0].arguments == '{"city": "上海"}'
@@ -170,16 +199,21 @@ class _StubProvider(LlamaProvider):
 def _tool_call_response(cid: str, name: str, args: str) -> dict:
     """构造一轮带 tool_calls 的响应"""
     return {
-        "choices": [{
-            "message": {
-                "content": "",
-                "tool_calls": [{
-                    "id": cid, "type": "function",
-                    "function": {"name": name, "arguments": args},
-                }],
-            },
-            "finish_reason": "tool_calls",
-        }],
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": cid,
+                            "type": "function",
+                            "function": {"name": name, "arguments": args},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
         "usage": {"prompt_tokens": 50, "completion_tokens": 10},
     }
 
@@ -201,13 +235,16 @@ def _configured(responses: list[dict]) -> _StubProvider:
 
 async def test_tool_loop_executes_sync_and_unknown_tools():
     """同步工具被执行、未知工具回传错误文本、最终拿到收尾回复与累计用量"""
-    provider = _configured([
-        _tool_call_response("call_1", "get_weather", '{"city": "北京"}'),
-        _tool_call_response("call_2", "no_such_tool", "{}"),
-        _final_response("北京今天晴"),
-    ])
+    provider = _configured(
+        [
+            _tool_call_response("call_1", "get_weather", '{"city": "北京"}'),
+            _tool_call_response("call_2", "no_such_tool", "{}"),
+            _final_response("北京今天晴"),
+        ]
+    )
     result = await provider.chat(
-        [Message(role="user", content="北京天气？")], tools=[ToolSpec(get_weather)],
+        [Message(role="user", content="北京天气？")],
+        tools=[ToolSpec(get_weather)],
     )
     assert result.content == "北京今天晴"
     assert result.usage.prompt_tokens == 50 + 50 + 80
@@ -232,12 +269,15 @@ async def test_tool_loop_executes_sync_and_unknown_tools():
 
 async def test_tool_loop_executes_async_tool():
     """异步工具走 ainvoke 路径"""
-    provider = _configured([
-        _tool_call_response("call_a", "fetch_quote", '{"symbol": "AAPL"}'),
-        _final_response("AAPL 涨了"),
-    ])
+    provider = _configured(
+        [
+            _tool_call_response("call_a", "fetch_quote", '{"symbol": "AAPL"}'),
+            _final_response("AAPL 涨了"),
+        ]
+    )
     result = await provider.chat(
-        [Message(role="user", content="AAPL 行情？")], tools=[ToolSpec(fetch_quote)],
+        [Message(role="user", content="AAPL 行情？")],
+        tools=[ToolSpec(fetch_quote)],
     )
     assert result.content == "AAPL 涨了"
     tool_msgs = [m for m in provider.payloads[1]["messages"] if m["role"] == "tool"]
@@ -246,14 +286,121 @@ async def test_tool_loop_executes_async_tool():
 
 async def test_tool_loop_bad_arguments_json_degrades():
     """工具参数 JSON 损坏时按空参数执行，不崩链"""
-    provider = _configured([
-        _tool_call_response("call_x", "get_weather", "不是JSON"),
-        _final_response("默认城市晴"),
-    ])
+    provider = _configured(
+        [
+            _tool_call_response("call_x", "get_weather", "不是JSON"),
+            _final_response("默认城市晴"),
+        ]
+    )
     result = await provider.chat(
-        [Message(role="user", content="天气？")], tools=[ToolSpec(get_weather)],
+        [Message(role="user", content="天气？")],
+        tools=[ToolSpec(get_weather)],
     )
     assert result.content == "默认城市晴"
     tool_msgs = [m for m in provider.payloads[1]["messages"] if m["role"] == "tool"]
     # city 缺参由 ToolSpec.invoke 的异常兜底转成错误文本，而非中断
     assert len(tool_msgs) == 1
+
+
+class _StreamingStub(OpenAICompatProvider):
+    """不发真实 HTTP，按脚本产出 SSE 事件并记录请求体"""
+
+    def __init__(self, events: list[dict]) -> None:
+        super().__init__()
+        self._events = list(events)
+        self.payloads: list[dict] = []
+
+    async def _iter_sse_events(self, http, url, payload, headers):
+        self.payloads.append(payload)
+        for ev in self._events:
+            yield ev
+
+
+def test_supports_streaming_reflects_config():
+    """supports_streaming 由配置 streaming 决定；未配置/缺省为 False"""
+    on = LlamaProvider().config(
+        ModelConfig(base_url="http://x/v1", model_name="qwen", streaming=True)
+    )
+    assert on.supports_streaming is True
+    off = LlamaProvider().config(
+        ModelConfig(base_url="http://x/v1", model_name="qwen", streaming=False)
+    )
+    assert off.supports_streaming is False
+    assert LlamaProvider().supports_streaming is False
+
+
+def test_default_payload_stream_flag_off():
+    """chat() 缓冲路径恒 stream=False，不受配置 streaming 影响"""
+    payload = _llama_payload(think=False)
+    assert payload["stream"] is False
+
+
+async def test_chat_stream_parses_sse():
+    """真流式：逐块解析 SSE delta，末块附 finish_reason 与累计 usage"""
+    events = [
+        {"choices": [{"delta": {"content": "唔"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "……让我想想"}, "finish_reason": None}]},
+        {
+            "choices": [{"delta": {"content": ""}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 8},
+        },
+    ]
+    provider = _StreamingStub(events).config(
+        ModelConfig(base_url="http://127.0.0.1:8080/v1", model_name="qwen"),
+    )
+    chunks = [ev async for ev in provider.chat_stream([Message(role="user", content="hi")])]
+
+    assert [c.delta for c in chunks[:-1]] == ["唔", "……让我想想"]
+    assert chunks[-1].delta == ""
+    assert chunks[-1].finish_reason == "stop"
+    assert chunks[-1].usage is not None
+    assert chunks[-1].usage.prompt_tokens == 10
+    assert chunks[-1].usage.completion_tokens == 8
+    # 流式请求体应带 stream=True
+    assert provider.payloads[0]["stream"] is True
+
+
+async def test_chat_stream_llama_payload_keeps_think_switch():
+    """LlamaProvider 流式请求体：stream=True 同时保留 think=False 的模板思考开关"""
+
+    class _LlamaStreamStub(LlamaProvider):
+        def __init__(self):
+            super().__init__()
+            self.payloads = []
+
+        async def _iter_sse_events(self, http, url, payload, headers):
+            self.payloads.append(payload)
+            yield {"choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]}
+
+    stub = _LlamaStreamStub().config(
+        ModelConfig(base_url="http://127.0.0.1:8080/v1", model_name="qwen", think=False),
+    )
+    _ = [ev async for ev in stub.chat_stream([Message(role="user", content="hi")])]
+    payload = stub.payloads[0]
+    assert payload["stream"] is True
+    assert payload["chat_template_kwargs"]["thinking"] is False
+
+
+async def test_chat_stream_base_fallback_single_event():
+    """未实现真流式的子类，兜底 chat() 整段一次性产出"""
+
+    class _PlainProvider(ModelProvider):
+        def config(self, conf):
+            self._conf = conf
+            return self
+
+        async def chat(
+            self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None
+        ):
+            return CompletionResult(
+                content="整段文本",
+                finish_reason="stop",
+                usage=Usage(prompt_tokens=5, completion_tokens=3),
+            )
+
+    p = _PlainProvider()
+    chunks = [ev async for ev in p.chat_stream([Message(role="user", content="hi")])]
+    assert len(chunks) == 1
+    assert chunks[0].delta == "整段文本"
+    assert chunks[0].finish_reason == "stop"
+    assert chunks[0].usage.completion_tokens == 3

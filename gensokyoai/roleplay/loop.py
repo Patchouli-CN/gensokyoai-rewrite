@@ -1,33 +1,41 @@
-""" 角色扮演主循环 """
+"""角色扮演主循环"""
+
 import asyncio
 import contextlib
 import random
 import time
-from ..eyes.perceiver import Perceiver
+from pathlib import Path
+
 from ..core.brain.engine import BrainEngine, route
 from ..core.brain.ooc_detector import OOCDetector
+from ..core.event_bus import EventBus
+from ..core.health import HealthMonitor
+from ..core.lifecycle import LifecycleManager
+from ..core.memorizer.compressor import Compressor
+from ..core.memorizer.manager import MemoryManager
+from ..core.persistence import JsonFilePersistence, PersistenceBackend
+from ..core.registry import ToolRegistry
 from ..core.responder.generator import Responder
 from ..core.session_manager import SessionManager
-from ..core.memorizer.manager import MemoryManager
-from ..core.memorizer.compressor import Compressor
-from ..core.event_bus import EventBus
-from ..core.lifecycle import LifecycleManager
-from ..core.registry import ToolRegistry
-from ..core.health import HealthMonitor
-from ..utils.logger import LoggerManager
-from ..utils.text import strip_control_chars
+from ..eyes.perceiver import Perceiver
+from ..mouth.base import Mouth
+from ..mouth.console import ConsoleMouth
 from ..schemas.brain_schema import BrainConclusion, BrainThinkEffort
+from ..schemas.event_schema import BaseEvent, EventTopic, TurnEndPayload
 from ..schemas.memory_schema import MemoryItem
 from ..schemas.model_schema import ToolSpec
 from ..schemas.scene_schema import SceneSnapshot
-from ..schemas.event_schema import BaseEvent, EventTopic
+from ..utils.logger import LoggerManager
+from ..utils.text import strip_control_chars
 from .character import Character
-from .initiative import evaluate_initiative
+from .initiative import describe_silence, evaluate_initiative
+from .persistence import SessionPersister
 
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
 
 _STALL_EFFORTS = {BrainThinkEffort.HIGH, BrainThinkEffort.MAX}
 """ 值得垫过渡语的档位：多轮接力思考，延迟肉眼可见 """
+
 
 class TouhouWorld:
     """
@@ -42,6 +50,7 @@ class TouhouWorld:
         eye: Perceiver,
         character: Character,
         sessions: SessionManager,
+        mouth: Mouth | None = None,
         external_tools: list[ToolSpec] | None = None,
         *,
         distill_every: int = 10,
@@ -54,6 +63,9 @@ class TouhouWorld:
         stall_min_interval: float = 180.0,
         ooc_retry: bool = True,
         ooc_audit: bool = True,
+        session_id: str = "default",
+        storage_dir: str | Path = "data",
+        persistence=None,
     ) -> None:
         """
         Args:
@@ -71,16 +83,23 @@ class TouhouWorld:
             stall_min_interval: 两次过渡语之间的最小时间间隔（秒）
             ooc_retry: 最终回复命中 OOC 规则时是否花一次纠偏重生成
             ooc_audit: 是否在回复发出后跑异步 OOC 深审（不阻塞热路径）
+            session_id: 会话标识，记忆与会话快照按它隔离（多群/多用户各自一个 id）
+            storage_dir: 持久化根目录
+            persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
         """
         self.logger = LoggerManager.get_logger("TOUHOU WORLD")
         self.eye = eye
         self.character = character
+        self.mouth = mouth or ConsoleMouth()
+        """ 口层：输出投递（默认 ConsoleMouth）"""
 
         # 初始化核心组件
         self.bus = EventBus()
         self.lifecycle = LifecycleManager(self.bus)
         self.sessions = sessions
-        self.memory = MemoryManager()
+        self.session_id = session_id
+        """ 会话标识：记忆与快照按它隔离 """
+        self.memory = MemoryManager(storage_dir=storage_dir, session_id=session_id)
         self.health = HealthMonitor(bus=self.bus)
         self.compressor = Compressor(sessions)
 
@@ -90,10 +109,7 @@ class TouhouWorld:
         # 初始化业务模块
         self.ooc = OOCDetector(self.sessions)
         self.brain = BrainEngine(
-            sessions=self.sessions,
-            persona=character.prompt,
-            ooc=self.ooc,
-            tools=all_tools
+            sessions=self.sessions, persona=character.prompt, ooc=self.ooc, tools=all_tools
         )
 
         self.responder = Responder(sessions=self.sessions, persona=character.prompt)
@@ -120,7 +136,7 @@ class TouhouWorld:
         self._distill_counter = 0
         self._busy = False
         """ 主链路生成中标志：避免主动发言与用户回复并发抢同一个 responder 会话 """
-        self._stall_last_turn = -10**9
+        self._stall_last_turn = -(10**9)
         """ 上次垫过渡语的回合号（冷却门控用）"""
         self._stall_last_time = float("-inf")
         """ 上次垫过渡语的时刻（冷却门控用）"""
@@ -128,31 +144,55 @@ class TouhouWorld:
         # 注册记忆写入侧链
         self.bus.subscribe(EventTopic.MEMORY_WRITE, self._handle_memory_write)
 
+        # --- 会话持久化：可插拔后端，事件驱动落盘 ---
+        # 必须在存储订阅之后创建：MEMORY_WRITE 处理器按订阅顺序执行，
+        # persister 的快照要看到本事件刚写入的记忆
+        persistence_backend: PersistenceBackend = persistence or JsonFilePersistence(storage_dir)
+        self.persistence = SessionPersister(
+            persistence_backend,
+            session_id,
+            self.memory,
+            sessions,
+            self.bus,
+            character_name=character.name,
+        )
+        """ 会话持久化器（启动 restore / 事件驱动保存 / 关闭 flush）"""
+
         # 注册默认生命周期回调
         self._register_default_lifecycle()
 
+        self.restored = False
+        """ 启动时是否成功恢复了历史会话 """
+
     def _register_default_lifecycle(self) -> None:
-        """ 注册默认的生命周期回调 """
+        """注册默认的生命周期回调"""
 
         @self.lifecycle.on_startup
         async def _on_startup():
-            self.logger.info(f"=== 幻想乡连接成功 | 角色: {self.character.name} ===")
+            self.restored = await self.persistence.restore()
+            if self.restored:
+                self.logger.info(f"=== 幻想乡会话已恢复 | 角色: {self.character.name} ===")
+            else:
+                self.logger.info(f"=== 幻想乡连接成功 | 角色: {self.character.name} ===")
 
         @self.lifecycle.on_shutdown
         async def _on_shutdown():
             self.logger.info("=== 幻想乡连接已断开 ===")
+            await self.persistence.flush()
             await self.eye.close()
             self.sessions.reset_all()
 
     def _setup_tools(self, external_tools: list[ToolSpec] | None = None) -> list[ToolSpec]:
-        """ 组装工具列表 """
+        """组装工具列表"""
         tools = []
 
         try:
             registered_tools = ToolRegistry.all()
             if registered_tools:
                 tools.extend(registered_tools)
-                self.logger.info(f"加载全局注册工具: {[t.tool_func.__name__ for t in registered_tools]}")
+                self.logger.info(
+                    f"加载全局注册工具: {[t.tool_func.__name__ for t in registered_tools]}"
+                )
         except Exception as e:
             self.logger.warning(f"加载全局注册工具失败: {e}")
 
@@ -177,21 +217,22 @@ class TouhouWorld:
         return unique_tools
 
     async def _handle_memory_write(self, event: BaseEvent) -> None:
-        """ 异步处理记忆存储，不阻塞主链路 """
+        """异步处理记忆存储，不阻塞主链路"""
         if isinstance(event.payload, MemoryItem):
             await self.memory.store(event.payload)
 
     async def start(self) -> None:
-        """ 启动主循环（开场白 + 主动发言后台任务 + 优雅关闭）"""
+        """启动主循环（开场白 + 主动发言后台任务 + 优雅关闭）"""
         await self.lifecycle.startup()
-        self._greet()
+        if not self.restored:
+            await self._greet()
         initiative_task = asyncio.create_task(self._initiative_loop())
 
-        turn = 0
+        turn = self.persistence.turn_count
         try:
             while True:
                 # 检查是否收到停止请求
-                if getattr(self.eye, '_stop_requested', False):
+                if getattr(self.eye, "_stop_requested", False):
                     self.logger.info("感知器已停止，主循环退出")
                     break
 
@@ -199,7 +240,7 @@ class TouhouWorld:
                 snapshot = await self.eye.next_snapshot()
                 if snapshot is None:
                     # 如果是因为停止请求返回 None，直接退出
-                    if getattr(self.eye, '_stop_requested', False):
+                    if getattr(self.eye, "_stop_requested", False):
                         break
                     continue
 
@@ -218,14 +259,12 @@ class TouhouWorld:
                     await self._maybe_stall(snapshot, effort, turn)
                     conclusion = await self.brain.think(snapshot, memories, effort)
 
-                    # 3. 表达阶段 (Responder)；OOC 规则守门，命中才纠偏重生成
-                    reply = await self.responder.respond(conclusion, snapshot, memories)
-                    reply = await self._guard_ooc(reply)
+                    # 3. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
+                    reply = await self._express(snapshot, conclusion, memories)
                 finally:
                     self._busy = False
 
-                # 4. 输出与记录（投递档清洗控制字符；记忆档保留原文）
-                print(f"\n{self.character.name}: {strip_control_chars(reply)}\n")
+                # 4. 记录（投递已在 _express 内完成）
                 self._remember_turn(snapshot, reply)
                 if self._ooc_audit:
                     asyncio.create_task(self._audit_reply(reply))
@@ -243,6 +282,13 @@ class TouhouWorld:
 
                 latency = time.monotonic() - t_start
                 self.logger.info(f"回合 {turn} 完成 | 延迟: {latency:.2f}s | 档位: {effort.value}")
+                await self.bus.publish(
+                    EventBus.new(
+                        EventTopic.TURN_END,
+                        source="loop",
+                        payload=TurnEndPayload(turn=turn, effort=effort.value, latency_s=latency),
+                    )
+                )
 
         except asyncio.CancelledError:
             self.logger.info("主循环被取消，开始优雅关闭...")
@@ -257,20 +303,22 @@ class TouhouWorld:
             if not self.lifecycle._stopped:
                 await self.lifecycle.shutdown()
 
-    def _greet(self) -> None:
-        """ 打出角色开场白（若有）"""
+    async def _greet(self) -> None:
+        """打出角色开场白（若有）"""
         greeting = self.character.card.greeting
         if greeting:
-            print(f"\n{self.character.name}: {greeting}\n")
+            await self.mouth.send(self.character.name, greeting)
 
     def _remember_turn(self, snapshot: SceneSnapshot, reply: str) -> None:
-        """ 把本回合的用户输入与角色回复投递到记忆总线（异步侧链）"""
+        """把本回合的用户输入与角色回复投递到记忆总线（异步侧链）"""
         user_mem = MemoryItem(
             topic="对话", content=f"{snapshot.sender}: {snapshot.content}", memory_type="dialogue"
         )
         char_mem = MemoryItem(
-            topic="对话", content=f"{self.character.name}: {reply}", memory_type="dialogue",
-            relate_ids={user_mem.memory_id}
+            topic="对话",
+            content=f"{self.character.name}: {reply}",
+            memory_type="dialogue",
+            relate_ids={user_mem.memory_id},
         )
         for item in [user_mem, char_mem]:
             asyncio.get_running_loop().create_task(
@@ -278,7 +326,7 @@ class TouhouWorld:
             )
 
     async def _record_health(self, turn: int, effort, t_start: float) -> None:
-        """ 回合粒度的健康指标喂食 """
+        """回合粒度的健康指标喂食"""
         await self.health.record(
             {
                 "turn.count": 1,
@@ -290,7 +338,7 @@ class TouhouWorld:
         await self.health.record_metric("turn.latency_s", time.monotonic() - t_start, unit="s")
 
     def _should_stall(self, effort: BrainThinkEffort, turn: int) -> bool:
-        """ 是否值得垫过渡语：仅深思考档、非开局、出了冷却期、再掷中概率。
+        """是否值得垫过渡语：仅深思考档、非开局、出了冷却期、再掷中概率。
 
         Args:
             effort: 本回合推理档位
@@ -309,8 +357,10 @@ class TouhouWorld:
             return False
         return random.random() < self._stall_probability
 
-    async def _maybe_stall(self, snapshot: SceneSnapshot, effort: BrainThinkEffort, turn: int) -> None:
-        """ 深思考前垫一句角色口吻过渡语（如"唔……让我想想"），掩盖接力思考延迟。
+    async def _maybe_stall(
+        self, snapshot: SceneSnapshot, effort: BrainThinkEffort, turn: int
+    ) -> None:
+        """深思考前垫一句角色口吻过渡语（如"唔……让我想想"），掩盖接力思考延迟。
 
         三重门控防止人机感：冷却轮数 + 时间间隔 + 概率掷骰。
         过渡语只投递显示层，不写记忆（对 Brain 是噪音）；
@@ -327,11 +377,62 @@ class TouhouWorld:
             return
         self._stall_last_turn = turn
         self._stall_last_time = time.monotonic()
-        print(f"\n{self.character.name}: {strip_control_chars(line)}\n")
+        await self.mouth.send(self.character.name, strip_control_chars(line))
         self.logger.info(f"过渡语已投递: {line!r}")
 
+    async def _express(self, snapshot, conclusion, memories, *, ooc_guard: bool = True) -> str:
+        """表达 + 投递的统一入口：口层支持流式则逐块显示，否则缓冲投递。
+
+        主循环与主动发言共用；主动发言传 `ooc_guard=False`（本来就不做守门）。
+
+        Args:
+            snapshot: 场景快照
+            conclusion: Brain 结论（主动发言为 pass_through 规则结论）
+            memories: 检索到的记忆
+            ooc_guard: 缓冲路径是否做 OOC 预审（流式路径恒不做，靠后置深审兜底）
+
+        Returns:
+            str: 完整回复文本（供记忆落盘 / 后置深审）
+        """
+        if self.mouth.supports_streaming:
+            return await self._deliver_stream(snapshot, conclusion, memories)
+        reply = await self.responder.respond(conclusion, snapshot, memories)
+        if ooc_guard:
+            reply = await self._guard_ooc(reply)
+        await self.mouth.send(self.character.name, strip_control_chars(reply))
+        return reply
+
+    async def _deliver_stream(self, snapshot, conclusion, memories) -> str:
+        """流式投递最终回复：responder.respond_stream → mouth.begin/delta/end。
+
+        逐块把回复文本送到可显示的平台（口层流式），并返回完整回复文本
+        （供记忆落盘 / 后置 OOC 深审 / 状态回写）。流式模式下跳过 OOC 预审。
+
+        Args:
+            snapshot: 场景快照
+            conclusion: Brain 结论
+            memories: 检索到的记忆
+
+        Returns:
+            str: 完整回复文本（含情绪润色尾缀）
+        """
+        await self.mouth.begin(self.character.name)
+        parts: list[str] = []
+        try:
+            async for delta in self.responder.respond_stream(conclusion, snapshot, memories):
+                parts.append(delta)
+                if delta:
+                    await self.mouth.delta(strip_control_chars(delta))
+        except Exception:
+            self.logger.exception("流式生成失败（结束投递，回退为已产出文本）")
+        finally:
+            await self.mouth.end()
+        reply = "".join(parts)
+        self.logger.info(f"流式投递完成: {len(reply)}字")
+        return reply
+
     async def _guard_ooc(self, reply: str) -> str:
-        """ 最终回复的 OOC 规则守门：零成本快筛，命中才花一次纠偏重生成。
+        """最终回复的 OOC 规则守门：零成本快筛，命中才花一次纠偏重生成。
 
         Args:
             reply: Responder 生成的最终回复
@@ -358,7 +459,7 @@ class TouhouWorld:
         return reply
 
     async def _audit_reply(self, reply: str) -> None:
-        """ 后置 OOC 深审（异步侧链，不阻塞回复）。
+        """后置 OOC 深审（异步侧链，不阻塞回复）。
 
         审计结论不撤回已发出的文本，只回写角色状态与 ooc.rate 健康指标
         （滚动出戏率超过阈值 0.5 时 HealthMonitor 自动告警）。
@@ -372,14 +473,16 @@ class TouhouWorld:
             if gen != self._generation:
                 return
             audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
-            hits = int(self.character.status.extra.get("ooc_hits", 0)) + (1 if verdict.is_ooc else 0)
+            hits = int(self.character.status.extra.get("ooc_hits", 0)) + (
+                1 if verdict.is_ooc else 0
+            )
             self.character.status.update(ooc_audited=audited, ooc_hits=hits)
             await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
         except Exception:
             self.logger.exception("OOC 深审失败（不影响主链路）")
 
     async def _distill(self) -> None:
-        """ 记忆蒸馏：把最早一批工作记忆压缩成摘要条目，然后遗忘原文。
+        """记忆蒸馏：把最早一批工作记忆压缩成摘要条目，然后遗忘原文。
 
         摘要 importance=0.7，入库即自动落长期记忆；代际令牌校验防止
         关闭后的迟到写入。
@@ -393,7 +496,10 @@ class TouhouWorld:
             if not summary or gen != self._generation:
                 return
             item = MemoryItem(
-                topic="对话摘要", content=summary, memory_type="fact", importance=0.7,
+                topic="对话摘要",
+                content=summary,
+                memory_type="fact",
+                importance=0.7,
             )
             await self.memory.store(item)
             removed = self.memory.forget([m.memory_id for m in old])
@@ -402,7 +508,7 @@ class TouhouWorld:
             self.logger.exception("记忆蒸馏失败（不影响主链路）")
 
     async def _initiative_loop(self) -> None:
-        """ 主动发言后台循环：空闲超阈值时评估四维对话欲，达标即开口。
+        """主动发言后台循环：空闲超阈值时评估四维对话欲，达标即开口。
 
         零思考 token：不经过 Brain，直接用规则结论驱动 Responder。
         """
@@ -420,18 +526,20 @@ class TouhouWorld:
                 self.logger.exception("主动发言评估失败")
 
     def _stopping(self) -> bool:
-        """ 是否处于关闭流程 """
-        return getattr(self.eye, '_stop_requested', False)
+        """是否处于关闭流程"""
+        return getattr(self.eye, "_stop_requested", False)
 
     async def _try_speak(self, idle: float) -> None:
-        """ 评估对话欲并尝试主动开口 """
+        """评估对话欲并尝试主动开口"""
         gen = self._generation
         recent = await self.memory.recent(6)
+        recent_texts = [m.content for m in reversed(recent)]
         urge = evaluate_initiative(
-            [m.content for m in reversed(recent)],
+            recent_texts,
             character_name=self.character.name,
             weights=self.character.card.motivation_weights,
             idle_seconds=idle,
+            expression_base=self.character.card.expression_base,
         )
         self.character.status.update(motivation=round(urge, 2))
         if urge < self._urge_threshold:
@@ -445,7 +553,7 @@ class TouhouWorld:
             snapshot = SceneSnapshot(
                 scene_type="group_chat",
                 sender="环境",
-                content="（周围安静下来了）",
+                content=describe_silence(recent_texts, idle_seconds=idle),
                 is_direct=False,
                 context_snippet=[m.content for m in reversed(recent)][-5:],
                 timestamp=time.time(),
@@ -455,13 +563,15 @@ class TouhouWorld:
                 intent="主动发起话题",
                 emotion=self.character.status.emotion,
             )
-            reply = await self.responder.respond(conclusion, snapshot, recent)
+            # 与主循环同一套投递：口层支持流式则逐块显示，否则缓冲投递（主动发言不做 OOC 守门）
+            reply = await self._express(snapshot, conclusion, recent, ooc_guard=False)
         finally:
             self._busy = False
 
-        print(f"\n{self.character.name}: {strip_control_chars(reply)}\n")
         char_mem = MemoryItem(
-            topic="对话", content=f"{self.character.name}: {reply}", memory_type="dialogue",
+            topic="对话",
+            content=f"{self.character.name}: {reply}",
+            memory_type="dialogue",
         )
         await self.bus.publish(
             EventBus.new(EventTopic.MEMORY_WRITE, source="initiative", payload=char_mem)
