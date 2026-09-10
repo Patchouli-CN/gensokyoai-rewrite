@@ -5,6 +5,7 @@ from .registry import auto_discover
 DEFAULT_PACKAGES = (
     "gensokyoai.models",
     "gensokyoai.eyes",
+    "gensokyoai.tools",
     "gensokyoai.core.brain",
     "gensokyoai.core.responder",
     "gensokyoai.core.memorizer",
