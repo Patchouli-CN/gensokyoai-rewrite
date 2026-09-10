@@ -29,12 +29,73 @@ from ..utils.logger import LoggerManager
 from ..utils.text import strip_control_chars
 from .character import Character
 from .initiative import describe_silence, evaluate_initiative
-from .persistence import SessionPersister
+from .persistence import CharacterStateCodec, SessionPersister
 
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
 
 _STALL_EFFORTS = {BrainThinkEffort.HIGH, BrainThinkEffort.MAX}
 """ 值得垫过渡语的档位：多轮接力思考，延迟肉眼可见 """
+
+
+class _WorldRuntimeCodec:
+    """世界**跨回合**运行时状态的持久化编解码。
+
+    这类状态不随回合清空，重启后归零会造成可感知的行为断层：
+
+    - `effort_floor`：OOC 干预抬高的推理档位下限，丢了就退回默认路由
+    - `stall_last_turn`：上次垫过渡语的回合号（回合号本身可续计，故可持久化）
+    - `distill_counter`：距下次记忆蒸馏的回合计数
+
+    **不持久化 `stall_last_time`**：它取 `time.monotonic()`，跨进程没有意义。
+    恢复时直接置为「现在」，等价于重启后重新计时最小间隔 —— 比存一个
+    会误导的数值正确。
+    """
+
+    key = "world_runtime"
+
+    def __init__(self, world: TouhouWorld) -> None:
+        """初始化。
+
+        Args:
+            world: 宿主世界（读写的都是其跨回合私有状态）
+        """
+        self._world = world
+
+    def dump(self) -> dict:
+        """导出跨回合运行时状态。
+
+        Returns:
+            dict: 档位下限（无则 None）+ 过渡语回合号 + 蒸馏计数
+        """
+        floor = self._world._effort_floor
+        return {
+            "effort_floor": floor.value if floor is not None else None,
+            "stall_last_turn": self._world._stall_last_turn,
+            "distill_counter": self._world._distill_counter,
+        }
+
+    def load(self, data) -> None:
+        """恢复跨回合运行时状态（字段缺失或非法时保持默认）。
+
+        Args:
+            data: dump() 产出的字典；None 时跳过
+        """
+        if not isinstance(data, dict):
+            return
+        raw_floor = data.get("effort_floor")
+        if raw_floor:
+            try:
+                self._world._effort_floor = BrainThinkEffort(raw_floor)
+            except ValueError:
+                self._world.logger.warning(f"档位下限非法，跳过: {raw_floor!r}")
+        turn = data.get("stall_last_turn")
+        if isinstance(turn, int):
+            self._world._stall_last_turn = turn
+        counter = data.get("distill_counter")
+        if isinstance(counter, int):
+            self._world._distill_counter = counter
+        # monotonic 时刻跨进程无意义：以「现在」为起点重新计时
+        self._world._stall_last_time = time.monotonic()
 
 
 class TouhouWorld:
@@ -175,6 +236,7 @@ class TouhouWorld:
             sessions,
             self.bus,
             character_name=character.name,
+            codecs=[CharacterStateCodec(character), _WorldRuntimeCodec(self)],
         )
         """ 会话持久化器（启动 restore / 事件驱动保存 / 关闭 flush）"""
 

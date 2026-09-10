@@ -206,7 +206,7 @@ async def test_persister_saves_on_memory_write(tmp_path):
     data = await persister._backend.load(persister._key)
     assert data and data["work_memory"][0]["content"] == "第一条"
     assert data["character_name"] == "幽幽子"
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2, "v2 起载荷增加 character_state / world_runtime 段"
 
 
 async def test_persister_coalesces_burst(tmp_path):
@@ -368,3 +368,102 @@ async def test_double_flush_does_not_clobber_snapshot(tmp_path):
     second = await persister._backend.load(persister._key)
     assert len(second["responder_messages"]) == 2, "重复 flush 不应覆盖已有存档"
     assert second["responder_messages"][0]["content"] == "第一句"
+
+
+# ---------- 附加状态 codec ----------
+
+
+def _character(name: str = "幽幽子"):
+    from gensokyoai.roleplay.character import Character, CharacterCard
+
+    return Character(CharacterCard(name=name, system_prompt="白玉楼的主人"))
+
+
+def test_character_state_codec_roundtrip():
+    """角色运行时状态（情绪 / 对话欲 / 出戏计数）可完整往返"""
+    from gensokyoai.roleplay.persistence import CharacterStateCodec
+
+    source = _character()
+    source.status.update(emotion="好奇", motivation=0.8)
+    source.status.extra["ooc_audited"] = 3
+    dumped = CharacterStateCodec(source).dump()
+
+    fresh = _character()
+    CharacterStateCodec(fresh).load(dumped)
+
+    assert fresh.status.emotion == "好奇"
+    assert fresh.status.motivation == 0.8
+    assert fresh.status.extra["ooc_audited"] == 3
+
+
+def test_character_state_codec_rejects_other_character():
+    """换了角色却复用同一 session_id 时，拒绝把旧角色的状态套上来"""
+    from gensokyoai.roleplay.persistence import CharacterStateCodec
+
+    fresh = _character("魔理沙")
+    CharacterStateCodec(fresh).load({"name": "幽幽子", "emotion": "好奇", "motivation": 0.9})
+
+    assert fresh.status.emotion == "平静", "默认值不应被别的角色覆盖"
+    assert fresh.status.motivation == 0.5
+
+
+def test_character_state_codec_tolerates_old_and_bad_data():
+    """旧档缺段（None）与非法字段都不应抛异常（向后兼容 v1 存档）"""
+    from gensokyoai.roleplay.persistence import CharacterStateCodec
+
+    character = _character()
+    codec = CharacterStateCodec(character)
+
+    codec.load(None)  # v1 老档没有这段
+    codec.load({"name": "幽幽子", "motivation": "不是数字"})
+    codec.load("不是字典")
+
+    assert character.status.motivation == 0.5
+
+
+async def test_codec_participates_in_snapshot_and_restore(tmp_path):
+    """codec 自动进快照与恢复（装配层只注册，不必改本模块）"""
+
+    class _CounterCodec:
+        key = "demo_counter"
+
+        def __init__(self) -> None:
+            self.value = 0
+
+        def dump(self):
+            return {"value": self.value}
+
+        def load(self, data) -> None:
+            if isinstance(data, dict):
+                self.value = int(data.get("value", 0))
+
+    codec = _CounterCodec()
+    persister, _, _ = _make_persister(tmp_path, codecs=[codec])
+    codec.value = 42
+    await persister.flush()
+
+    data = await persister._backend.load(persister._key)
+    assert data["demo_counter"] == {"value": 42}
+
+    codec.value = 0
+    assert await persister.restore() is True
+    assert codec.value == 42, "恢复时 codec 应被调用"
+
+
+async def test_codec_failure_is_isolated(tmp_path):
+    """单个 codec 恢复失败不影响其他 codec 与主流程"""
+
+    class _BadCodec:
+        key = "bad"
+
+        def dump(self):
+            return {"x": 1}
+
+        def load(self, data) -> None:
+            raise RuntimeError("boom")
+
+    persister, _, sessions = _make_persister(tmp_path, codecs=[_BadCodec()])
+    sessions.import_messages("responder", [Message(role="user", content="hi")])
+    await persister.flush()
+
+    assert await persister.restore() is True, "坏 codec 不应让整体恢复失败"

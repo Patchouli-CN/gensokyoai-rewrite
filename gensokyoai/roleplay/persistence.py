@@ -3,11 +3,21 @@
 存什么、何时存归这里，怎么存归 PersistenceBackend（可插拔）。
 通信走事件总线：订阅 MEMORY_WRITE / TURN_END 触发保存，
 自身不侵入主循环。
+
+**额外状态的形状**（角色运行时状态、世界跨回合旋钮…）通过 `StateCodec` 下放给
+装配层注册 —— 本模块不必知道 Character / TouhouWorld 的内部字段。
+
+**关于「思考的中间状态」**：接力思考的中间态（上一轮 thought / 已得行动指令 / 轮次）
+是 `_relay_think` 内的**局部变量**，随调用结束即消失。它属于「一次计算的进行时」，
+而不是「重启该接着用的状态」—— 进程若在回合中途被杀，那一回合本就未产出回复，
+正确做法是**重跑该回合**（Brain 无状态是刻意设计，见架构文档 §11），
+而不是把半截思考持久化后「续上」（那会引出「用户消息是否已入记忆 / 是否补发回复」
+这类一致性问题，收益为零、复杂度为正）。
 """
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import msgspec
 
@@ -19,8 +29,88 @@ from ..schemas.memory_schema import MemoryItem
 from ..schemas.model_schema import Message
 from ..utils.logger import LoggerManager
 
-_SCHEMA_VERSION = 1
-""" 会话文件格式版本（后续结构变更时据此迁移）"""
+_SCHEMA_VERSION = 2
+""" 会话文件格式版本（v2 起增加 character_state / world_runtime 段；旧档缺失时按默认跳过）"""
+
+
+class StateCodec(Protocol):
+    """附加状态编解码器：把「额外存什么」下放给装配层。
+
+    实现只需三个成员：`key`（载荷字段名）、`dump()`、`load(data)`。
+    恢复时若版本较旧、字段缺失，`load(None)` 应当是无害的空操作。
+    """
+
+    key: str
+    """ 在会话载荷中的字段名 """
+
+    def dump(self) -> Any:
+        """导出当前状态（须可 JSON 序列化）。"""
+        ...
+
+    def load(self, data: Any) -> None:
+        """按存档内容恢复状态；data 为 None（旧档无此段）时应静默跳过。"""
+        ...
+
+
+class CharacterStateCodec:
+    """角色运行时状态（情绪 / 对话欲 / 出戏计数）的持久化编解码。
+
+    这些字段会喂给 Responder 的语气与主动发言判断，重启归零等于「性格记忆」断档。
+    恢复时**校验角色名**：换了角色却复用同一 session_id 时，拒绝把旧角色的状态套上来。
+    """
+
+    key = "character_state"
+
+    def __init__(self, character) -> None:
+        """初始化。
+
+        Args:
+            character: Character（鸭子类型：需有 name / status）
+        """
+        self._logger = LoggerManager.get_logger("PERSIST")
+        self._character = character
+
+    def dump(self) -> dict:
+        """导出角色状态。
+
+        Returns:
+            dict: 角色名 + 情绪 + 对话欲 + 扩展状态
+        """
+        status = self._character.status
+        return {
+            "name": self._character.name,
+            "emotion": status.emotion,
+            "motivation": status.motivation,
+            "extra": dict(status.extra),
+        }
+
+    def load(self, data: Any) -> None:
+        """恢复角色状态；角色名不匹配时拒绝套用。
+
+        Args:
+            data: dump() 产出的字典；None 时跳过
+        """
+        if not isinstance(data, dict):
+            return
+        name = str(data.get("name", ""))
+        if name and name != self._character.name:
+            self._logger.warning(
+                f"存档角色为 {name!r}，当前角色是 {self._character.name!r}，跳过角色状态恢复"
+            )
+            return
+
+        status = self._character.status
+        if "emotion" in data:
+            status.emotion = str(data["emotion"])
+        if "motivation" in data:
+            try:
+                status.motivation = float(data["motivation"])
+            except TypeError, ValueError:
+                self._logger.warning(f"对话欲字段非法，跳过: {data.get('motivation')!r}")
+        extra = data.get("extra")
+        if isinstance(extra, dict):
+            status.extra.update(extra)
+        self._logger.info(f"角色状态已恢复: 情绪={status.emotion} 对话欲={status.motivation}")
 
 
 class SessionPersister:
@@ -45,6 +135,7 @@ class SessionPersister:
         character_name: str = "",
         responder_owner: str = "responder",
         coalesce_seconds: float = 1.5,
+        codecs: list[StateCodec] | None = None,
     ) -> None:
         """初始化并注册事件订阅。
 
@@ -57,6 +148,7 @@ class SessionPersister:
             character_name: 角色名（写入文件元信息）
             responder_owner: 要持久化历史的 owner，默认 "responder"
             coalesce_seconds: 脏标记后的合并等待窗口（秒）
+            codecs: 额外状态编解码器（角色状态 / 世界运行时旋钮等），由装配层提供
         """
         self._logger = LoggerManager.get_logger("PERSIST")
         self._backend = backend
@@ -67,6 +159,8 @@ class SessionPersister:
         self._character_name = character_name
         self._responder_owner = responder_owner
         self._coalesce = coalesce_seconds
+        self._codecs = list(codecs or [])
+        """ 额外状态编解码器；本模块只负责编排，形状由它们决定 """
 
         self._dirty = asyncio.Event()
         self._saving = False
@@ -128,10 +222,13 @@ class SessionPersister:
                 for m in self._sessions.export_messages(self._responder_owner)
             ],
         }
+        for codec in self._codecs:
+            payload[codec.key] = codec.dump()
         await self._backend.save(self._key, payload)
         self._logger.debug(
             f"会话快照已落盘: turn={self.turn_count} "
-            f"记忆={len(payload['work_memory'])}条 消息={len(payload['responder_messages'])}条"
+            f"记忆={len(payload['work_memory'])}条 消息={len(payload['responder_messages'])}条 "
+            f"附加段={[c.key for c in self._codecs]}"
         )
 
     async def restore(self) -> bool:
@@ -159,11 +256,25 @@ class SessionPersister:
             self._memory.restore(work_items)
         if messages:
             self._sessions.import_messages(self._responder_owner, messages)
+        self._restore_codecs(data)
         self._logger.info(
             f"会话已恢复: {self._session_id} turn={turn_count} "
-            f"记忆={len(work_items)}条 消息={len(messages)}条"
+            f"记忆={len(work_items)}条 消息={len(messages)}条 "
+            f"附加段={[c.key for c in self._codecs]}"
         )
         return True
+
+    def _restore_codecs(self, data: dict) -> None:
+        """逐个恢复附加状态；单个 codec 失败不影响其他与主流程。
+
+        Args:
+            data: 会话存档载荷
+        """
+        for codec in self._codecs:
+            try:
+                codec.load(data.get(codec.key))
+            except Exception:
+                self._logger.exception(f"附加状态恢复失败（跳过）: {codec.key}")
 
     async def flush(self) -> None:
         """立即同步落盘最终快照（优雅关闭用），并停止事件触发的保存。

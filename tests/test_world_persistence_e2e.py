@@ -5,6 +5,7 @@ import asyncio
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.roleplay.character import Character, CharacterCard
 from gensokyoai.roleplay.loop import TouhouWorld
+from gensokyoai.schemas.brain_schema import BrainThinkEffort
 from gensokyoai.schemas.model_schema import CompletionResult
 from gensokyoai.schemas.scene_schema import SceneSnapshot
 
@@ -117,3 +118,37 @@ async def test_world_restart_restores_session(tmp_path, capsys):
     recent = await world2.memory.recent(10)
     contents = [m.content for m in recent]
     assert any("第一个问题" in c for c in contents), "上一轮的用户输入应在记忆里"
+
+
+async def test_world_restart_restores_character_and_runtime_state(tmp_path):
+    """重启后角色运行时状态与世界跨回合旋钮都接续（不只是记忆与回合号）
+
+    这些状态会喂给语气 / 主动发言 / 干预档位，重启归零等于行为断层。
+    第二个世界只调 `restore()` 不跑主循环 —— 避免「每回合 +1」这类正常递增
+    干扰断言的算术（`_distill_counter` 每回合自增）。
+    """
+    world1 = _make_world(tmp_path, ["第一句"])
+    # 摆好「运行期会产生的状态」，交给关闭时的 flush 落盘
+    world1.character.status.update(motivation=0.8)
+    world1.character.status.extra["ooc_audited"] = 2
+    world1._effort_floor = BrainThinkEffort.HIGH
+    world1._distill_counter = 7
+    await _run(world1)  # 跑一回合 -> 蒸馏计数变 8，随之落盘
+
+    data = await world1.persistence._backend.load(world1.persistence._key)
+    assert data["schema_version"] == 2
+    assert data["character_state"]["motivation"] == 0.8
+    assert data["character_state"]["extra"]["ooc_audited"] == 2
+    assert data["world_runtime"]["effort_floor"] == "high"
+    assert data["world_runtime"]["distill_counter"] == 8, "7 + 本回合 1"
+
+    # 重启：新世界直接恢复存档
+    world2 = _make_world(tmp_path, [])
+    assert await world2.persistence.restore() is True
+
+    assert world2.character.status.motivation == 0.8, "对话欲应续上"
+    assert world2.character.status.extra["ooc_audited"] == 2, "出戏计数应续上"
+    assert world2._effort_floor is BrainThinkEffort.HIGH, "干预抬高的档位下限应续上"
+    assert world2._distill_counter == 8, "蒸馏计数应续上（若归零会是 0）"
+    # monotonic 时刻跨进程无意义：恢复时应重置为「现在」而非沿用旧值
+    assert world2._stall_last_time != float("-inf")
