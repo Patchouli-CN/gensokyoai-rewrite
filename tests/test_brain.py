@@ -3,7 +3,7 @@
 from gensokyoai.core.brain.engine import BrainEngine, route
 from gensokyoai.core.brain.ooc_detector import OOCDetector
 from gensokyoai.core.session_manager import SessionManager
-from gensokyoai.schemas.brain_schema import BrainThinkEffort
+from gensokyoai.schemas.brain_schema import BrainConclusion, BrainThinkEffort
 from gensokyoai.schemas.memory_schema import MemoryItem
 from gensokyoai.schemas.model_schema import CompletionResult, Message
 from gensokyoai.schemas.scene_schema import SceneSnapshot
@@ -85,6 +85,52 @@ async def test_think_parses_model_json_conclusion():
     assert conclusion.reasoning == "分析用户输入"
     # 无状态调用：不落会话
     assert engine._sessions.usage("brain.think") == 0
+
+
+def test_conclusion_reasoning_defaults_to_none():
+    """两种思考都默认为 None（且 raw 与工程实现互不污染）"""
+    conclusion = BrainConclusion()
+    assert conclusion.reasoning is None
+    assert conclusion.raw_reasoning is None
+
+
+async def test_conclusion_separates_engine_and_raw_reasoning():
+    """两种「思考」分开存：工程实现（接力协议）与模型原生 thinking"""
+
+    class _ThinkingBackend:
+        async def chat(self, messages, **kw):
+            return CompletionResult(content=_think_json(), reasoning="模型原生想了想")
+
+    sm = SessionManager()
+    sm.set_default_backend(_ThinkingBackend())
+    engine = BrainEngine(sm)
+    conclusion = await engine.think(_snapshot("随便聊聊"), [], BrainThinkEffort.LOW)
+
+    assert conclusion.reasoning == "分析用户输入", "工程实现：接力协议里的 thought"
+    assert conclusion.raw_reasoning == "模型原生想了想", "模型原生 thinking"
+
+
+async def test_raw_reasoning_accumulates_across_relay_rounds():
+    """多轮接力时，每轮的原生 thinking 逐轮拼接（工程实现只留最后一轮）"""
+    scripted = [
+        CompletionResult(content=_think_json(need_continue=True), reasoning="第一轮原生"),
+        CompletionResult(content=_think_json(need_continue=False), reasoning="第二轮原生"),
+    ]
+    calls = {"n": 0}
+
+    class _Scripted:
+        async def chat(self, messages, **kw):
+            result = scripted[calls["n"]]
+            calls["n"] += 1
+            return result
+
+    sm = SessionManager()
+    sm.set_default_backend(_Scripted())
+    conclusion = await BrainEngine(sm).think(_snapshot("聊聊"), [], BrainThinkEffort.LOW)
+
+    assert calls["n"] == 2, "应接力两轮"
+    assert conclusion.raw_reasoning == "第一轮原生\n第二轮原生"
+    assert conclusion.reasoning == "分析用户输入", "工程实现只保留收束轮的 thought"
 
 
 async def test_relay_think_continues_then_stops():

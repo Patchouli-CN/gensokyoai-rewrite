@@ -144,6 +144,8 @@ class BrainEngine:
         current_emotion = ""
         current_confidence = 0.5
         final_reasoning = ""
+        raw_reasoning_parts: list[str] = []
+        """ 模型原生 thinking 段（think=true 时才有；默认关闭，通常为空）"""
         tool_result_cache = ""
         tool_used = False
 
@@ -192,6 +194,10 @@ class BrainEngine:
 
             # 【调试】打印模型原始输出
             self._logger.debug(f"模型原始输出: {result.content}")
+
+            # 收集模型原生 thinking（think=true 时由服务端分离或 split_think 剥离而来）
+            if result.reasoning:
+                raw_reasoning_parts.append(result.reasoning)
 
             parsed = self._parse_json(result.content)
             if not parsed:
@@ -268,7 +274,8 @@ class BrainEngine:
             memory_refs=list(memories),
             confidence=current_confidence,
             effort=effort,
-            reasoning=final_reasoning,
+            _reasoning=final_reasoning or None,
+            _raw_reasoning="\n".join(raw_reasoning_parts) or None,
             timestamp=time.time(),
         )
 

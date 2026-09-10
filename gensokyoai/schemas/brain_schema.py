@@ -42,7 +42,16 @@ class ReasoningStep(msgspec.Struct, frozen=True):
 
 
 class BrainConclusion(msgspec.Struct, frozen=True):
-    """Brain 产出给 Responder 的结构化结论（事件总线核心载荷，架构文档 §8.2）"""
+    """Brain 产出给 Responder 的结构化结论（事件总线核心载荷，架构文档 §8.2）
+
+    **两种「思考」来源分开存**，避免混为一谈：
+
+    - `_reasoning`：**工程实现**的思考 —— 本项目「接力思考」协议累积出的最后一轮 `thought`
+    - `_raw_reasoning`：**模型原生 thinking** 段（`think: true` 时才由服务端
+      `reasoning_content` 或正文里的 `<think>` 段分离而来；默认 `think: false`，故通常为空）
+
+    两者通过只读属性 `reasoning` / `raw_reasoning` 对外暴露。
+    """
 
     verdict: Verdict = "pass_through"
     """ 结论类型 """
@@ -60,10 +69,30 @@ class BrainConclusion(msgspec.Struct, frozen=True):
     """ 使用的推理档位 """
     ooc_flag: bool = False
     """ OOC 检测是否触发 """
-    reasoning: str | None = None
-    """ 压缩后的思考摘要（多轮迭代结果），仅供记忆存档 """
+    _reasoning: str | None = None
+    """ 工程实现（接力思考）产出的思考摘要 """
+    _raw_reasoning: str | None = None
+    """ 模型原生 thinking 段（逐轮拼接；开启 think 时才有） """
     timestamp: float = 0.0
     """ 产出时间 """
+
+    @property
+    def reasoning(self) -> str | None:
+        """工程实现的思考摘要（对外主用；模型原生 thinking 见 `raw_reasoning`）。
+
+        Returns:
+            str | None: 接力思考最后一轮的 thought；无则 None
+        """
+        return self._reasoning
+
+    @property
+    def raw_reasoning(self) -> str | None:
+        """模型原生 thinking 文本。
+
+        Returns:
+            str | None: 原生思考段（`think: true` 时才有）；否则 None
+        """
+        return self._raw_reasoning
 
 
 class OOCVerdict(msgspec.Struct, frozen=True):
