@@ -27,6 +27,10 @@ class ModelConfig(msgspec.Struct, frozen=True):
     """ 调用模式 """
     timeout: float = 30.0  # 新增：超时时间
     """ 请求超时时间(秒) """
+    tool_timeout: float = 10.0
+    """ 单次工具执行超时（秒）；与 core.toolkit 默认值保持一致 """
+    tool_max_result_chars: int = 2000
+    """ 工具结果最大字符数，超出截断（保护上下文窗口）"""
     extra: dict = {}
     """ 额外参数 """
 
@@ -40,6 +44,8 @@ class ToolSpec:
     tool_func: ToolFunc
     params: dict[str, str] = field(default_factory=dict)
     desc: str = ""
+    name: str = ""
+    """ 工具对外名（注册名）；留空则用函数名 —— 统一注册名与函数名可能不一致的问题 """
     _is_coro: bool = False
 
     def __post_init__(self):
@@ -71,6 +77,11 @@ class ToolSpec:
         return f"发生了错误：{type(err).__name__}: {detail}"
 
     @property
+    def tool_name(self) -> str:
+        """工具对外名：显式 name 优先，否则用函数名。"""
+        return self.name or self.tool_func.__name__
+
+    @property
     def is_async(self) -> bool:
         """是否为异步工具"""
         return self._is_coro
@@ -99,14 +110,14 @@ class ToolSpec:
         return {
             "type": "function",
             "function": {
-                "name": self.tool_func.__name__,
+                "name": self.tool_name,
                 "description": self.desc,
                 "parameters": {"type": "object", "properties": properties, "required": required},
             },
         }
 
     def prompt(self) -> str:
-        lines = [f"# 工具 {self.tool_func.__name__}", f"- 描述: {self.desc}", "## 参数"]
+        lines = [f"# 工具 {self.tool_name}", f"- 描述: {self.desc}", "## 参数"]
 
         if self.params:
             for name, desc in self.params.items():

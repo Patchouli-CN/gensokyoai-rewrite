@@ -11,6 +11,7 @@ from ...schemas.model_schema import Message, ToolCall, ToolSpec
 from ...schemas.scene_schema import SceneSnapshot
 from ...utils.logger import LoggerManager
 from ..session_manager import SessionManager
+from ..toolkit import DEFAULT_MAX_RESULT_CHARS, DEFAULT_TIMEOUT, build_executor
 from .ooc_detector import OOCDetector
 
 _route_logger = LoggerManager.get_logger("BRAIN")
@@ -59,12 +60,16 @@ class BrainEngine:
         persona: str = "",
         ooc: OOCDetector | None = None,
         tools: list[ToolSpec] | None = None,
+        tool_timeout: float = DEFAULT_TIMEOUT,
+        tool_max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
     ) -> None:
         self._logger = LoggerManager.get_logger("BRAIN")
         self._sessions = sessions
         self._persona = persona
         self._ooc = ooc
         self._tools = tools or []
+        self._tool_timeout = tool_timeout
+        self._tool_max_result_chars = tool_max_result_chars
 
     async def think(
         self,
@@ -268,37 +273,17 @@ class BrainEngine:
         )
 
     async def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> list[str]:
-        """执行工具调用，返回结果列表（只负责执行，不负责解析格式）"""
-        results = []
-        by_name = {t.tool_func.__name__: t for t in self._tools}
+        """执行工具调用，返回回填给模型的文本列表。
 
-        for tc in tool_calls:
-            tool = by_name.get(tc.name)
-            if tool is None:
-                results.append(f"错误: 未知工具 {tc.name}")
-                self._logger.warning(f"未知工具调用: {tc.name}")
-                continue
-
-            # 解析参数
-            try:
-                args = msgspec.json.decode(tc.arguments or "{}", type=dict)
-            except Exception:
-                self._logger.warning(f"工具参数 JSON 解析失败: {tc.name}({tc.arguments!r})")
-                args = {}
-
-            # 执行工具
-            try:
-                if tool.is_async:
-                    output = await tool.ainvoke(**args)
-                else:
-                    output = tool.invoke(**args)
-                results.append(str(output))
-                self._logger.info(f"工具调用: {tc.name}({args}) -> {str(output)[:80]!r}")
-            except Exception as e:
-                self._logger.exception(f"工具调用失败: {tc.name}({args}) -> {e}")
-                results.append(f"错误: {type(e).__name__}: {str(e)}")
-
-        return results
+        与 Provider 的工具循环共用 `ToolExecutor`（结果截断 / 超时 / 同步下线程 /
+        结构化错误），不再各写一份执行逻辑。
+        """
+        outcomes = await build_executor(
+            self._tools,
+            timeout=self._tool_timeout,
+            max_result_chars=self._tool_max_result_chars,
+        ).execute_many(tool_calls)
+        return [outcome.to_model_text() for outcome in outcomes]
 
     def _get_max_rounds(self, effort: BrainThinkEffort) -> int:
         """将档位映射为最大思考轮数（收紧上限避免打转；仍留工具调用消化空间）。

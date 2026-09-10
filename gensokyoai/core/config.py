@@ -30,6 +30,10 @@ class ModelSettings(msgspec.Struct, frozen=True):
     """ 模型上下文窗口 """
     reserve_for_output: int = 2048
     """ 给生成预留的 token 数 """
+    tool_timeout: float = 10.0
+    """ 单次工具执行超时（秒）"""
+    tool_max_result_chars: int = 2000
+    """ 工具结果最大字符数，超出截断（保护上下文窗口）"""
 
 
 class ResourceSettings(msgspec.Struct, frozen=True):

@@ -7,6 +7,7 @@ from typing import Self
 import aiohttp
 import msgspec
 
+from ..core.toolkit import build_executor
 from ..schemas.model_schema import (
     CompletionResult,
     Message,
@@ -362,30 +363,25 @@ class OpenAICompatProvider(ModelProvider):
         result: CompletionResult,
         tools: list[ToolSpec],
     ) -> list[Message]:
-        """执行模型请求的工具调用，回填 assistant + tool 消息。"""
-        by_name = {t.tool_func.__name__: t for t in tools}
+        """执行模型请求的工具调用，回填 assistant + tool 消息。
+
+        执行本体统一走 `ToolExecutor`（结果截断 / 超时 / 同步工具下线程 / 结构化错误），
+        与接力思考循环共用同一份实现。
+        """
         messages = [
             *messages,
             Message(role="assistant", content=result.content, tool_calls=result.tool_calls),
         ]
-        for tc in result.tool_calls or []:
-            tool = by_name.get(tc.name)
-            try:
-                args = msgspec.json.decode(tc.arguments or "{}", type=dict)
-            except Exception:
-                self._logger.warning(f"工具参数 JSON 解析失败: {tc.name}({tc.arguments!r})")
-                args = {}
-
-            if tool is None:
-                output = f"错误: 未知工具 {tc.name}"
-                self._logger.warning(f"工具调用: {output}")
-            elif tool.is_async:
-                output = await tool.ainvoke(**args)
-            else:
-                output = tool.invoke(**args)
-
-            messages.append(Message(role="tool", tool_call_id=tc.id, content=str(output)))
-            self._logger.info(f"工具调用: {tc.name}({args}) -> {str(output)[:80]!r}")
+        calls = result.tool_calls or []
+        outcomes = await build_executor(
+            tools,
+            timeout=getattr(self._conf, "tool_timeout", 10.0),
+            max_result_chars=getattr(self._conf, "tool_max_result_chars", 2000),
+        ).execute_many(calls)
+        for call, outcome in zip(calls, outcomes, strict=True):
+            messages.append(
+                Message(role="tool", tool_call_id=call.id, content=outcome.to_model_text())
+            )
         return messages
 
     def _build_payload(
