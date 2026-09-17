@@ -1,12 +1,8 @@
 """命令执行上下文"""
 
-from typing import TypeVar
-
 from msgspec import Struct
 
 from .permission import PermissionLevel
-
-T = TypeVar("T")
 
 
 class CommandContext(Struct, frozen=False):
