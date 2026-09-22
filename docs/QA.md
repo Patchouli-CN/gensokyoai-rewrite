@@ -26,7 +26,7 @@
 「该不该接话」的 System-1 层：规则预筛（收尾语/私聊/被@）+ 群聊模糊带交裁判（`should_reply` 概率 vs 阈值）。关掉（`gate.enabled: false`）回到「每条都回」的旧行为，日志更简单但会变吵。
 
 ### Q：思考链怎么定制？
-角色卡 `think_chain` 按序写步骤名，提示词在 `prompts/manager.py` 的 `think.<名>` 注册；想加自己的步骤就注册个新函数。代码里也可以用 `ThinkPipeline("标签") >> ThinkStep(...)` 拼装，两条链还能 `>>` 合并复用前缀。
+角色卡 `think_chain` 按序写步骤，每项两种形式：**内置步骤名**（字符串，提示词在 `prompts/manager.py` 的 `think.<名>` 注册）或**内联自定义步骤**（字典，`name`/`instructions` 必填，可选 `max_tokens`/`temperature`/`timeout_s`/`optional`/`tools`）——作者直接写「这一步想什么」，无需改代码。代码里也可以用 `ThinkPipeline("标签") >> ThinkStep(...)` 拼装，两条链还能 `>>` 合并复用前缀。
 
 ### Q：工具调用怎么工作？
 接力思考路径里模型可发起 tool_calls，由 `core/toolkit.py` 统一执行（超时/截断/同步工具丢线程池），结果回填继续思考。内置工具：时间/日期/月相（`tools/builtin.py`，`@ToolRegistry.tool` 即插即用）。注意：思考链（pipeline）路径的 `tools` 开关是预留位，v1 未接线。

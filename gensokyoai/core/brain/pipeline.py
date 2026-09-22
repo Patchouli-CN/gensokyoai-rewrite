@@ -2,8 +2,9 @@
 
 设计要点：
 
-- **卡片驱动**：角色卡 `think_chain: [步骤名...]` 决定思考方向，步骤提示词
-  集中注册在 `prompts/manager.py`（`think.<步骤名>`），业务代码不写提示词；
+- **卡片驱动**：角色卡 `think_chain` 决定思考方向——每项可以是内置步骤名
+  （提示词集中注册在 `prompts/manager.py` 的 `think.<名>`），也可以是**内联
+  自定义步骤**（卡片里直接写 name/instructions，角色卡作者零代码造步骤）；
 - **DSL 拼装**：`ThinkPipeline("标签") >> "裸指令" >> ThinkStep(...)`，
   继承 `utils/fluent.py::FluentAPI`（同步、不可变、支持链合并）；
 - **异步语义**（调用方在 async 上下文）：
@@ -50,6 +51,11 @@ _DEEP_TEMPERATURE = 0.2
 _STEPS_WITH_TOOLS = frozenset({"time_anchor"})
 """ 内置步骤里默认挂工具的（角色卡按名引用即用；其余步骤想挂工具就
     在 DSL 里显式 `ThinkStep(name=..., instructions=..., tools=True)`） """
+
+_STEP_FIELDS = frozenset(
+    {"name", "instructions", "max_tokens", "temperature", "timeout_s", "optional", "tools"}
+)
+""" 卡片内联步骤字典允许的字段（与 ThinkStep 对齐；未知字段启动即报错） """
 
 _logger = LoggerManager.get_logger("THINK")
 
@@ -153,6 +159,29 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         不破）；未注册的名字由 prompt_mgr 抛 KeyError，启动即暴露。
         """
         return cls(label, *(builtin_step(name) for name in names))
+
+    @classmethod
+    def from_card(cls, label: str, items: Sequence[str | dict]) -> Self:
+        """卡片驱动（完整版）：混合「内置步骤名 / 内联自定义步骤」。
+
+        `think_chain` 的每一项可以是：
+
+        - 字符串：内置步骤名（同 `from_names`）；
+        - 字典：内联自定义步骤，字段同 `ThinkStep`（`name`/`instructions` 必填，
+          `max_tokens`/`temperature`/`timeout_s`/`optional`/`tools` 可选）——
+          角色卡作者直接写「这一步想什么」，无需改代码。
+
+        Args:
+            label: 链的标签
+            items: 角色卡 `think_chain` 原始项
+
+        Returns:
+            Self: 拼装好的思考链
+
+        Raises:
+            ValueError: 项既非名称也非合法步骤字典（未知字段 / 缺必填）
+        """
+        return cls(label, *(_step_from_card(item) for item in items))
 
     # ---------------------------------------------------------------- 执行
 
@@ -391,6 +420,24 @@ def _coerce(step: ThinkStep | str, index: int) -> ThinkStep:
     if isinstance(step, str):
         return ThinkStep(name=f"step{index + 1}", instructions=step)
     return step
+
+
+def _step_from_card(item: str | dict) -> ThinkStep:
+    """角色卡 `think_chain` 的一项 -> ThinkStep（内置名 / 内联字典）。
+
+    Raises:
+        ValueError: 项类型不对、缺必填字段、或含未知字段
+    """
+    if isinstance(item, str):
+        return builtin_step(item)
+    if not isinstance(item, dict):
+        raise ValueError(f"思考链步骤必须是内置名或字典: {item!r}")
+    unknown = set(item) - _STEP_FIELDS
+    if unknown:
+        raise ValueError(f"思考链步骤含未知字段 {sorted(unknown)}（允许: {sorted(_STEP_FIELDS)}）")
+    if "name" not in item or "instructions" not in item:
+        raise ValueError(f"自定义思考步骤必须提供 name 和 instructions: {item!r}")
+    return ThinkStep(**item)
 
 
 def _build_context(

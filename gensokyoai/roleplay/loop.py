@@ -315,15 +315,19 @@ class TouhouWorld:
     def _build_think_pipeline(self) -> ThinkPipeline | None:
         """按角色卡 think_chain 拼定制思考链；空链 = 用内置接力思考。
 
-        异步说明：链的**执行**在 BrainEngine.think() 里内联 await（串行步骤、
-        每步 wait_for 超时、CancelledError 穿透），本方法只做同步拼装，
-        未注册的步骤名会在启动时直接抛错（卡片配置错误早暴露）。
+        支持混合项：内置步骤名（字符串） / 内联自定义步骤（字典，字段同
+        ThinkStep）——后者让角色卡作者直接写「这一步想什么」，无需改代码。
+        链的**执行**在 BrainEngine.think() 里内联 await（串行步骤、每步
+        wait_for 超时、CancelledError 穿透），本方法只做同步拼装，
+        未注册的步骤名 / 非法步骤字典会在启动时直接抛错（配置错误早暴露）。
         """
-        names = self.character.card.think_chain
-        if not names:
+        items = self.character.card.think_chain
+        if not items:
             return None
-        pipeline = ThinkPipeline.from_names(f"{self.character.name}·思考链", names)
-        self.logger.info(f"思考链({len(pipeline)}步): {' >> '.join(names)}")
+        pipeline = ThinkPipeline.from_card(f"{self.character.name}·思考链", items)
+        self.logger.info(
+            f"思考链({len(pipeline)}步): {' >> '.join(step.name for step in pipeline)}"
+        )
         return pipeline
 
     def _setup_tools(self, external_tools: list[ToolSpec] | None = None) -> list[ToolSpec]:

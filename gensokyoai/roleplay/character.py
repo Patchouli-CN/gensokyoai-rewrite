@@ -51,9 +51,12 @@ class CharacterCard(msgspec.Struct, frozen=True):
     """ 四维对话欲权重（expression/emotional/relational/situational）"""
     expression_base: float = 0.5
     """ 表达欲基线（话痨度 0~1）：角色天生多爱说话，主动发言 expression 维的基础值 """
-    think_chain: list[str] = []
-    """ 定制思考链：按序执行的思考步骤名（ prompts/manager.py 的 think.<名> ）；
-        空 = 用内置接力思考。换链 = 换角色的思考方向，零代码（见 core/brain/pipeline.py）"""
+    think_chain: list[str | dict] = []
+    """ 定制思考链：按序执行的步骤（见 core/brain/pipeline.py）。每项可以是：
+        - 字符串：内置步骤名（prompts/manager.py 注册的 think.<名>），如 "emotion_check"
+        - 字典：内联自定义步骤，必填 name/instructions，可选 max_tokens/temperature/
+          timeout_s/optional/tools——角色卡作者直接写「这一步想什么」，无需改代码。
+        空 = 用内置接力思考。"""
     emotion_baseline: dict[str, float] = {}
     """ 八维情绪基线 """
     metadata: dict[str, str] = {}

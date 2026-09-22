@@ -73,7 +73,7 @@ think_chain:                  # 定制思考链：顺序即思考方向
 example_dialogue: []          # few-shot 示例（可省）
 ```
 
-> 思考步骤的提示词集中注册在 `gensokyoai/prompts/manager.py` 的 `think.<步骤名>`；新增步骤 = 在那加一个注册函数，卡片里引用名字即可。**留空 `think_chain` 则用内置接力思考。**
+> 思考链的每一项可以是**内置步骤名**（字符串），也可以是**内联自定义步骤**（字典：`name`/`instructions` 必填，可选 `max_tokens`/`temperature`/`timeout_s`/`optional`/`tools`）——角色卡作者直接写「这一步想什么」，无需改代码。内置提示词集中注册在 `gensokyoai/prompts/manager.py` 的 `think.<步骤名>`。**留空 `think_chain` 则用内置接力思考。**
 
 ### 3.3 数据目录
 

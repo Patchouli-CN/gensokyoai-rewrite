@@ -545,10 +545,61 @@ def test_from_names_unknown_step_raises():
         ThinkPipeline.from_names("坏链", ["不存在的步骤"])
 
 
+# ---------- 卡片内联自定义步骤（from_card） ----------
+
+
+def test_from_card_mixes_builtin_and_inline():
+    """混合链：内置名 + 内联字典，顺序保持"""
+    chain = ThinkPipeline.from_card(
+        "混合链",
+        [
+            "emotion_check",
+            {
+                "name": "food_radar",
+                "instructions": "扫描话题与食物的连接点",
+                "max_tokens": 150,
+                "temperature": 0.5,
+                "optional": False,
+            },
+            "stance_decide",
+        ],
+    )
+    assert [step.name for step in chain] == ["emotion_check", "food_radar", "stance_decide"]
+    inline = chain.items[1]
+    assert inline.instructions == "扫描话题与食物的连接点"
+    assert inline.max_tokens == 150
+    assert inline.temperature == 0.5
+    assert inline.optional is False
+    # 内置项仍走注册提示词
+    assert "情绪" in chain.items[0].instructions
+
+
+def test_from_card_pure_string_chain_behaves_like_from_names():
+    """纯名称链与 from_names 等价（向后兼容旧卡片）"""
+    names = ["emotion_check", "memory_link"]
+    from_card = ThinkPipeline.from_card("c", names)
+    from_names = ThinkPipeline.from_names("c", names)
+    assert from_card.items == from_names.items
+
+
+def test_from_card_rejects_unknown_field():
+    """内联步骤含未知字段 -> ValueError（拼写错误早暴露）"""
+    with pytest.raises(ValueError, match="未知字段"):
+        ThinkPipeline.from_card("坏链", [{"name": "x", "instructions": "y", "temperatur": 0.5}])
+
+
+def test_from_card_rejects_missing_required():
+    """内联步骤缺 name/instructions -> ValueError"""
+    with pytest.raises(ValueError, match="name 和 instructions"):
+        ThinkPipeline.from_card("坏链", [{"name": "x"}])
+    with pytest.raises(ValueError):
+        ThinkPipeline.from_card("坏链", [123])
+
+
 # ---------- 世界接线 ----------
 
 
-def _make_world(tmp_path, think_chain: list[str]) -> TouhouWorld:
+def _make_world(tmp_path, think_chain: list[str | dict]) -> TouhouWorld:
     sessions = SessionManager()
     sessions.set_default_backend(_ScriptBackend([]))
     character = Character(
@@ -569,6 +620,27 @@ async def test_world_builds_pipeline_from_card(tmp_path):
     assert pipeline is not None
     assert [step.name for step in pipeline] == ["emotion_check", "stance_decide"]
     assert pipeline.label == "幽幽子·思考链"
+
+
+async def test_world_builds_pipeline_with_inline_card_step(tmp_path):
+    """卡片内联自定义步骤一路通到世界（零代码造步骤）"""
+    world = _make_world(
+        tmp_path,
+        [
+            "emotion_check",
+            {"name": "food_radar", "instructions": "扫描话题与食物的连接点"},
+        ],
+    )
+    pipeline = world.brain._pipeline
+    assert pipeline is not None
+    assert [step.name for step in pipeline] == ["emotion_check", "food_radar"]
+    assert pipeline.items[1].instructions == "扫描话题与食物的连接点"
+
+
+async def test_world_rejects_invalid_inline_step_at_startup(tmp_path):
+    """卡片内联步骤非法 -> 启动即抛错（不拖到运行时）"""
+    with pytest.raises(ValueError, match="name 和 instructions"):
+        _make_world(tmp_path, [{"name": "缺指令的步骤"}])
 
 
 async def test_world_without_think_chain_uses_relay(tmp_path):

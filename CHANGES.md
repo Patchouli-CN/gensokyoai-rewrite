@@ -91,6 +91,13 @@
       （同一请求不同时刻不同价，算了就是错），由配置价自行建模。
     - `tests/test_pricing.py`：四条流数学 / 缓存写不重复计输入 / 分档与边界 /
       多币种 / 未知模型 / Provider 与 GatedBackend 委派 / 按 owner 累计。
+  - **卡片内联自定义思考步骤**：`CharacterCard.think_chain` 每项从「仅内置步骤名」
+    放宽为「内置名 / 内联字典」——字典形式必填 `name`/`instructions`，可选
+    `max_tokens`/`temperature`/`timeout_s`/`optional`/`tools`（字段同 ThinkStep）。
+    角色卡作者直接写「这一步想什么」，**零代码造步骤**；未知字段/缺必填在启动
+    即抛 ValueError（配置错误早暴露）。`ThinkPipeline.from_card()` 混合解析，
+    纯名称链与 `from_names` 完全等价（旧卡片零迁移）。默认角色卡新增内联步骤
+    `food_radar`（幽幽子专属的「话题拐食物」雷达）作样板。
   - **可定制思考链流水（ThinkPipeline）**：把「怎么想」提成一等公民，角色卡零代码定制：
     - `utils/fluent.py`：泛型基类 `FluentAPI[T]`（同步、不可变）——`chain >> item`
       追加元素、`chain >> other` 合并两条链（connect），返回具体子类类型；

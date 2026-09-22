@@ -50,12 +50,16 @@ greeting: "「啊啦～，欢迎来到白玉楼～。这里很少有客人来呢
 # 表达欲基线（话痨度 0~1）：幽幽子极度开朗、爱讲话、三句不离食物，故偏高
 expression_base: 0.7
 
-# 定制思考链：按序执行的思考步骤（提示词在 gensokyoai/prompts/manager.py 注册，
-# 名字即 think.<步骤名>）。顺序即「往哪个方向想」——换个顺序/换几个步骤，
-# 就是另一种思维方式。内置可选：emotion_check / relationship_scan / memory_link / stance_decide。
+# 定制思考链：按序执行的思考步骤（内置名 / 内联自定义），顺序即思考方向。
+# - 字符串 = 内置步骤（提示词在 gensokyoai/prompts/manager.py 注册）
+# - 字典 = 内联自定义步骤：name/instructions 必填，可选 max_tokens/temperature/
+#   timeout_s/optional/tools——直接写「这一步想什么」，无需改代码。
+# 内置可选：emotion_check / relationship_scan / memory_link / stance_decide。
 # 留空则用引擎内置的接力思考。
 think_chain:
   - emotion_check
+  - name: "food_radar"                # 只属于幽幽子的思考：话题能不能拐到食物上
+    instructions: "扫描当前话题与「食物」的连接点：能不能自然拐到点心/料理/宴席上？一句话给出拐点，或判定拐不了就不拐。"
   - relationship_scan
   - memory_link
   - stance_decide
