@@ -9,6 +9,10 @@
 - Google：<https://ai.google.dev/gemini-api/docs/pricing>（缓存读 1 折）
 - 阿里百炼：<https://www.alibabacloud.com/help/en/model-studio/model-pricing>
   （qwen max/plus **按输入量分档**；缓存读 1 折、显式缓存写 1.25×）
+- 智谱 Z.AI：<https://docs.z.ai/guides/overview/pricing>（GLM 全系；缓存写
+  **限时免费**故计 0，恢复收费后需在配置价里补）
+- Kimi（Moonshot）：价格表为 JS 懒加载未抓到数字，计费结构已确认（缓存写入按
+  5min/1h TTL 分档）；用 Kimi 请配置 `price` 覆盖。
 
 未收录的模型（含本地 llama-server）返回 None，调用方按 unpriced 处理——
 **算不出来就不算，绝不瞎猜**。要精确/要新模型，在 settings.yaml 的
@@ -95,6 +99,17 @@ _BUILTIN_PRICES: dict[str, ModelPrice] = {
         (256_000, 0.345, 2.868, 0.0345, 0.43125),
         (1_000_000, 0.689, 6.881, 0.0689, 0.86125),
     ),
+    # ---- 智谱 Z.AI（z.ai 国际站；缓存写限时免费计 0）----
+    "glm-5.3": _flat(1.4, 4.4, 0.26),
+    "glm-5.3-flash": _flat(0.15, 0.5, 0.03),
+    "glm-5.3-flashx": _flat(0.37, 1.25, 0.075),
+    "glm-5.2": _flat(1.4, 4.4, 0.26),
+    "glm-5.1": _flat(1.4, 4.4, 0.26),
+    "glm-5": _flat(1.0, 3.2, 0.2),
+    "glm-4.7": _flat(0.6, 2.2, 0.11),
+    "glm-4.7-flashx": _flat(0.07, 0.4, 0.01),
+    "glm-4.6": _flat(0.6, 2.2, 0.11),
+    "glm-4.5": _flat(0.6, 2.2, 0.11),
 }
 
 _warned_unknown: set[str] = set()

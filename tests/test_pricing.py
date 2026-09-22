@@ -108,6 +108,7 @@ def test_price_for_known_and_unknown():
     assert price_for("deepseek-flash") is not None
     assert price_for("qwen3-max") is not None
     assert price_for("claude-sonnet-5") is not None
+    assert price_for("glm-5.3") is not None
     assert price_for("totally-unknown-model-9000") is None
 
 
