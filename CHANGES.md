@@ -6,6 +6,82 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### 修复
+  - **`gate.timeout_ms` 默认 4s 对本地模型 = 裁判永久超时**：真机验证发现本地
+    llama 单次调用要 10~25s，4s 超时让 LocalJudge 永远走降级（裁判形同虚设）。
+    默认改为 60s（settings.yaml 同步；用真 jev 云端快接口可调回 5000）。
+  - **健康监控的回合计数器全是无效调用**：`HealthMonitor.record()` 只收**单条**
+    指标（`{"name", "value"}`），`TouhouWorld._record_health` 却把整本计数器
+    dict（`{"turn.count": 1, "effort.low": 1, ...}`）塞进去 —— 每条都被
+    「指标缺少 name」挡下（只打 warning，从未有人发现）。后果：健康报告里的
+    **推理档位分布恒为空**，阈值表里的 `memory.work_size`（500 条）/
+    `memory.long_size`（5000 条）**从未触发过告警**。改为逐条
+    `record_metric()`，并补两例回归测试（计数器落指标 / 超限真告警）。
+
+### 新增
+  - **JeV 式发言门控**（移植 [Mist-wu/qqbot](https://github.com/Mist-wu/qqbot) 的
+    「jev 决定该不该说话」机制，按本项目约束改造）：
+    - `core/brain/gate.py`：混合门控。收尾语（哈哈哈/草/666/好的……）/ 私聊 / 被 @
+      由零成本规则直判；**只有「群里没人点名的新消息」才交裁判**（`should_reply`
+      达到 `gate.group_threshold`（默认 0.6）才接）。裁判输入 state 含
+      `bot_activity`（近 5 分钟自己说了多少、距上次发言多久）——防刷屏靠裁判
+      自觉，**代码不设硬冷却**。裁判异常/缺失时退化为「点名才回」。
+    - `core/brain/judge.py`：两个可插拔后端，同一 `Judge` 协议——
+      `LocalJudge`（主模型无状态小调用：`stateless=True`、`max_new_tokens=128`、
+      `temperature=0.2`、`wait_for` 超时保护；零新依赖）与 `TypeSafeJudge`
+      （官方 typesafe-sdk 真 jev，可选依赖 `pip install '.[jev]'`）。
+    - `roleplay/loop.py`：主循环在进 Brain 前过门控；**跳过时用户消息仍然入记忆**
+      （不回复≠没听过，保证对话连续性），并喂 `gate.skip` 健康计数。
+    - `core/config.py` + `config/settings.yaml`：`gate:` 配置段
+      （enabled/judge/group_threshold/search_threshold/timeout_ms/……）。
+      代码默认 `enabled=False`（直接构造世界维持「每条都回」旧行为），
+      settings.yaml 显式打开。
+  - `tests/test_gate.py`：规则预筛 / 阈值边界 / 裁判故障兜底 / 活跃度窗口淘汰 /
+    两个裁判后端（含假 TypeSafe 客户端）/ 世界接线共 30 例。
+  - **可定制思考链流水（ThinkPipeline）**：把「怎么想」提成一等公民，角色卡零代码定制：
+    - `utils/fluent.py`：泛型基类 `FluentAPI[T]`（同步、不可变）——`chain >> item`
+      追加元素、`chain >> other` 合并两条链（connect），返回具体子类类型；
+    - `core/brain/pipeline.py`：`ThinkStep`（max_tokens/temperature/timeout_s/
+      optional）+ `ThinkPipeline`（DSL 拼装 / `from_names` 卡片驱动）。`run()`
+      串行执行：每步一次无状态小调用，前步结论以 ≤400 字 digest 交接给后步；
+      收尾步输出 BrainConclusion 契约，**下游 Responder / OOC / 轨迹零改动**；
+    - `CharacterCard.think_chain: [步骤名...]`：顺序即「往哪个方向想」，步骤提示词
+      注册在 `prompts/manager.py`（`think.<名>`），内置四步 emotion_check /
+      relationship_scan / memory_link / stance_decide；默认角色卡已配示例链；
+    - `engine.py`：`BrainEngine(pipeline=...)`；OFF 走快速路径、配链走链、
+      **整链失败（PipelineAbort）降级快速路径**，接力思考原样保留。
+  - **异步语义**：步骤串行 await（N+1 依赖 N 的 digest，本地单模型经 ResourceGate
+    串行，gather 无收益）；每步 `wait_for` 超时隔离；只捕 `Exception`，
+    **CancelledError 原样穿透**；`run()` 内零 `create_task`。
+  - **五档推理深度真正接线**（`BrainThinkEffort`：OFF 更名 **NONE**，语义补全）：
+    档位不再只是「跑不跑」的开关，而是**思考链跑多深 / 接力跑几轮**——
+    NONE 关键词快速路径（零调用）；LOW 只留收尾步直出（1 次调用，寒暄不再
+    付全款）；MID 首+尾（2 次）；HIGH 全链；MAX 全链 + 每步深思考（预算×2、
+    温度 0.2）。接力路径同步（LOW2/MID3/HIGH5/MAX8 轮）。真机验证：LOW 回合
+    从 86s 降到 ~50s 量级，深问题仍走全链保质。
+  - **人设摘要（persona_brief）**：真机验证发现门控裁判提示词 1769 tok、思考步骤
+    ~1600 tok，绝大部分是整本人设——而「想方向」的环节只需要气质概要。世界组装
+    `persona_brief =【名】+ system_prompt[:200]`，门控 / 思考链 / 结论都改用它；
+    完整人设只留给开口的 Responder。
+  - **思考步骤超时 30s → 90s**（真机验证踩到）：串行单模型下，后台侧链
+    （OOC 深审 ~23s）按 FIFO 先占资源闸门，主回合的步骤调用排在后面干等；
+    而 `wait_for` 把**排队等闸门**的时间也算进步骤预算——上个回合的深审 +
+    本步骤生成轻松超过 30s，步骤被误杀（链韧性跳过，但思考残缺）。90s 覆盖
+    「侧链竞争 + 生成」；更正的修法（超时只包住闸门内的模型调用，SessionManager
+    透传 timeout）留作后续。
+  - **档位路由模型化（System-1 下沉）**：`route()` 的规则 if-else 降级为兜底，
+    裁判（jev 位）新增 `needs_deep` 一问——**一次裁判调用同时回答「该不该
+    发言」与「该想多深」**。`gate.route_by_model`（默认开）让私聊/被 @ 回合
+    也为路由问一次裁判（回复与否仍由规则直判）；`deep_cuts` 三个切点把分数
+    映射为档位；裁判不可用/缺答 needs_deep 时自动回落规则路由。真机探针：
+    本地模型能判出「哈哈哈→none、38 字情绪倾诉→mid、哲学之问→high」，
+    而规则路由只会数字数。
+  - `tests/test_fluent.py` + `tests/test_pipeline.py` + 接线用例：digest 交接 /
+    纠正重试一次 / 可选步骤跳过 / 必要步骤中止 / 超时隔离 / **取消穿透** /
+    DSL 字符串糖 / 链合并 / 卡片驱动 / OFF 降级。
+
 ## [0.0.19] - 2026/9/9
 
 ### 修复
