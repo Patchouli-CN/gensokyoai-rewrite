@@ -21,6 +21,7 @@ dependencies = [
     "loguru",
     "pyyaml",
     "aioconsole",
+    "ayafileio>=1.5.1",
 ]
 
 [project.optional-dependencies]

@@ -1,8 +1,8 @@
 """记忆的存储和检索 - 长期记忆（JSON 文件持久化）"""
 
-import asyncio
 from pathlib import Path
 
+import ayafileio
 import msgspec
 
 from ...schemas.memory_schema import MemoryItem
@@ -69,17 +69,17 @@ class LongMemoryStore:
             self._logger.info(f"长期记忆归档(纯内存): {len(items)} 条")
             return
 
-        # 将 IO 操作扔到线程池，防止阻塞 asyncio 主循环
-        await asyncio.to_thread(self._sync_to_disk)
+        # 真异步落盘（ayafileio：IOCP/io_uring/GCD 内核级完成，不占线程池）
+        await self._async_to_disk()
         self._logger.info(f"长期记忆归档: {len(items)} 条 -> {self._file_path.name}")
 
-    def _sync_to_disk(self) -> None:
-        """同步将缓存写入磁盘（原子写入：先写临时文件，再替换）"""
+    async def _async_to_disk(self) -> None:
+        """真异步将缓存写入磁盘（ayafileio；原子写入：先写临时文件，再替换）"""
         if self._file_path is None or not self._dirty:
             return
         data = list(self._items.values())
-        # msgspec 提供快速的 JSON 序列化
-        content = msgspec.json.encode(data).decode("utf-8")
+        # msgspec 提供快速的 JSON 序列化（字节直写，无需过一层文本编解码）
+        content = msgspec.json.encode(data)
 
         temp_file = self._file_path.with_suffix(".tmp")
         try:
@@ -87,7 +87,8 @@ class LongMemoryStore:
             # FileNotFoundError 被下面的 except 静默吞掉 —— 表现为「长期记忆归档
             # 看似成功但文件始终不出现」
             self._file_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_file.write_text(content, encoding="utf-8")
+            async with ayafileio.open(temp_file, "wb") as handle:
+                await handle.write(content)
             temp_file.replace(self._file_path)  # 原子替换，防止写一半崩溃
             self._dirty = False
         except Exception:

@@ -112,6 +112,7 @@ python scripts/real_verify.py --fresh   # 真机验证（需要本地 llama-serv
 
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) —— llama-server 推理后端
 - [TypeSafe AI](https://typesafe.ai) —— jev 决策模型（可选裁判后端）
+- [ayafileio](https://github.com/Patchouli-CN/ayafileio) —— 自家跨平台真异步文件 IO（持久化落盘，Windows IOCP / Linux io_uring / macOS GCD）
 - [MaiBot](https://github.com/Mai-with-u/MaiBot) —— 回复时机 / 表情 / 记忆思路的来源
 
 ## License

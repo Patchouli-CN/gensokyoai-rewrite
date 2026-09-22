@@ -18,6 +18,7 @@ import asyncio
 import time
 from pathlib import Path
 
+import ayafileio
 import msgspec
 
 from ..schemas.brain_schema import BrainConclusion
@@ -80,7 +81,7 @@ class ReasoningTrace:
                 self._entry(turn=turn, effort=effort, conclusion=conclusion, reply=reply)
             )
             async with self._lock:
-                await asyncio.to_thread(self._append_sync, line)
+                await self._append_async(line)
         except Exception:
             self._logger.exception("思考轨迹留档失败（不影响主链路）")
 
@@ -106,8 +107,10 @@ class ReasoningTrace:
             "reply": reply,
         }
 
-    def _append_sync(self, line: bytes) -> None:
-        """同步追加一行（在线程池中执行），必要时先轮转。
+    async def _append_async(self, line: bytes) -> None:
+        """真异步追加一行（ayafileio，不经线程池），必要时先轮转。
+
+        轮转的 size 检查与 rename 都是元数据操作，保持同步。
 
         Args:
             line: 已序列化的 JSON 行（不含换行）
@@ -116,5 +119,5 @@ class ReasoningTrace:
         if self.path.exists() and self.path.stat().st_size + len(line) > self._max_bytes:
             self.path.replace(self.path.with_suffix(".jsonl.1"))
             self._logger.info(f"思考轨迹已轮转: {self.path.name} -> {self.path.name}.1")
-        with self.path.open("ab") as handle:
-            handle.write(line + b"\n")
+        async with ayafileio.open(self.path, "ab") as handle:
+            await handle.write(line + b"\n")

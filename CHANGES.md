@@ -20,6 +20,16 @@
     `memory.long_size`（5000 条）**从未触发过告警**。改为逐条
     `record_metric()`，并补两例回归测试（计数器落指标 / 超限真告警）。
 
+### 变更
+  - **持久化落盘切换到自家 [ayafileio](https://github.com/Patchouli-CN/ayafileio)**（真异步
+    文件 IO：Windows IOCP / Linux io_uring / macOS GCD）：`core/persistence.py`
+    （会话快照的 tmp→.bak→replace 与读取）、`roleplay/trace.py`（JSONL 追加）、
+    `core/memorizer/store.py`（长期记忆归档）三处从 `asyncio.to_thread` 同步写
+    改为内核级真异步——语义与崩溃安全三件套不变，落盘不再占用线程池；
+    `tmp.replace` 等同目录 rename 是元数据操作，保持同步。
+    **注意**：项目因此新增一个 C 扩展依赖（ayafileio 提供全平台预编译 wheel，
+    pip 安装即纯 wheel，无需编译工具链）。
+
 ### 新增
   - **工具参数格式 upfront 暴露**（`ToolSpec.signature()`）：`名字(参数: 类型) — 描述`
     紧凑签名行；挂工具的思考步骤（system 提示）与接力思考（brain.think.user 的
