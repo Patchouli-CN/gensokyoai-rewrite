@@ -9,12 +9,12 @@ from ..schemas.model_schema import CompletionResult, Message, ToolCall
 from .base import OpenAICompatProvider, split_think
 
 _TEXT_TOOL_PATTERNS: tuple[re.Pattern, ...] = (
-    # "调用 xxx" / "使用 xxx"
-    re.compile(r"(?:调用|使用)\s+([a-zA-Z_][a-zA-Z0-9_]*)"),
+    # "调用 xxx" / "使用 xxx"（\s* 而非 \s+：真机见模型写「调用days_until工具」，中英文间无空格）
+    re.compile(r"(?:调用|使用)\s*([a-zA-Z_][a-zA-Z0-9_]*)"),
     # "xxx(" —— 模型把工具名当函数写
     re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\("),
     # "需要 xxx 工具"
-    re.compile(r"需要\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+工具"),
+    re.compile(r"需要\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+工具"),
 )
 """ 文本喊话的工具名识别模式（本地小模型不走原生协议时的现实路径）"""
 

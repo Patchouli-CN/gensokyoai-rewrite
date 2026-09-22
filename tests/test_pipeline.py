@@ -25,6 +25,7 @@ from gensokyoai.roleplay.loop import TouhouWorld
 from gensokyoai.schemas.brain_schema import BrainThinkEffort
 from gensokyoai.schemas.model_schema import CompletionResult, ToolSpec
 from gensokyoai.schemas.scene_schema import SceneSnapshot
+from gensokyoai.tools import days_until
 
 _SLEEP = "!sleep"
 """ 让假后端睡死的暗号（测超时/取消） """
@@ -58,10 +59,16 @@ class _ScriptBackend:
 
 
 class _ShoutBackend(_ScriptBackend):
-    """会在 normalize 环节识别「文本喊话」的假后端（复用 llama 的真实提取逻辑）"""
+    """会在 normalize 环节识别「文本喊话」的假后端——镜像 LlamaProvider 的真实行为：
+    从**解析后的** thought/action_hint 提取（不是带转义引号的原始 content）"""
 
     def normalize_tool_calls(self, result, parsed_content=None):
-        calls = extract_text_tool_calls(result.content or "")
+        if result.tool_calls:
+            return result
+        if not parsed_content:
+            return result
+        text = f"{parsed_content.get('thought', '')} {parsed_content.get('action_hint', '')}"
+        calls = extract_text_tool_calls(text)
         if not calls:
             return result
         return CompletionResult(content=result.content, tool_calls=calls)
@@ -368,6 +375,7 @@ def _fake_now() -> str:
 
 
 _TIME_TOOL = ToolSpec(tool_func=_fake_now, desc="获取当前时间", name="get_current_time")
+_DAYS_TOOL = ToolSpec(tool_func=days_until, desc="节日倒计时", name="days_until")
 
 
 async def test_step_tools_flag_controls_tool_passing():
@@ -426,6 +434,26 @@ async def test_run_without_tools_skips_tool_round():
     assert len(backend.calls) == 2, "步骤 + 结论，无喊话轮"
 
 
+async def test_tool_round_passes_json_args():
+    """喊话带 JSON 参数：参数一路透传到工具函数（days_until 的 target_date）"""
+    shout = '{"thought": "该算倒计时，调用 days_until {\\"target_date\\": \\"2999-01-01\\"}", "note": "待定"}'
+    sessions, backend = _sessions([shout, '{"note": "还早着呢"}', _CONCLUSION_PASS])
+    backend.__class__ = _ShoutBackend
+    step = ThinkStep(name="counter", instructions="节日倒计时", tools=True)
+    await _chain(step).run(
+        snapshot=_snapshot(),
+        memories=[],
+        sessions=sessions,
+        persona="p",
+        effort=BrainThinkEffort.LOW,
+        tools=[_DAYS_TOOL],
+    )
+    fed_back = backend.calls[1][-1].content
+    assert "【工具执行结果】" in fed_back and "还有" in fed_back, (
+        "JSON 参数应被解析并传给 days_until"
+    )
+
+
 def test_builtin_step_time_anchor_has_tools():
     """内置步骤 time_anchor 默认挂工具；其余内置步骤不挂"""
     assert builtin_step("time_anchor").tools is True
@@ -476,6 +504,13 @@ def test_extract_text_tool_calls_dedup():
     """同一工具重复喊只算一次"""
     calls = extract_text_tool_calls("调用 get_current_time {}，再次调用 get_current_time {}")
     assert len(calls) == 1
+
+
+def test_extract_text_tool_calls_no_space_chinese():
+    """真机踩点：中英文之间无空格（「调用days_until工具」）也要能识别"""
+    calls = extract_text_tool_calls("我需要调用days_until工具来算倒计时")
+    assert len(calls) == 1
+    assert calls[0].name == "days_until"
 
 
 # ---------- DSL / 卡片驱动 ----------

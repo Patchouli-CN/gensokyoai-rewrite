@@ -118,9 +118,13 @@ class ToolExecutor:
         except Exception as err:
             elapsed = time.monotonic() - started
             self._logger.exception(f"工具执行异常: {name}({args})")
-            return ToolResult(
-                name=name, ok=False, error=f"{type(err).__name__}: {err}", elapsed_s=elapsed
-            )
+            error = f"{type(err).__name__}: {err}"
+            # 自教学：带参工具缺参/错参时，把标准喊话格式回给模型（真机验证弱模型
+            # 会读错误信息并自我纠正「忘记传 target_date」，但需要看到写法）
+            if tool.params:
+                example = ", ".join(f'"{param}": "..."' for param in tool.params)
+                error += f"；调用格式：调用 {name} {{{example}}}"
+            return ToolResult(name=name, ok=False, error=error, elapsed_s=elapsed)
 
         content = self._truncate(str(output))
         elapsed = time.monotonic() - started

@@ -133,7 +133,7 @@ python scripts/real_verify.py --scenario my.json
 
 ## 6. 工具调用
 
-引擎内置三个工具（`tools/builtin.py`）：`get_current_time` / `get_current_dateinfo` / `get_moon_phase`。加自己的工具就是在该文件里加一个 `@ToolRegistry.tool` 装饰的函数（参数 JSON Schema 从签名自动推导，同步函数自动下线程），重启生效。
+引擎内置四个工具（`tools/builtin.py`）：`get_current_time` / `get_current_dateinfo` / `get_moon_phase` / `days_until`（带参：节日倒计时）。加自己的工具就是在该文件里加一个 `@ToolRegistry.tool` 装饰的函数（参数 JSON Schema 从签名自动推导，同步函数自动下线程），重启生效。
 
 两条路径都能用工具：
 
@@ -144,7 +144,7 @@ python scripts/real_verify.py --scenario my.json
 chain = ThinkPipeline("感知链") >> ThinkStep("time_check", instructions="先确认当前时间", tools=True) >> ...
 ```
 
-**本地小模型的「文本喊话」约定**：不走原生 `tool_calls` 协议的模型（如 llama-server 上的 Qwen），在思考里写 `调用 get_current_time {}` 即可——系统识别后执行并把结果回填。可带 JSON 参数：`调用 get_weather {"city": "北京"}`，支持一次喊多个。真机实测：接力路径下 Qwen 能稳定喊对；思考链步骤路径下弱 quant 可能只写「调用工具」而不写全名（换更强 quant 或云端模型更稳）。
+**本地小模型的「文本喊话」约定**：不走原生 `tool_calls` 协议的模型（如 llama-server 上的 Qwen），在思考里写 `调用 days_until {"target_date": "2026-12-22"}` 即可——系统识别后执行并把结果回填，可一次喊多个。**带参工具的自学机制**：缺参调用失败时，回给模型的错误信息会附带标准调用格式（`调用 days_until {"target_date": "..."}`），真机验证弱模型能照着格式在下一轮纠正重试（Qwen 实际跑通过「冬至倒计时」：口算错 46 天 → 工具给出正确 91 天）。
 
 ## 7. 模型计费（接云端 API 时）
 
