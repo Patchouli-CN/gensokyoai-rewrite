@@ -389,11 +389,15 @@ async def test_step_tools_flag_controls_tool_passing():
         sessions=sessions,
         persona="p",
         effort=BrainThinkEffort.HIGH,
-        tools=[_TIME_TOOL],
+        tools=[_TIME_TOOL, _DAYS_TOOL],
     )
-    assert backend.kwargs[0]["tools"] == [_TIME_TOOL]
+    assert backend.kwargs[0]["tools"] == [_TIME_TOOL, _DAYS_TOOL]
     assert backend.kwargs[1]["tools"] is None
     assert backend.kwargs[2]["tools"] is None, "结论步不带工具"
+    # 参数格式 upfront 暴露：工具步骤的 system 里应含带参工具的签名
+    system_of_step = backend.calls[0][0].content
+    assert "days_until(target_date: string)" in system_of_step
+    assert "参数名与类型必须按上面签名写" in system_of_step
 
 
 async def test_tool_round_executes_and_feeds_back():

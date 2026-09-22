@@ -157,6 +157,10 @@ class BrainEngine:
         max_rounds = self._get_max_rounds(effort)
         memory_text = "\n".join(f"- [{m.topic}] {m.content}" for m in memories) or "（无相关记忆）"
         context_text = "\n".join(snapshot.context_snippet[-5:]) or "（无上下文）"
+        # 工具签名 upfront 摊开（文本喊话路径的小模型不用等报错才知道参数格式）
+        tool_block = (
+            "\n".join(f"- {tool.signature()}" for tool in self._tools) if self._tools else ""
+        )
 
         base_messages = [
             Message(role="system", content=prompt_mgr.render("brain.think")),
@@ -169,6 +173,7 @@ class BrainEngine:
                     content=snapshot.content,
                     context=context_text,
                     memory=memory_text,
+                    tools=tool_block,
                 ),
             ),
         ]

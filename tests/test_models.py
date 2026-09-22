@@ -17,6 +17,7 @@ from gensokyoai.schemas.model_schema import (
     ToolSpec,
     Usage,
 )
+from gensokyoai.tools import days_until, get_current_time
 
 
 def get_weather(city: str, unit: str = "celsius") -> str:
@@ -151,6 +152,17 @@ def test_tool_spec_openai_schema():
     assert props["city"] == {"type": "string", "description": "城市名"}
     assert props["unit"]["type"] == "string"
     assert func["parameters"]["required"] == ["city"]
+
+
+def test_tool_spec_signature_exposes_params():
+    """紧凑签名行：名字(参数: 类型) — 描述（给小模型 upfront 暴露参数契约）"""
+    tool = ToolSpec(days_until, name="days_until")
+    sig = tool.signature()
+    assert sig.startswith("days_until(target_date: string)")
+    assert "目标日期" in sig or "天数" in sig
+    # 无参工具签名干净
+    no_arg = ToolSpec(get_current_time).signature()
+    assert no_arg.startswith("get_current_time()")
 
 
 def test_build_result_parses_tool_calls():

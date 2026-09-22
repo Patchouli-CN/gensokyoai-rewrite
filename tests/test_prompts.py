@@ -33,6 +33,34 @@ def test_render_substitutes_placeholders():
     assert "$persona" not in text and "$sender" not in text
 
 
+def test_render_brain_user_includes_tool_signatures():
+    """传了工具签名块时，brain.think.user 带上 [可用工具] 段（upfront 暴露）"""
+    text = prompt_mgr.render(
+        "brain.think.user",
+        persona="p",
+        sender="小明",
+        content="冬至还有几天",
+        context="c",
+        memory="m",
+        tools="- days_until(target_date: string) — 倒计时",
+    )
+    assert "[可用工具]" in text
+    assert "days_until(target_date: string)" in text
+
+
+def test_render_tools_hint_exposes_signatures():
+    """think.step.tools_hint 摊开每个工具的签名（参数名/类型 upfront）"""
+    text = prompt_mgr.render(
+        "think.step.tools_hint",
+        tool_lines=[
+            "get_current_time() — 获取当前时间",
+            "days_until(target_date: string) — 倒计时",
+        ],
+    )
+    assert "days_until(target_date: string)" in text
+    assert "target_date" in text
+
+
 def test_render_static_template_is_cached():
     """无参数模板走缓存，重复渲染返回同一对象"""
     first = prompt_mgr.render("brain.think")

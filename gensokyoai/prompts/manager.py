@@ -65,12 +65,13 @@ prompt_mgr = PromptManager()
 
 
 @prompt_mgr.prompt("brain.think.user")
-def brain_think_user(persona, sender, content, context, memory, **_) -> str:
+def brain_think_user(persona, sender, content, context, memory, tools="", **_) -> str:
+    tool_block = f"\n[可用工具]\n{tools}" if tools else ""
     return (
         f"[人设]\n{persona}\n\n"
         f"[场景] {sender}: {content}\n\n"
         f"[最近上下文]\n{context}\n\n"
-        f"[相关记忆]\n{memory}"
+        f"[相关记忆]\n{memory}{tool_block}"
     )
 
 
@@ -117,14 +118,14 @@ def think_step_system() -> str:
 
 
 @prompt_mgr.prompt("think.step.tools_hint")
-def think_step_tools_hint(tool_names, **_):
-    """挂了工具的步骤专用约定（工具名在渲染时枚举，弱模型可照抄）"""
-    names = "、".join(tool_names)
+def think_step_tools_hint(tool_lines, **_):
+    """挂了工具的步骤专用约定：摊开每个工具的签名（参数格式 upfront，不等报错）"""
+    lines = "\n".join(f"- {line}" for line in tool_lines)
     return (
-        f"\n【可用工具】{names}\n"
+        f"\n【可用工具】\n{lines}\n"
         '需要外部信息时，直接在思考里写：调用 工具名 {"参数": "值"}'
         '（例如：调用 days_until {"target_date": "2026-12-22"}；只有无参工具才写 {}）。'
-        "参数必须写全，不许省略。"
+        "参数名与类型必须按上面签名写，不许省略、不许自己编参数名。"
         "系统会识别这句话、执行工具，并把结果补充给你；"
         "必须拿到工具结果后再下结论，不要自己编造。"
     )

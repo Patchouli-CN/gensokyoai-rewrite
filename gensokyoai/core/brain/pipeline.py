@@ -253,11 +253,11 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         在这里识别、执行、把结果回填后重取一次（与接力思考同款语义）。
         """
         call_tools = tools if (step.tools and tools) else None
-        # 挂了工具的步骤：system 里注入喊话约定 + 枚举可用工具名（位置对齐 relay：
-        # 约定放 system 才稳，弱模型需要工具名照抄）
+        # 挂了工具的步骤：system 里注入喊话约定 + 摊开工具签名（参数格式 upfront）
         system_content = prompt_mgr.render("think.step.system") + (
             prompt_mgr.render(
-                "think.step.tools_hint", tool_names=[tool.tool_name for tool in call_tools]
+                "think.step.tools_hint",
+                tool_lines=[tool.signature() for tool in call_tools],
             )
             if call_tools
             else ""

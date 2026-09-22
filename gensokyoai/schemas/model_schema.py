@@ -133,6 +133,23 @@ class ToolSpec:
             },
         }
 
+    def signature(self) -> str:
+        """紧凑签名行：`名字(参数: 类型) — 描述`。
+
+        给「文本喊话」路径的小模型 upfront 暴露参数契约用（不用等报错才知道
+        怎么写参数）；类型映射与 to_openai_tool 同一张表。
+
+        Returns:
+            str: 如 `days_until(target_date: string) — 计算今天到目标日期还有多少天`
+        """
+        sig = inspect.signature(self.tool_func)
+        parts: list[str] = []
+        for name, param in sig.parameters.items():
+            if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                continue
+            parts.append(f"{name}: {_JSON_TYPES.get(param.annotation, 'string')}")
+        return f"{self.tool_name}({', '.join(parts)}) — {self.desc}"
+
     def prompt(self) -> str:
         lines = [f"# 工具 {self.tool_name}", f"- 描述: {self.desc}", "## 参数"]
 
