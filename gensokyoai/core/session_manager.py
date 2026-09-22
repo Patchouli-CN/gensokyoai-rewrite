@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ..schemas.cost_schema import CostBreakdown
 from ..schemas.model_schema import CompletionResult, Message, StreamEvent, ToolSpec, Usage
 from ..utils.logger import LoggerManager
 from ..utils.token_counter import DefaultCounter
@@ -27,6 +28,14 @@ class ChatBackend(Protocol):
         self, result: CompletionResult, parsed_content: dict | None = None
     ) -> CompletionResult:
         """标准化工具调用格式（由 Provider 实现）"""
+        ...
+
+    def costs(self, usage: Usage, model: str = "") -> CostBreakdown:
+        """计费查询：用量 -> 费用明细。
+
+        协议约定：**未实现 costs() 的后端视为不计价**（本地 llama-server /
+        测试假后端走这条路）——SessionManager 侧用 getattr 容差，实现方不必勉强。
+        """
         ...
 
 
@@ -67,6 +76,8 @@ class SessionManager:
         """ 新建会话的默认上下文预算（装配层可用 set_context_window 逐 owner 覆盖）"""
         self._usage: dict[str, Usage] = {}
         """ 各 owner 的累计 token 用量（供健康监控计量）"""
+        self._costs: dict[str, dict[str, float]] = {}
+        """ 各 owner 的累计费用：owner -> 币种 -> 金额（本地/未收录模型为空） """
 
     def token_usage(self, owner: str) -> Usage:
         """读取某 owner 的累计 token 用量。
@@ -88,6 +99,33 @@ class SessionManager:
         prompt = sum(u.prompt_tokens for u in self._usage.values())
         completion = sum(u.completion_tokens for u in self._usage.values())
         return Usage(prompt_tokens=prompt, completion_tokens=completion)
+
+    # ---------------------------------------------------------------- 计费
+
+    def cost_by_owner(self, owner: str) -> dict[str, float]:
+        """某 owner 的累计费用（币种 -> 金额；未计价模型为空 dict）。"""
+        return dict(self._costs.get(owner, {}))
+
+    def total_cost(self) -> dict[str, float]:
+        """全部 owner 的累计费用（币种 -> 金额；混合币种分开累计不混算）。"""
+        totals: dict[str, float] = {}
+        for per_currency in self._costs.values():
+            for currency, amount in per_currency.items():
+                totals[currency] = totals.get(currency, 0.0) + amount
+        return totals
+
+    def _accumulate_cost(self, owner: str, backend: ChatBackend, result: CompletionResult) -> None:
+        """累计一次调用的费用（backend 未实现 costs() = 不计价，静默跳过）。"""
+        pricing = getattr(backend, "costs", None)
+        if not callable(pricing):
+            return
+        breakdown = pricing(result.usage, result.model)
+        if not breakdown.priced:
+            return
+        per_currency = self._costs.setdefault(owner, {})
+        per_currency[breakdown.currency] = (
+            per_currency.get(breakdown.currency, 0.0) + breakdown.total
+        )
 
     def owners(self) -> list[str]:
         """当前存在的虚拟会话 owner 列表。"""
@@ -177,6 +215,7 @@ class SessionManager:
                 tools=tools,
             )
             self._accumulate(owner, result.usage)
+            self._accumulate_cost(owner, backend, result)
             self._logger.info(
                 f"调用完成: owner={owner} 模式=无状态 耗时={time.monotonic() - started:.2f}s"
             )
@@ -194,6 +233,7 @@ class SessionManager:
             tools=tools,
         )
         self._accumulate(owner, result.usage)
+        self._accumulate_cost(owner, backend, result)
         if result.content:
             session.messages.append(Message(role="assistant", content=result.content))
         session.last_used_at = time.time()
@@ -250,6 +290,7 @@ class SessionManager:
                     session.messages.append(Message(role="assistant", content=result.content))
                 session.last_used_at = time.time()
             self._accumulate(owner, result.usage)
+            self._accumulate_cost(owner, backend, result)
             yield StreamEvent(
                 delta=result.content, finish_reason=result.finish_reason, usage=result.usage
             )
@@ -281,6 +322,7 @@ class SessionManager:
                 parts.append(ev.delta)
             if ev.usage is not None:
                 self._accumulate(owner, ev.usage)
+                self._accumulate_cost(owner, backend, CompletionResult(usage=ev.usage))
             yield ev
         content = "".join(parts)
         if content:

@@ -8,6 +8,7 @@ import aiohttp
 import msgspec
 
 from ..core.toolkit import build_executor
+from ..schemas.cost_schema import CostBreakdown, cost_of
 from ..schemas.model_schema import (
     CompletionResult,
     Message,
@@ -18,6 +19,7 @@ from ..schemas.model_schema import (
     Usage,
 )
 from ..utils.logger import LoggerManager
+from .pricing import price_for
 
 _MAX_TOOL_ROUNDS = 8
 """ 单次 chat 内工具执行轮数上限，防止模型无限循环调工具 """
@@ -174,7 +176,7 @@ class OpenAICompatProvider(ModelProvider):
         started = time.monotonic()
         timeout = aiohttp.ClientTimeout(total=self._conf.timeout)
         result: CompletionResult | None = None
-        prompt_total = completion_total = cached_total = 0
+        prompt_total = completion_total = cached_total = cache_write_total = 0
         rounds = 0
 
         async with aiohttp.ClientSession(timeout=timeout) as http:
@@ -193,6 +195,7 @@ class OpenAICompatProvider(ModelProvider):
                 prompt_total += result.usage.prompt_tokens
                 completion_total += result.usage.completion_tokens
                 cached_total += result.usage.cached_tokens
+                cache_write_total += result.usage.cache_write_tokens
 
                 if not result.tool_calls or not tools:
                     break
@@ -212,6 +215,7 @@ class OpenAICompatProvider(ModelProvider):
                     prompt_tokens=prompt_total,
                     completion_tokens=completion_total,
                     cached_tokens=cached_total,
+                    cache_write_tokens=cache_write_total,
                 ),
                 model=result.model,
             )
@@ -221,6 +225,7 @@ class OpenAICompatProvider(ModelProvider):
             f"补全完成: {prompt_total}+{completion_total} tok "
             f"finish={result.finish_reason} 工具轮数={rounds} 耗时={elapsed:.2f}s 速度="
             f"{completion_total / elapsed:.1f}tok/s 前缀缓存命中={cached_total}/{prompt_total} tok"
+            f"{self._cost_suffix(result.usage, result.model)}"
         )
         self._logger.debug(
             f"补全详情: 正文={_preview(result.content)} "
@@ -286,7 +291,9 @@ class OpenAICompatProvider(ModelProvider):
         prompt_total = 0
         completion_total = 0
         cached_total = 0
+        cache_write_total = 0
         finish = "stop"
+        model_name = self._conf.model_name
 
         async with aiohttp.ClientSession(timeout=timeout) as http:
             async for event in self._iter_sse_events(http, url, payload, headers):
@@ -299,26 +306,36 @@ class OpenAICompatProvider(ModelProvider):
                     finish = choice["finish_reason"]
                 usage = event.get("usage")
                 if usage:
+                    details = usage.get("prompt_tokens_details") or {}
                     prompt_total += int(usage.get("prompt_tokens", 0))
                     completion_total += int(usage.get("completion_tokens", 0))
-                    cached_total += int(
-                        (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+                    cached_total += int(details.get("cached_tokens", 0))
+                    cache_write_total += int(
+                        details.get(
+                            "cache_write_input_tokens",
+                            usage.get("cache_creation_input_tokens", 0),
+                        )
                     )
+                if event.get("model"):
+                    model_name = event["model"]
 
         elapsed = time.monotonic() - started
+        final_usage = Usage(
+            prompt_tokens=prompt_total,
+            completion_tokens=completion_total,
+            cached_tokens=cached_total,
+            cache_write_tokens=cache_write_total,
+        )
         self._logger.info(
             f"流式完成: {prompt_total}+{completion_total} tok finish={finish} 耗时={elapsed:.2f}s "
             f"前缀缓存命中={cached_total}/{prompt_total} tok"
+            f"{self._cost_suffix(final_usage, model_name)}"
         )
         # 末块：delta 空串，附 finish_reason 与累计用量
         yield StreamEvent(
             delta="",
             finish_reason=finish,
-            usage=Usage(
-                prompt_tokens=prompt_total,
-                completion_tokens=completion_total,
-                cached_tokens=cached_total,
-            ),
+            usage=final_usage,
         )
 
     async def _iter_sse_events(
@@ -427,11 +444,39 @@ class OpenAICompatProvider(ModelProvider):
             payload["stop"] = stop
         return payload
 
+    def costs(self, usage: Usage, model: str = "") -> CostBreakdown:
+        """给一次调用算账：配置价 > 内置价格表；都查不到 = unpriced。
+
+        协议约定（ChatBackend）：不实现 costs() 的后端视为不计价——
+        本地 llama-server 默认就在这条路上（电费不在 token 计费口径内）。
+        """
+        conf = self._conf
+        model_name = model or (conf.model_name if conf else "")
+        price = conf.price if conf is not None else None
+        if price is None:
+            price = price_for(model_name)
+        return cost_of(
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            cached_tokens=usage.cached_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            price=price,
+            model=model_name,
+        )
+
+    def _cost_suffix(self, usage: Usage, model: str) -> str:
+        """补全日志的费用后缀（unpriced 时安静返回空串）。"""
+        breakdown = self.costs(usage, model)
+        if not breakdown.priced:
+            return ""
+        return f" 费用={breakdown.currency} {breakdown.total:.6f}"
+
     def _build_result(self, data: dict) -> CompletionResult:
         """解析 /chat/completions 响应；子类可覆盖定制。"""
         choice = data["choices"][0]
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
+        details = usage.get("prompt_tokens_details") or {}
         tool_calls = [
             ToolCall(
                 id=str(c.get("id", "")),
@@ -447,8 +492,11 @@ class OpenAICompatProvider(ModelProvider):
             usage=Usage(
                 prompt_tokens=int(usage.get("prompt_tokens", 0)),
                 completion_tokens=int(usage.get("completion_tokens", 0)),
-                cached_tokens=int(
-                    (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+                cached_tokens=int(details.get("cached_tokens", 0)),
+                cache_write_tokens=int(
+                    details.get(
+                        "cache_write_input_tokens", usage.get("cache_creation_input_tokens", 0)
+                    )
                 ),
             ),
             model=data.get("model") or (self._conf.model_name if self._conf else ""),

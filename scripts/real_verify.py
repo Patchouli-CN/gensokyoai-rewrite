@@ -206,6 +206,14 @@ async def run(args: argparse.Namespace) -> int:
     usage = sessions.total_usage()
     print("\n========== 验证汇总 ==========", flush=True)
     print(f"模型 token: prompt={usage.prompt_tokens} completion={usage.completion_tokens}")
+    cost = sessions.total_cost()
+    if cost:
+        print("累计费用: " + ", ".join(f"{c} {a:.6f}" for c, a in cost.items()))
+    else:
+        print("累计费用: （无 —— 本地模型不计价，或后端未实现 costs()）")
+    per_owner = {owner: sessions.cost_by_owner(owner) for owner in sessions.owners()}
+    per_owner = {owner: value for owner, value in per_owner.items() if value}
+    print(f"各模块费用: {per_owner or '（无）'}")
     print(f"推理档位分布: {world.health.reasoning_distribution()}")
     print(f"responder 上下文占用: {world.sessions.context_usage('responder'):.1%}")
     recent = await world.memory.recent(10)

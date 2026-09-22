@@ -27,7 +27,8 @@
 ### 记忆与工程
 
 - **长期记忆**：按人按会话隔离，对话 + 内心想法摘要，分级存储 + 淘汰 + 蒸馏压缩，重启可恢复。
-- **健康监控**：token / 延迟 / 上下文占用 / OOC 率等指标，超限告警 + 主动干预（上下文告急触发蒸馏）。
+- **模型计费兼容层**：`Provider.costs()` 统一口径——输入 / 缓存读 / 缓存写 / 输出四条流 + 输入分档 + 多币种；内置价格表收录主流云端模型（OpenAI / Claude / DeepSeek / Gemini / Qwen，2026-09 快照），本地与未收录模型**明确不计价**（unpriced，绝不瞎猜）；配置价可覆盖。按 owner / 租户累计，回合结束时给出本回合花费。
+- **健康监控**：token / 延迟 / 上下文占用 / OOC 率 / 费用等指标，超限告警 + 主动干预（上下文告急触发蒸馏）。
 - **多模型路由 + 资源闸门**：一个模型实例多个虚拟会话，也可按模块（brain/responder/ooc/memorizer）路由到不同后端；并发/RPM/日预算限流保护本地单卡。
 - **会话持久化**：记忆、会话快照、跨回合运行时状态事件驱动落盘，关闭前 flush。
 - **思考轨迹留档**：每回合一行 JSONL（含逐步推理记录），便于复盘调参。
@@ -74,7 +75,7 @@ gensokyoai/
 │   ├── memorizer/  # 记忆：分级存储 / 蒸馏压缩
 │   ├── health/     # 监控：指标 / 告警 / 主动干预
 │   └── ...         # session_manager（虚拟会话）/ event_bus / resource（闸门）/ persistence
-├── models/         # L2 模型接入：llama_cpp（llama-server）/ qwen_local（通用 OpenAI 兼容）
+├── models/         # L2 模型接入：llama_cpp（llama-server）/ qwen_local（通用 OpenAI 兼容）/ pricing（内置价格表）
 ├── eyes/           # 感知层：perceiver / queue（多路合流）/ parser（OneBot11）
 ├── mouth/          # 口层：console / broadcast（多路广播+流式）
 ├── roleplay/       # 领域：角色卡 / 主循环 / 频道中枢 / 持久化

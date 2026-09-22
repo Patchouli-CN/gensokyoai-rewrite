@@ -131,7 +131,34 @@ python scripts/real_verify.py --scenario my.json
 | 换思考方式 | 改角色卡 `think_chain` 的顺序/步骤 |
 | 彻底关掉门控 | `gate.enabled: false`（维持「每条都回」的旧行为） |
 
-## 6. 排错速查
+## 6. 模型计费（接云端 API 时）
+
+接第三方模型（OpenAI / Claude / DeepSeek / Gemini / Qwen……）才会产生费用。引擎的计费是**自动 + 可覆盖**的：
+
+- **自动**：内置价格表（`models/pricing.py`，2026-09 调研快照）按响应里的模型名计价——OpenAI / Claude / DeepSeek / Gemini / Qwen 主流型号已收录，未收录的模型**不计价**（不瞎猜）。
+- **覆盖**：任何 `<模块>.price` 配置段优先于内置表，新模型/精确价/CNY 价都走这里：
+
+```yaml
+responder:
+  provider: "qwen_local"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model_name: "qwen3.8-max"
+  token: "sk-..."
+  price:
+    currency: "CNY"
+    tiers:                      # 按单次请求输入量分档（平价模型留一档即可）
+      - up_to: 1000000          # 本档上限（含），单位 token
+        price_in: 2.0           # 每百万 token
+        price_out: 6.0
+        price_cached_in: 0.2    # 缓存命中价（没有就填 0）
+        price_cache_write: 2.5  # 缓存写入价（没有就填 0）
+```
+
+计费口径（OpenAI 式）：`prompt_tokens` 为输入**总量**，缓存读/缓存写是它的子集，普通输入 = 总量 − 缓存读 − 缓存写。各家差异（DeepSeek 峰谷分时、阿里夜间折扣、Batch 半价）不在自动口径内，需要时用配置价自行建模。
+
+**在哪看账**：每次模型调用日志带 `费用=USD 0.012345`；回合结束日志带本回合花费；健康指标 `turn.cost_<币种>`；`scripts/real_verify.py` 汇总打印累计费用与各模块费用。本地 llama-server 不计价（电费不在 token 口径内）。
+
+## 7. 排错速查
 
 | 症状 | 先看 |
 |---|---|
@@ -140,5 +167,6 @@ python scripts/real_verify.py --scenario my.json
 | `turn.latency_s` 每回合告警 | 本地模型固有延迟；阈值在 `core/health/monitor.py` 的 `DEFAULT_THRESHOLDS` |
 | 回复慢 | 正常（串行单模型，每回合多次调用）；见 [QA.md](QA.md)「为什么回复慢」 |
 | 模型不按 JSON 输出 | 步骤会自动纠偏重试一次；仍失败则该步跳过（`optional=True`）或整链降级 |
+| 费用对不上官网 | 内置表是 2026-09 快照，价格会变；用 `<模块>.price` 配置覆盖精确价 |
 
 更多问题 → [QA.md](QA.md)。

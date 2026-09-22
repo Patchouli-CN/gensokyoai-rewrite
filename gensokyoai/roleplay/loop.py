@@ -200,6 +200,8 @@ class TouhouWorld:
         """ OOC 飙升时抬高的推理档位下限；审计恢复健康后清除 """
         self._last_total_tokens = 0
         """ 上次采集的累计 token，用于算回合增量 """
+        self._last_cost: dict[str, float] = {}
+        """ 上次采集的累计费用（币种 -> 金额），用于算回合增量 """
 
         self.compressor = Compressor(sessions)
 
@@ -427,7 +429,7 @@ class TouhouWorld:
                 # 6. 角色状态跟踪 + 健康喂食
                 if conclusion.emotion:
                     self.character.status.update(emotion=conclusion.emotion)
-                await self._record_health(turn, effort, t_start)
+                turn_cost = await self._record_health(turn, effort, t_start)
 
                 # 7. 记忆蒸馏（后台侧链，不阻塞回合）
                 self._distill_counter += 1
@@ -436,7 +438,14 @@ class TouhouWorld:
                     self._tasks.spawn(self._distill(), name="distill")
 
                 latency = time.monotonic() - t_start
-                self.logger.info(f"回合 {turn} 完成 | 延迟: {latency:.2f}s | 档位: {effort.value}")
+                cost_text = (
+                    " | 花费: " + ", ".join(f"{c} {a:.6f}" for c, a in turn_cost.items())
+                    if turn_cost
+                    else ""
+                )
+                self.logger.info(
+                    f"回合 {turn} 完成 | 延迟: {latency:.2f}s | 档位: {effort.value}{cost_text}"
+                )
                 await self.bus.publish(
                     EventBus.new(
                         EventTopic.TURN_END,
@@ -564,11 +573,16 @@ class TouhouWorld:
             name="memory-write",
         )
 
-    async def _record_health(self, turn: int, effort, t_start: float) -> None:
-        """回合粒度的健康指标喂食：档位分布 / 记忆规模 / 延迟 / token / 上下文占用率"""
+    async def _record_health(self, turn: int, effort, t_start: float) -> dict[str, float]:
+        """回合粒度的健康指标喂食：档位分布 / 记忆规模 / 延迟 / token / 费用 / 上下文占用率。
+
+        Returns:
+            dict: 本回合新增费用（币种 -> 金额；本地模型为空）
+        """
         total = self.sessions.total_usage()
         turn_tokens = (total.prompt_tokens + total.completion_tokens) - self._last_total_tokens
         self._last_total_tokens = total.prompt_tokens + total.completion_tokens
+        turn_cost = self._turn_cost()
 
         # 注意：`HealthMonitor.record()` 只收**单条**指标（{"name", "value"}），
         # 曾经把整本计数器 dict 塞进去，被「指标缺少 name」静默丢弃 ——
@@ -583,9 +597,24 @@ class TouhouWorld:
         )
         await self.health.record_metric("turn.latency_s", time.monotonic() - t_start, unit="s")
         await self.health.record_metric("turn.tokens", float(turn_tokens), unit="tok")
+        for currency, amount in turn_cost.items():
+            await self.health.record_metric(f"turn.cost_{currency.lower()}", amount, unit=currency)
         await self.health.record_metric(
             "session.context_usage", self.sessions.context_usage("responder"), unit="ratio"
         )
+        return turn_cost
+
+    def _turn_cost(self) -> dict[str, float]:
+        """本回合新增费用（币种 -> 金额；本地模型全回合为空 dict）。
+        与 token 计量同款差值法：拿当前总量减上次快照。"""
+        now = self.sessions.total_cost()
+        delta = {
+            currency: round(amount - self._last_cost.get(currency, 0.0), 8)
+            for currency, amount in now.items()
+            if abs(amount - self._last_cost.get(currency, 0.0)) > 1e-9
+        }
+        self._last_cost = now
+        return delta
 
     def _session_health(self) -> dict[str, float]:
         """会话摘要（供健康报告采集；作为回调注入，避免 core/health 反向依赖）。"""

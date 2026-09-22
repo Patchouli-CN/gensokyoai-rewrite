@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 import msgspec
 
+from .cost_schema import ModelPrice
+
 type ToolFunc = Callable[..., Any] | Callable[..., Awaitable[Any]]
 
 
@@ -45,6 +47,9 @@ class ModelConfig(msgspec.Struct, frozen=True):
     """ 单次工具执行超时（秒）；与 core.toolkit 默认值保持一致 """
     tool_max_result_chars: int = 2000
     """ 工具结果最大字符数，超出截断（保护上下文窗口）"""
+    price: ModelPrice | None = None
+    """ 价格覆盖：配了就用它（优先级高于内置价格表），None = 查内置表；
+        本地模型不配 = 不计价（unpriced） """
 
 
 _JSON_TYPES: dict[type, str] = {str: "string", int: "integer", float: "number", bool: "boolean"}
@@ -193,6 +198,9 @@ class Usage(msgspec.Struct, frozen=True):
     cached_tokens: int = 0
     """ 输入中命中前缀缓存的部分（llama-server 的 prompt_tokens_details.cached_tokens）；
         用于观察 KV 前缀复用是否生效 """
+    cache_write_tokens: int = 0
+    """ 输入中写入上下文缓存的部分（Anthropic 的 cache_creation_input_tokens /
+        阿里显式缓存创建等；OpenAI 兼容协议多数厂商不单列，为 0） """
     """ 输出消耗 """
 
 

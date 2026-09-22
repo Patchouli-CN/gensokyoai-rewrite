@@ -64,6 +64,23 @@
 ### Q：Windows 上有什么注意？
 项目基于 Python 3.14 开发（用了 PEP 758 无括号多异常等新语法）；日志/文件路径均跨平台处理，`data/` 与测试临时目录都在工作目录内。
 
+## 计费
+
+### Q：接第三方 API 后怎么算钱？
+自动：`Provider.costs()` 按内置价格表（`models/pricing.py`）计价——输入 / 缓存读 / 缓存写 / 输出四条流，支持输入分档（Qwen max 按请求长度切价）与多币种。未收录模型明确 `unpriced`（费用 0 并注明「不是免费」），本地 llama-server 同样不计价。
+
+### Q：内置表准吗？内置了哪些？
+2026-09 调研快照，收录 OpenAI（GPT-5.6 系）、Claude（Opus/Sonnet 5、Haiku 4.5）、DeepSeek（flash / v4-pro，忙时价）、Gemini 3.x、Qwen（max/plus 分档）。**价格随时会变**，对账以官网为准；要精确就在 `settings.yaml` 的 `<模块>.price` 覆盖（优先于内置表）。
+
+### Q：为什么费用里没有 Batch 半价 / DeepSeek 闲时半价 / 阿里夜间折扣？
+这些是**时间/模式相关**的折扣（同一请求不同时刻不同价），自动口径算不了，没有蒙混成标准价。需要就用配置价把自己时段的实际单价填进去。
+
+### Q：后台 OOC 深审的钱算谁的？
+算到**触发它的那个回合之后**的下一个回合增量里（异步侧链在回合结束后才跑完）。这是差值计费的固有特性，看单次调用日志（每次 `补全完成` 都带费用）是最准的。
+
+### Q：`Usage.cache_write_tokens` 是什么？
+缓存写入计费的 token（Anthropic cache_creation / 阿里显式缓存创建，通常是输入的 1.25×）。OpenAI 兼容协议里大多厂商不单列，保持 0；Provider 解析时会从 `prompt_tokens_details.cache_write_input_tokens` 等字段尽力提取。
+
 ## 开发相关
 
 ### Q：质量门有哪些？

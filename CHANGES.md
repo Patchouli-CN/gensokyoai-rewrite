@@ -40,6 +40,23 @@
       settings.yaml 显式打开。
   - `tests/test_gate.py`：规则预筛 / 阈值边界 / 裁判故障兜底 / 活跃度窗口淘汰 /
     两个裁判后端（含假 TypeSafe 客户端）/ 世界接线共 30 例。
+  - **通用模型计费兼容层**（调研 2026-09 各家真实计费后落地）：
+    - `schemas/cost_schema.py`：四条计费流（普通输入 / 缓存读 / 缓存写 / 输出）+
+      输入分档 + 多币种的纯计算 `cost_of()`；**未收录/本地模型明确 unpriced
+      （费用 0 并标注，绝不瞎猜）**。计量口径：prompt 为输入总量，缓存读/写
+      是其子集（OpenAI 式），docstring 写明与 Anthropic 口径的换算边界。
+    - `models/pricing.py`：内置价格表（2026-09-21 快照，来源注释在案）——
+      OpenAI GPT-5.6 系 / Claude Opus5·Sonnet5·Haiku4.5 / DeepSeek flash·v4-pro
+      （忙时价）/ Gemini 3.x / Qwen max·plus（分档）；大小写与 `提供商/` 前缀归一。
+    - `Provider.costs()`（ChatBackend 协议方法）：配置价 > 内置表 > unpriced；
+      OpenAICompatProvider 实现，GatedBackend 透传，未实现 costs() 的后端静默
+      不计价（协议容差）。Usage 新增 `cache_write_tokens` 并在响应解析提取。
+    - SessionManager 按 owner 累计费用（币种分开）；回合结束日志与健康指标
+      `turn.cost_<币种>` 给出本回合花费；`real_verify.py` 汇总累计与分模块费用。
+    - Batch 半价 / DeepSeek 峰谷 / 阿里夜间折扣等**时间相关折扣**不在自动口径
+      （同一请求不同时刻不同价，算了就是错），由配置价自行建模。
+    - `tests/test_pricing.py`：四条流数学 / 缓存写不重复计输入 / 分档与边界 /
+      多币种 / 未知模型 / Provider 与 GatedBackend 委派 / 按 owner 累计。
   - **可定制思考链流水（ThinkPipeline）**：把「怎么想」提成一等公民，角色卡零代码定制：
     - `utils/fluent.py`：泛型基类 `FluentAPI[T]`（同步、不可变）——`chain >> item`
       追加元素、`chain >> other` 合并两条链（connect），返回具体子类类型；

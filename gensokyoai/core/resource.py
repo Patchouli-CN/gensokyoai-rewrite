@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 
 import msgspec
 
+from ..schemas.cost_schema import CostBreakdown, cost_of
 from ..schemas.model_schema import CompletionResult, Message, StreamEvent, ToolSpec, Usage
 from ..schemas.quota_schema import TenantQuota
 from ..utils.logger import LoggerManager
@@ -310,6 +311,20 @@ class GatedBackend:
         if normalizer is None:
             return result
         return normalizer(result, parsed_content)
+
+    def costs(self, usage: Usage, model: str = "") -> CostBreakdown:
+        """计费查询透传给内层 provider（内层也没有 = 不计价，unpriced 明细）。"""
+        pricing = getattr(self._inner, "costs", None)
+        if not callable(pricing):
+            return cost_of(
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                cached_tokens=usage.cached_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+                price=None,
+                model=model,
+            )
+        return pricing(usage, model)
 
     async def chat(
         self,
