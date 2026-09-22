@@ -18,7 +18,9 @@ import sys
 
 from aiohttp import WSMsgType, web
 
-from ...app import build_session_and_character
+from ...app import DEFAULT_CONFIG, build_session_and_character, resolve_resource
+from ...core.brain.judge import build_judge
+from ...core.config import load_config
 from ...core.resource import IngressLimiter
 from ...roleplay.hub import ChannelHub
 from ...schemas.scene_schema import SceneType
@@ -206,6 +208,10 @@ def main(argv: list[str] | None = None) -> int:
         sessions, character = build_session_and_character(
             config_path=args.config, character_path=args.character
         )
+        config = load_config(args.config or resolve_resource(DEFAULT_CONFIG))
+        judge = build_judge(config.gate, sessions)
+        if config.gate.enabled:
+            _logger.info(f"发言门控 on | 裁判: {type(judge).__name__ if judge else '无（纯规则）'}")
     except FileNotFoundError as err:
         print(f"启动失败: {err}", file=sys.stderr)
         return 2
@@ -214,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         sessions=sessions,
         character=character,
         idle_ttl=args.idle_ttl,
+        world_kwargs={"judge": judge, "gate": config.gate},
     )
     logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")
     try:

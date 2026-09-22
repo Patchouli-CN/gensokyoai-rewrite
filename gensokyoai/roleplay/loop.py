@@ -7,7 +7,16 @@ import time
 from pathlib import Path
 
 from ..core.brain.engine import BrainEngine, route
+from ..core.brain.gate import (
+    GateDecision,
+    Judge,
+    PresenceTracker,
+    decide,
+    tier_from_deep_score,
+)
 from ..core.brain.ooc_detector import OOCDetector
+from ..core.brain.pipeline import ThinkPipeline
+from ..core.config import GateSettings
 from ..core.event_bus import EventBus
 from ..core.health import HealthMonitor
 from ..core.lifecycle import LifecycleManager
@@ -105,7 +114,7 @@ class TouhouWorld:
     扮演主循环 (Role-Play Loop)
     负责协调 Eyes, Brain, Responder 和 Memorizer 的完整生命周期。
     支持生命周期管理（启动/关闭回调）、记忆蒸馏、主动发言（对话欲）、
-    深思考过渡语与 OOC 守门/后置深审。
+    深思考过渡语与 OOC 守门/后置深审、jev 式发言门控（见 core/brain/gate.py）。
     """
 
     def __init__(
@@ -115,6 +124,8 @@ class TouhouWorld:
         sessions: SessionManager,
         mouth: Mouth | None = None,
         external_tools: list[ToolSpec] | None = None,
+        judge: Judge | None = None,
+        gate: GateSettings | None = None,
         *,
         distill_every: int = 10,
         distill_batch: int = 8,
@@ -140,6 +151,8 @@ class TouhouWorld:
             character: 角色（人设卡 + 运行时状态）
             sessions: 多模型路由的会话管理器
             external_tools: 外部注入的工具
+            judge: 发言门控裁判（None = 无裁判，门控走规则+兜底；见 core/brain/gate.py）
+            gate: 门控配置（None = GateSettings() 默认；enabled=False 维持「每条都回」旧行为）
             distill_every: 每 N 个回合触发一次记忆蒸馏
             distill_batch: 单次蒸馏压缩的记忆条数
             initiative_interval: 主动发言评估周期（秒）
@@ -193,6 +206,10 @@ class TouhouWorld:
         # --- 组装工具：注册表（内置） + 外部传入 ---
         all_tools = self._setup_tools(external_tools)
 
+        # --- 人设摘要：给「想方向」的环节（门控 / 思考链步骤与结论）用，压 token；
+        # 完整人设只留给开口的 Responder（那里一个字都省不得）---
+        self._persona_brief = f"【{character.name}】{character.card.system_prompt[:200]}"
+
         # 初始化业务模块
         self.ooc = OOCDetector(self.sessions)
         self.brain = BrainEngine(
@@ -202,9 +219,17 @@ class TouhouWorld:
             tools=all_tools,
             tool_timeout=tool_timeout,
             tool_max_result_chars=tool_max_result_chars,
+            pipeline=self._build_think_pipeline(),
+            persona_brief=self._persona_brief,
         )
 
         self.responder = Responder(sessions=self.sessions, persona=character.prompt)
+
+        # --- 发言门控（jev 式混合门控；enabled=False 时维持「每条都回」旧行为）---
+        self._gate = gate if gate is not None else GateSettings()
+        self._judge = judge
+        self._presence = PresenceTracker(window_s=self._gate.presence_window_s)
+        """ 活跃度统计：喂给裁判的 bot_activity（防刷屏靠裁判自觉，不设硬冷却） """
 
         # --- 主动发言 / 蒸馏旋钮 ---
         self._distill_every = distill_every
@@ -272,6 +297,11 @@ class TouhouWorld:
                 self.logger.info(f"=== 幻想乡会话已恢复 | 角色: {self.character.name} ===")
             else:
                 self.logger.info(f"=== 幻想乡连接成功 | 角色: {self.character.name} ===")
+            if self._gate.enabled:
+                judge_name = type(self._judge).__name__ if self._judge else "无（纯规则）"
+                self.logger.info(
+                    f"门控 on | 裁判: {judge_name} | 群聊阈值: {self._gate.group_threshold}"
+                )
 
         @self.lifecycle.on_shutdown
         async def _on_shutdown():
@@ -279,6 +309,20 @@ class TouhouWorld:
             await self.persistence.flush()
             await self.eye.close()
             self.sessions.reset_all()
+
+    def _build_think_pipeline(self) -> ThinkPipeline | None:
+        """按角色卡 think_chain 拼定制思考链；空链 = 用内置接力思考。
+
+        异步说明：链的**执行**在 BrainEngine.think() 里内联 await（串行步骤、
+        每步 wait_for 超时、CancelledError 穿透），本方法只做同步拼装，
+        未注册的步骤名会在启动时直接抛错（卡片配置错误早暴露）。
+        """
+        names = self.character.card.think_chain
+        if not names:
+            return None
+        pipeline = ThinkPipeline.from_names(f"{self.character.name}·思考链", names)
+        self.logger.info(f"思考链({len(pipeline)}步): {' >> '.join(names)}")
+        return pipeline
 
     def _setup_tools(self, external_tools: list[ToolSpec] | None = None) -> list[ToolSpec]:
         """组装工具列表"""
@@ -349,20 +393,28 @@ class TouhouWorld:
                 turn += 1
                 t_start = time.monotonic()
                 self._last_activity = time.monotonic()
+                self._presence.record(from_bot=False)
                 self._busy = True
                 try:
-                    # 2. 决策阶段 (Brain)；深思考前先垫一句角色过渡语遮延迟
+                    # 2. System-1 层：一次裁判调用回答「该不该发言」+「该想多深」
+                    proceed, judged = await self._system1_turn(snapshot, turn)
+                    if not proceed:
+                        continue
+
+                    # 3. 决策阶段 (Brain)；深思考前先垫一句角色过渡语遮延迟
                     memories = await self.memory.recent(5)
-                    effort = self._apply_effort_floor(route(snapshot))
+                    effort = self._apply_effort_floor(
+                        judged if judged is not None else route(snapshot)
+                    )
                     await self._maybe_stall(snapshot, effort, turn)
                     conclusion = await self.brain.think(snapshot, memories, effort)
 
-                    # 3. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
+                    # 4. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
                     reply = await self._express(snapshot, conclusion, memories)
                 finally:
                     self._busy = False
 
-                # 4. 记录（投递已在 _express 内完成）
+                # 5. 记录（投递已在 _express 内完成）
                 self._remember_turn(snapshot, reply)
                 if self.trace.enabled:
                     # 一次小追加（走线程池），保证本回合轨迹已落盘、便于复盘与测试
@@ -372,12 +424,12 @@ class TouhouWorld:
                 if self._ooc_audit:
                     self._tasks.spawn(self._audit_reply(reply), name="ooc-audit")
 
-                # 5. 角色状态跟踪 + 健康喂食
+                # 6. 角色状态跟踪 + 健康喂食
                 if conclusion.emotion:
                     self.character.status.update(emotion=conclusion.emotion)
                 await self._record_health(turn, effort, t_start)
 
-                # 6. 记忆蒸馏（后台侧链，不阻塞回合）
+                # 7. 记忆蒸馏（后台侧链，不阻塞回合）
                 self._distill_counter += 1
                 if self._distill_counter >= self._distill_every:
                     self._distill_counter = 0
@@ -440,19 +492,94 @@ class TouhouWorld:
                 name="memory-write",
             )
 
+    def _consult_judge(self) -> bool:
+        """有裁判、且（开了门控 或 开了模型路由）时才问裁判。"""
+        return self._judge is not None and (self._gate.enabled or self._gate.route_by_model)
+
+    async def _system1_turn(
+        self, snapshot: SceneSnapshot, turn: int
+    ) -> tuple[bool, BrainThinkEffort | None]:
+        """System-1 回合决策：一次裁判调用回答「该不该发言」与「该想多深」。
+
+        门控开启且裁判说「不接」时：只把用户消息写进记忆（不回复≠没听过），
+        并喂 `gate.skip` 健康计数。裁判不可用时整层静默跳过（回退旧行为）。
+
+        Args:
+            snapshot: 待判断快照
+            turn: 当前回合号（仅日志用）
+
+        Returns:
+            tuple: (要不要发言；裁判建议的推理档位或 None——None 表示回落规则 route())
+        """
+        if not self._consult_judge():
+            return True, None
+
+        decision = await self._gate_decide(snapshot, turn)
+        if self._gate.enabled and not decision.reply:
+            self._remember_user(snapshot)
+            await self.health.record_metric("gate.skip", 1.0, unit="次")
+            return False, None
+        if self._gate.route_by_model and decision.effort is not None:
+            return True, tier_from_deep_score(decision.effort, self._gate.deep_cuts)
+        return True, None
+
+    async def _gate_decide(self, snapshot: SceneSnapshot, turn: int) -> GateDecision:
+        """只做 decide + 日志（无副作用；跳过记账由 _system1_turn 按门控开关决定）。"""
+        recent = await self.memory.recent(5)
+        recent_texts = [m.content for m in reversed(recent)]
+        decision = await decide(
+            snapshot=snapshot,
+            bot_name=self.character.name,
+            persona=self._persona_brief,
+            recent=recent_texts,
+            presence=self._presence.stats(),
+            judge=self._judge,
+            group_threshold=self._gate.group_threshold,
+            search_threshold=self._gate.search_threshold,
+            route_by_model=self._gate.route_by_model,
+        )
+        scores = (
+            f" reply={decision.scores.reply:.2f} addressed={decision.scores.addressed:.2f}"
+            f" search={decision.scores.search:.2f} threshold={decision.scores.threshold:.2f}"
+            if decision.scores is not None
+            else ""
+        )
+        deep = f" deep={decision.effort:.2f}" if decision.effort is not None else ""
+        self.logger.info(
+            f"[gate] 回合{turn} {'REPLY' if decision.reply else 'skip'} "
+            f"({decision.source}: {decision.reason}){scores}{deep} :: "
+            f"{snapshot.sender}: {snapshot.content[:60]}"
+        )
+        return decision
+
+    def _remember_user(self, snapshot: SceneSnapshot) -> None:
+        """门控跳过时只把用户这句话写进记忆（不回复≠没听过，保证连续性）。"""
+        item = MemoryItem(
+            topic="对话",
+            content=f"{snapshot.sender}: {snapshot.content}",
+            memory_type="dialogue",
+        )
+        self._tasks.spawn(
+            self.bus.publish(EventBus.new(EventTopic.MEMORY_WRITE, source="gate", payload=item)),
+            name="memory-write",
+        )
+
     async def _record_health(self, turn: int, effort, t_start: float) -> None:
         """回合粒度的健康指标喂食：档位分布 / 记忆规模 / 延迟 / token / 上下文占用率"""
         total = self.sessions.total_usage()
         turn_tokens = (total.prompt_tokens + total.completion_tokens) - self._last_total_tokens
         self._last_total_tokens = total.prompt_tokens + total.completion_tokens
 
-        await self.health.record(
-            {
-                "turn.count": 1,
-                f"effort.{effort.value}": 1,
-                "memory.work_size": self.memory.work_mem_size,
-                "memory.long_size": self.memory.long_mem_size,
-            }
+        # 注意：`HealthMonitor.record()` 只收**单条**指标（{"name", "value"}），
+        # 曾经把整本计数器 dict 塞进去，被「指标缺少 name」静默丢弃 ——
+        # 档位分布与 memory.* 阈值因此从未生效。逐条走 record_metric。
+        await self.health.record_metric("turn.count", 1.0)
+        await self.health.record_metric(f"effort.{effort.value}", 1.0)
+        await self.health.record_metric(
+            "memory.work_size", float(self.memory.work_mem_size), unit="条"
+        )
+        await self.health.record_metric(
+            "memory.long_size", float(self.memory.long_mem_size), unit="条"
         )
         await self.health.record_metric("turn.latency_s", time.monotonic() - t_start, unit="s")
         await self.health.record_metric("turn.tokens", float(turn_tokens), unit="tok")
@@ -484,7 +611,7 @@ class TouhouWorld:
         if self._effort_floor is None:
             return effort
         order = {
-            BrainThinkEffort.OFF: 0,
+            BrainThinkEffort.NONE: 0,
             BrainThinkEffort.LOW: 1,
             BrainThinkEffort.MID: 2,
             BrainThinkEffort.HIGH: 3,
@@ -555,6 +682,7 @@ class TouhouWorld:
         if ooc_guard:
             reply = await self._guard_ooc(reply)
         await self.mouth.send(self.character.name, strip_control_chars(reply))
+        self._presence.record(from_bot=True)
         return reply
 
     async def _deliver_stream(self, snapshot, conclusion, memories) -> str:
@@ -583,6 +711,7 @@ class TouhouWorld:
         finally:
             await self.mouth.end()
         reply = "".join(parts)
+        self._presence.record(from_bot=True)
         self.logger.info(f"流式投递完成: {len(reply)}字")
         return reply
 

@@ -69,7 +69,7 @@ def test_should_stall_gating():
     )
     assert not world._should_stall(BrainThinkEffort.HIGH, 1), "首回合不垫"
     assert not world._should_stall(BrainThinkEffort.LOW, 5), "浅思考档不垫"
-    assert not world._should_stall(BrainThinkEffort.OFF, 5), "OFF 不垫"
+    assert not world._should_stall(BrainThinkEffort.NONE, 5), "NONE 不垫"
     assert world._should_stall(BrainThinkEffort.MAX, 2), "条件齐备应垫"
 
     world._stall_last_turn = 5
@@ -221,3 +221,30 @@ async def test_audit_reply_swallows_failure():
 
     world.ooc = types.SimpleNamespace(audit=_audit)
     await world._audit_reply("随便什么回复")  # 不应抛出
+
+
+# ---------- 健康指标喂食 ----------
+
+
+async def test_record_health_feeds_counters_as_metrics():
+    """回合计数器真正落成指标（曾把整本 dict 塞 record() 被静默丢弃）"""
+    world = _make_world(_StubBackend([]))
+    await world._record_health(1, BrainThinkEffort.LOW, time.monotonic())
+
+    assert (await world.health.get_metric_history("turn.count"))[-1].value == 1.0
+    # 档位分布由 effort.<档位> 指标聚合而来 —— 修复前恒为空
+    assert world.health.reasoning_distribution() == {"low": 1.0}
+    assert (await world.health.get_metric_history("memory.work_size"))[-1].value >= 0.0
+    assert (await world.health.get_metric_history("memory.long_size"))[-1].value >= 0.0
+    assert (await world.health.get_metric_history("turn.tokens"))[-1].value >= 0.0
+
+
+async def test_record_health_memory_alert_actually_fires():
+    """记忆规模超限时真的告警（阈值表早就配了，修复前从未触发）"""
+    world = _make_world(_StubBackend([]))
+    world.memory = types.SimpleNamespace(work_mem_size=600, long_mem_size=10)
+    await world._record_health(1, BrainThinkEffort.MID, time.monotonic())
+
+    alerts = [a for a in world.health.alerts() if a.metric and a.metric.name == "memory.work_size"]
+    assert alerts, "work_mem_size=600 超过阈值 500 应告警"
+    assert alerts[-1].metric.value == 600.0

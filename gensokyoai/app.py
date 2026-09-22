@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .core.bootstrap import discover_all
+from .core.brain.judge import build_judge
 from .core.config import load_config
 from .core.resource import ResourceGate
 from .core.session_factory import build_resource_gate, build_session_manager
@@ -128,6 +129,8 @@ def build_world(
     sessions, character = build_session_and_character(
         config_path=config_path, character_path=character_path, gate=gate
     )
+    config = load_config(config_path or resolve_resource(DEFAULT_CONFIG))
+    judge = build_judge(config.gate, sessions)
     world_kwargs: dict[str, Any] = {}
     if storage_dir is not None:
         world_kwargs["storage_dir"] = storage_dir
@@ -137,6 +140,8 @@ def build_world(
         sessions=sessions,
         mouth=mouth if mouth is not None else ConsoleMouth(),
         session_id=session_id,
+        judge=judge,
+        gate=config.gate,
         **world_kwargs,
     )
 

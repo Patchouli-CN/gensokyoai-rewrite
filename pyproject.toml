@@ -32,6 +32,10 @@ dev = [
     "build>=1.2",
     "hatchling",
 ]
+# 真 jev 后端（gate.judge=typesafe）：官方 TypeSafe Python SDK
+jev = [
+    "typesafe-sdk>=0.7.1",
+]
 
 [project.scripts]
 gensokyoai = "gensokyoai.app:main"
@@ -81,6 +85,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402"]
+"scripts/*" = ["E402"]  # 仓库根 sys.path 引导必须走在 import 之前
 
 [tool.ruff.format]
 quote-style = "double"

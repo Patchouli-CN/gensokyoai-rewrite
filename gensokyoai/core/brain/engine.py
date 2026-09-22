@@ -13,6 +13,7 @@ from ...utils.logger import LoggerManager
 from ..session_manager import SessionManager
 from ..toolkit import DEFAULT_MAX_RESULT_CHARS, DEFAULT_TIMEOUT, build_executor
 from .ooc_detector import OOCDetector
+from .pipeline import PipelineAbort, ThinkPipeline
 
 _route_logger = LoggerManager.get_logger("BRAIN")
 
@@ -24,7 +25,7 @@ def route(snapshot: SceneSnapshot) -> BrainThinkEffort:
     """档位路由（架构文档 §6.4）：规则启发式打分，零模型调用。"""
     text = snapshot.content
     if not text:
-        return BrainThinkEffort.OFF
+        return BrainThinkEffort.NONE
 
     score = 0
     if len(text) >= 50:
@@ -62,6 +63,8 @@ class BrainEngine:
         tools: list[ToolSpec] | None = None,
         tool_timeout: float = DEFAULT_TIMEOUT,
         tool_max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
+        pipeline: ThinkPipeline | None = None,
+        persona_brief: str = "",
     ) -> None:
         self._logger = LoggerManager.get_logger("BRAIN")
         self._sessions = sessions
@@ -70,26 +73,36 @@ class BrainEngine:
         self._tools = tools or []
         self._tool_timeout = tool_timeout
         self._tool_max_result_chars = tool_max_result_chars
+        self._pipeline = pipeline
+        """ 卡片定制的思考链（None = 用内置接力思考） """
+        self._persona_brief = persona_brief or persona
+        """ 人设摘要：给「想方向」的环节（门控 / 思考链步骤 / 结论）用；
+            完整人设只留给开口的 Responder（那里一个字都省不得） """
 
     async def think(
         self,
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
-        effort: BrainThinkEffort = BrainThinkEffort.OFF,
+        effort: BrainThinkEffort = BrainThinkEffort.NONE,
     ) -> BrainConclusion:
-        """执行接力推理链，产出结构化结论。"""
+        """执行推理（NONE 快速路径 / 按档位裁深的思考链 / 接力思考），产出结构化结论。"""
         started = time.monotonic()
         self._logger.info(
             f"思考开始: 档位={effort.value} 输入={snapshot.sender}: {snapshot.content!r} "
             f"记忆={len(memories)}条 上下文={len(snapshot.context_snippet)}条"
+            + (f" 思考链 {self._pipeline.label}({len(self._pipeline)}步)" if self._pipeline else "")
         )
-        if effort is BrainThinkEffort.OFF:
+        if effort is BrainThinkEffort.NONE:
             conclusion = self._fast_path(snapshot)
         else:
-            conclusion = await self._relay_think(snapshot, memories, effort)
+            if self._pipeline is not None:
+                conclusion = await self._run_pipeline(snapshot, memories, effort)
+            else:
+                conclusion = await self._relay_think(snapshot, memories, effort)
+            # OOC 预筛两条路共用：初稿命中规则则丢弃，降级 pass_through
             if (
-                self._ooc is not None
-                and conclusion.draft
+                conclusion.draft
+                and self._ooc is not None
                 and self._ooc.pre_filter(conclusion.draft).is_ooc
             ):
                 self._logger.warning(f"初稿被 OOC 规则拦截，丢弃初稿: {conclusion.draft!r}")
@@ -110,6 +123,28 @@ class BrainEngine:
         if conclusion.draft:
             self._logger.debug(f"行动指令: {conclusion.draft}")
         return conclusion
+
+    async def _run_pipeline(
+        self,
+        snapshot: SceneSnapshot,
+        memories: list[MemoryItem],
+        effort: BrainThinkEffort,
+    ) -> BrainConclusion:
+        """跑卡片定制的思考链；整链失败时降级快速路径，不拖死回合。"""
+        pipeline = self._pipeline
+        if pipeline is None:  # 防御：调用方已判非空
+            return self._fast_path(snapshot, effort)
+        try:
+            return await pipeline.run(
+                snapshot=snapshot,
+                memories=memories,
+                sessions=self._sessions,
+                persona=self._persona_brief,
+                effort=effort,
+            )
+        except PipelineAbort as error:
+            self._logger.warning(f"思考链失败，降级为快速路径: {error}")
+            return self._fast_path(snapshot, effort)
 
     async def _relay_think(
         self,
@@ -334,7 +369,7 @@ class BrainEngine:
     def _fast_path(
         self,
         snapshot: SceneSnapshot,
-        effort: BrainThinkEffort = BrainThinkEffort.OFF,
+        effort: BrainThinkEffort = BrainThinkEffort.NONE,
     ) -> BrainConclusion:
         """零 token 快速路径：关键词判断意图，直接透传（保留请求档位标记）"""
         text = snapshot.content

@@ -1,8 +1,8 @@
 # GensokyoAI 配置文件
 #
 # 注意：键名必须与 GensokyoConfig 的字段名一致（default_model / brain / responder /
-# ooc / memorizer / resource）。此前这里写的是 `model:`，与字段名 `default_model`
-# 不匹配，msgspec 会静默忽略未知键 —— 等于什么都没配。
+# ooc / memorizer / resource / gate）。此前这里写的是 `model:`，与字段名
+# `default_model` 不匹配，msgspec 会静默忽略未知键 —— 等于什么都没配。
 default_model:
   provider: "llama_cpp"
   base_url: "http://127.0.0.1:8080/v1"
@@ -35,3 +35,15 @@ resource:
   tokens_per_day: 0
   ingress_rate: 0.0
   ingress_burst: 0
+
+# 发言门控 + 模型化档位路由（jev 式 System-1 层）：
+# 一次裁判调用同时回答「该不该接话」和「该想多深」（needs_deep 分数 -> 档位）。
+# 裁判挂了自动退化：不接的回合回落「点名才回」，档位回落规则 route()。
+gate:
+  enabled: true
+  judge: "local"          # local=主模型当裁判 | typesafe=真 jev（需 pip install '.[jev]'）| none=纯规则
+  group_threshold: 0.6    # 群里没人点名时，裁判 should_reply 达到该值才接话（调低更活跃）
+  search_threshold: 0.1
+  timeout_ms: 60000       # 本地模型单次要 10~25s；用真 jev（云端快）可调回 5000
+  route_by_model: true    # 档位由裁判的 needs_deep 说了算（规则路由做兜底）
+  deep_cuts: [0.3, 0.6, 0.85]   # 进 MID / HIGH / MAX 的切点

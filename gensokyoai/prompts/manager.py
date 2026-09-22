@@ -89,6 +89,84 @@ def brain_think() -> str:
 只输出 JSON 对象，不要输出任何其他内容。"""
 
 
+@prompt_mgr.prompt("gate.system")
+def gate_system() -> str:
+    return """你是群聊「发言时机 + 思考深度」裁判。判断现在该不该由角色接一条新消息、以及该用多深的思考来接。
+只输出一个 JSON 对象，对每个问题给出 0.0~1.0 的「是」的概率：
+{"should_reply": 0.0, "addressed": 0.0, "needs_search": 0.0, "needs_deep": 0.0}
+口径：
+- should_reply：新消息是否值得角色现在接。别人在互相聊、正在收尾（寒暄/附和/表情/语气词）、接了也没话说时偏低；新消息在等角色回应、或角色有值得接的话时偏高。bot_activity 里角色近窗口说得多、离上次发言近时更应谨慎（宁可错过，不要刷屏）。
+- addressed：新消息是否在直接对角色说、期待回应。
+- needs_search：好好回应是否依赖需要联网查证的最新事实。
+- needs_deep：好好回应需要多深的思考。寒暄/语气词≈0；日常对话（看看关系和情绪）≈0.5；复杂问题/剧情推进（要完整推演）≈0.75；重大剧情节点/情感转折（要最深推演）≈1。消息越长、剧情词越多、越涉及角色关系和过往，越靠近 1。
+只输出 JSON 对象，不要输出任何其他内容。"""
+
+
+@prompt_mgr.prompt("gate.user")
+def gate_user(state, questions, **_) -> str:
+    return f"[场景与状态]\n{state}\n\n[问题]\n{questions}\n\n按系统说明，只输出 JSON 概率。"
+
+
+@prompt_mgr.prompt("think.step.system")
+def think_step_system() -> str:
+    return """你是角色思考链中的一步。只围绕本步指令思考，不要替角色说出回复。
+只输出一个 JSON 对象：
+{"note": "本步结论（一句话，≤100字）", "intent": "本步观察到的意图（可省）", "emotion": "本步感知到的情绪（可省）", "confidence": 0.0}
+只输出 JSON，不要输出任何其他内容。"""
+
+
+@prompt_mgr.prompt("think.step.user")
+def think_step_user(instruction, persona, scene, context, memory, digests, **_) -> str:
+    return (
+        f"[人设]\n{persona}\n\n"
+        f"[本步指令]\n{instruction}\n\n"
+        f"[场景]\n{scene}\n\n[最近上下文]\n{context}\n\n[相关记忆]\n{memory}\n\n"
+        f"[前几步结论]\n{digests}"
+    )
+
+
+@prompt_mgr.prompt("think.conclusion.system")
+def think_conclusion_system() -> str:
+    return """你是角色思考链的收尾步。基于各步结论做最终决策，只输出一个 JSON 对象：
+{"verdict": "draft 或 pass_through", "intent": "意图", "emotion": "情绪", "draft": "给表达层的行动指令（≤30字；pass_through 时留空）", "confidence": 0.0}
+verdict=draft 表示有明确行动指令；pass_through 表示无需指令、按人设直接回应。
+只输出 JSON，不要输出任何其他内容。"""
+
+
+@prompt_mgr.prompt("think.conclusion.user")
+def think_conclusion_user(persona, scene, digests, **_) -> str:
+    return (
+        f"[人设]\n{persona}\n\n[场景]\n{scene}\n\n"
+        f"[思考链各步结论]\n{digests}\n\n"
+        "按系统说明，输出最终决策 JSON。"
+    )
+
+
+# ---- 内置思考步骤库：角色卡 think_chain 按名引用，顺序即「往哪个方向想」----
+
+
+@prompt_mgr.prompt("think.emotion_check")
+def think_emotion_check() -> str:
+    return (
+        "评估角色此刻对这条消息的情绪反应：是被逗乐、被冒犯、还是兴致缺缺？给出情绪判断和一句依据。"
+    )
+
+
+@prompt_mgr.prompt("think.relationship_scan")
+def think_relationship_scan() -> str:
+    return "扫描对话里的人际关系：谁在跟谁说话、说话人对角色是什么态度、角色与对方亲疏如何，决定该用什么姿态接话。"
+
+
+@prompt_mgr.prompt("think.memory_link")
+def think_memory_link() -> str:
+    return "从相关记忆里找出与当前话题勾联的条目：有没有可接的旧话头、承诺、或不能忘的事？没有就明确说没有。"
+
+
+@prompt_mgr.prompt("think.stance_decide")
+def think_stance_decide() -> str:
+    return "综合场景与前几步结论，决定角色此刻的立场与姿态：认真回、调侃回、还是沉默看戏？一句话给出倾向。"
+
+
 @prompt_mgr.prompt("memory.compress")
 def mem_compress() -> str:
     return "你是记忆压缩器。把一批对话记忆压缩成一段简短概要，只保留对角色有长期价值的关键信息（人名、承诺、事实、情感转折），丢弃寒暄与重复内容。直接输出概要文本。"

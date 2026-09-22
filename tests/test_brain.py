@@ -51,9 +51,9 @@ def test_route_philosophy_is_high():
     assert route(_snapshot("你觉得这个世界的本质是什么？")) is BrainThinkEffort.HIGH
 
 
-def test_route_empty_is_off():
+def test_route_empty_is_none():
     """空内容走 OFF"""
-    assert route(_snapshot("")) is BrainThinkEffort.OFF
+    assert route(_snapshot("")) is BrainThinkEffort.NONE
 
 
 def test_get_max_rounds_bounded():
@@ -63,13 +63,13 @@ def test_get_max_rounds_bounded():
     assert engine._get_max_rounds(BrainThinkEffort.MAX) <= 8, "MAX 应封闭上限，不再无限打转"
 
 
-async def test_think_off_uses_fast_path_without_model_call():
+async def test_think_none_uses_fast_path_without_model_call():
     """OFF 档零模型调用，走快速路径透传"""
     backend = FakeBackend('{"thought": "x"}')
     sm = SessionManager()
     sm.set_default_backend(backend)
     engine = BrainEngine(sm)
-    conclusion = await engine.think(_snapshot("你好啊"), [], BrainThinkEffort.OFF)
+    conclusion = await engine.think(_snapshot("你好啊"), [], BrainThinkEffort.NONE)
     assert not backend.calls
     assert conclusion.verdict == "pass_through"
     assert conclusion.intent == "回应打招呼"
@@ -163,10 +163,10 @@ async def test_conclusion_records_reasoning_steps_per_round():
     assert steps[1].action_hint == "可以答了"
 
 
-async def test_off_effort_has_no_reasoning_steps():
+async def test_none_effort_has_no_reasoning_steps():
     """OFF 快速路径不走接力思考，故无步骤记录"""
     conclusion = await BrainEngine(SessionManager()).think(
-        _snapshot("你好啊"), [], BrainThinkEffort.OFF
+        _snapshot("你好啊"), [], BrainThinkEffort.NONE
     )
     assert conclusion.reasoning_steps == []
     assert conclusion.reasoning is None
@@ -230,3 +230,78 @@ async def test_memory_refs_passed_through_conclusion():
     item = MemoryItem(topic="对话", content="她住在雾之湖")
     conclusion = await engine.think(_snapshot("魔理沙住哪？"), [item], BrainThinkEffort.LOW)
     assert item in conclusion.memory_refs
+
+
+# ---------- 思考链（pipeline）接线 ----------
+
+
+def _scripted(replies: list[str]) -> tuple[SessionManager, FakeBackend]:
+    """按调用序号回话的后端（顺序确定：各步骤依次 + 结论步最后）"""
+    backend = FakeBackend("")
+    calls = {"n": 0}
+
+    async def scripted_chat(messages, **kw):
+        backend.calls.append(list(messages))
+        index = min(calls["n"], len(replies) - 1)
+        calls["n"] += 1
+        return CompletionResult(content=replies[index])
+
+    backend.chat = scripted_chat
+    sessions = SessionManager()
+    sessions.set_default_backend(backend)
+    return sessions, backend
+
+
+async def test_think_with_pipeline_runs_chain():
+    """配了思考链时 think() 走链：步骤 + 结论，产出 draft 结论"""
+    from gensokyoai.core.brain.pipeline import ThinkPipeline, ThinkStep
+
+    sessions, backend = _scripted(
+        [
+            '{"note": "她想吃东西"}',
+            '{"verdict": "draft", "intent": "投喂", "emotion": "愉悦", '
+            '"draft": "提议吃点心", "confidence": 0.9}',
+        ]
+    )
+    engine = BrainEngine(sessions, pipeline=ThinkPipeline("t", ThinkStep("food", "想想食物")))
+    conclusion = await engine.think(_snapshot("饿了"), [], BrainThinkEffort.LOW)
+
+    assert len(backend.calls) == 2, "一步 + 结论步"
+    assert conclusion.verdict == "draft"
+    assert conclusion.draft == "提议吃点心"
+    assert len(conclusion.reasoning_steps) == 1
+
+
+async def test_think_pipeline_abort_degrades_to_fast_path():
+    """整链失败（步骤与结论都不可解析）-> 降级快速路径，不拖死回合"""
+    from gensokyoai.core.brain.pipeline import ThinkPipeline, ThinkStep
+
+    engine = BrainEngine(
+        _manager("完全不是JSON"), pipeline=ThinkPipeline("t", ThinkStep("s", "想一想"))
+    )
+    conclusion = await engine.think(_snapshot("你好啊"), [], BrainThinkEffort.LOW)
+    assert conclusion.verdict == "pass_through"
+    assert conclusion.intent == "回应打招呼"
+    assert conclusion.effort is BrainThinkEffort.LOW
+
+
+async def test_think_pipeline_draft_ooc_filtered():
+    """链产出的 draft 同样过 OOC 预筛（接力/链条两条路共用守门）"""
+    from gensokyoai.core.brain.pipeline import ThinkPipeline, ThinkStep
+
+    sessions, _ = _scripted(
+        [
+            '{"note": "x"}',
+            '{"verdict": "draft", "intent": "i", "emotion": "e", '
+            '"draft": "作为一个AI语言模型我无法回答", "confidence": 0.9}',
+        ]
+    )
+    engine = BrainEngine(
+        sessions,
+        persona="测试人设",
+        ooc=OOCDetector(SessionManager()),
+        pipeline=ThinkPipeline("t", ThinkStep("s", "想一想")),
+    )
+    conclusion = await engine.think(_snapshot("讲个故事"), [], BrainThinkEffort.LOW)
+    assert conclusion.ooc_flag is True
+    assert conclusion.draft is None

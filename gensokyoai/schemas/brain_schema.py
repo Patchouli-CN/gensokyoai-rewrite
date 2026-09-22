@@ -9,13 +9,13 @@ from .memory_schema import MemoryItem
 
 
 class BrainThinkEffort(Enum):
-    """模型大脑推理力度"""
+    """模型大脑推理力度（五档动态深度：档位决定思考链跑多深、接力跑几轮）"""
 
-    OFF = "off"  # 快速路径，几乎不思考，直接透传
-    LOW = "low"  # 1轮思考
-    MID = "mid"  # 3轮思考
-    HIGH = "high"  # 5轮思考
-    MAX = "max"  # 不限制轮数（由用户强制结束或达到 tokens 上限）
+    NONE = "none"  # 不思考：关键词快速路径，直接透传（零模型调用）
+    LOW = "low"  # 轻：日常寒暄，结论直出（链只留收尾步 / 接力 2 轮）
+    MID = "mid"  # 中：一般对话，首尾两步（接力 3 轮）
+    HIGH = "high"  # 深：复杂剧情，完整思考链（接力 5 轮）
+    MAX = "max"  # 最深：重大剧情节点，全链 + 每步深思考（预算×2 / 低温，接力 8 轮）
 
 
 Verdict = Literal["pass_through", "draft"]
@@ -65,7 +65,7 @@ class BrainConclusion(msgspec.Struct, frozen=True):
     """ 需要调用的记忆条目 """
     confidence: float = 0.0
     """ 置信度 (0.0 ~ 1.0) """
-    effort: BrainThinkEffort = BrainThinkEffort.OFF
+    effort: BrainThinkEffort = BrainThinkEffort.NONE
     """ 使用的推理档位 """
     ooc_flag: bool = False
     """ OOC 检测是否触发 """

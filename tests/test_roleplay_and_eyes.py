@@ -35,6 +35,26 @@ def test_load_character_missing_file():
         load_character("不存在的路径.yaml")
 
 
+def test_think_chain_roundtrip(tmp_path):
+    """think_chain 从 YAML 往返（定制思考链的卡片契约）"""
+    card_file = tmp_path / "chain.yaml"
+    card_file.write_text(
+        "name: 测试\nsystem_prompt: x\nthink_chain:\n  - emotion_check\n  - stance_decide\n",
+        encoding="utf-8",
+    )
+    character = load_character(card_file)
+    assert character.card.think_chain == ["emotion_check", "stance_decide"]
+
+
+def test_default_card_has_example_think_chain():
+    """仓库默认角色卡带一条示例思考链（开箱即用的卡片驱动样板）"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    character = load_character(root / "config" / "roles" / "SaigyoujiYuyuko.yaml")
+    assert character.card.think_chain[:2] == ["emotion_check", "relationship_scan"]
+
+
 def test_parse_message_onebot11():
     """解析 OneBot11 事件形态"""
     event = parse_message(
