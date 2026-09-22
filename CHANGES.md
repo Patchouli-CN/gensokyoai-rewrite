@@ -21,6 +21,17 @@
     `record_metric()`，并补两例回归测试（计数器落指标 / 超限真告警）。
 
 ### 新增
+  - **思考链工具调用支持**（真机探针驱动）：接力思考之外，思考链步骤也接上工具——
+    `ThinkStep(tools=True)` 的步骤才把工具带给模型（其余不挂，省 token）；内置
+    新步骤 `time_anchor`（感知时间坐标，默认挂工具，卡片 `think_chain` 按名引用）。
+    原生 `tool_calls` 由 Provider 内循环消化；本地小模型的**文本喊话**在 pipeline
+    内识别、执行、回填后重取一次（与接力同款语义）；挂工具的步骤会在 system
+    提示里注入喊话约定并**枚举可用工具名**（`think.step.tools_hint`）。
+  - **llama 后端文本喊话增强**：`extract_text_tool_calls` 模块级函数（LlamaProvider
+    委托）——支持**一次多个**工具调用（去重保序），工具名后 120 字符窗口内提取
+    JSON 参数（不再一律空参数）；relay 提示词补第 6 条喊话约定。真机实测：
+    relay 路径下 Qwen 喊对并成功执行（月相查询）；思考链步骤路径下 IQ3 quant
+    可能只写「调用工具」不写全名（弱模型局限，非链路问题）。
   - **JeV 式发言门控**（移植 [Mist-wu/qqbot](https://github.com/Mist-wu/qqbot) 的
     「jev 决定该不该说话」机制，按本项目约束改造）：
     - `core/brain/gate.py`：混合门控。收尾语（哈哈哈/草/666/好的……）/ 私聊 / 被 @

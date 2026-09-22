@@ -26,11 +26,12 @@ import msgspec
 from ...prompts import prompt_mgr
 from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort, ReasoningStep
 from ...schemas.memory_schema import MemoryItem
-from ...schemas.model_schema import Message
+from ...schemas.model_schema import CompletionResult, Message, ToolCall, ToolSpec
 from ...schemas.scene_schema import SceneSnapshot
 from ...utils.fluent import FluentAPI
 from ...utils.logger import LoggerManager
 from ..session_manager import SessionManager
+from ..toolkit import build_executor
 
 _JSON_CORRECTION = "上次输出不是合法 JSON。请只输出一个 JSON 对象，不要包含任何其他内容。"
 
@@ -46,7 +47,30 @@ _DEEP_MAX_TOKENS_FACTOR = 2
 _DEEP_TEMPERATURE = 0.2
 """ MAX 深思考：降温求稳 """
 
+_STEPS_WITH_TOOLS = frozenset({"time_anchor"})
+""" 内置步骤里默认挂工具的（角色卡按名引用即用；其余步骤想挂工具就
+    在 DSL 里显式 `ThinkStep(name=..., instructions=..., tools=True)`） """
+
 _logger = LoggerManager.get_logger("THINK")
+
+
+def builtin_step(name: str) -> ThinkStep:
+    """内置思考步骤：元数据（tools 标志）在本模块，指令文本走 `think.<名>` 提示词。
+
+    Args:
+        name: 步骤名（对应 prompts/manager.py 注册的 `think.<name>`）
+
+    Returns:
+        ThinkStep: 步骤定义；未注册的名字由 prompt_mgr 抛 KeyError（启动即暴露）
+
+    Raises:
+        KeyError: 提示词未注册
+    """
+    return ThinkStep(
+        name=name,
+        instructions=prompt_mgr.render(f"think.{name}"),
+        tools=name in _STEPS_WITH_TOOLS,
+    )
 
 
 class PipelineAbort(Exception):
@@ -123,14 +147,12 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
 
     @classmethod
     def from_names(cls, label: str, names: Sequence[str]) -> Self:
-        """卡片驱动：步骤名序列 -> `think.<名>` 提示词（未注册时 prompt_mgr 抛 KeyError，启动即暴露）。"""
-        return cls(
-            label,
-            *(
-                ThinkStep(name=name, instructions=prompt_mgr.render(f"think.{name}"))
-                for name in names
-            ),
-        )
+        """卡片驱动：步骤名序列 -> 内置步骤定义（含元数据如 tools 标志）。
+
+        指令文本仍走 `prompts/manager.py` 的 `think.<名>`（提示词集中管理铁律
+        不破）；未注册的名字由 prompt_mgr 抛 KeyError，启动即暴露。
+        """
+        return cls(label, *(builtin_step(name) for name in names))
 
     # ---------------------------------------------------------------- 执行
 
@@ -142,6 +164,7 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         sessions: SessionManager,
         persona: str,
         effort: BrainThinkEffort,
+        tools: list[ToolSpec] | None = None,
     ) -> BrainConclusion:
         """按推理档位裁剪链条深度，串行执行，产出结构化结论。
 
@@ -159,6 +182,8 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
             sessions: 会话管理器（每步一次无状态调用）
             persona: 人设摘要（每步都带着，保证「按角色的方式想」）
             effort: 本回合推理档位（决定链深）
+            tools: 全链可用的工具声明；仅 `ThinkStep.tools=True` 的步骤会带上
+                （本地小模型的「文本喊话」由本模块识别、执行并回填后重取一次）
 
         Returns:
             BrainConclusion: 结论（verdict=draft 时带行动指令）
@@ -180,7 +205,7 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         executed: list[ReasoningStep] = []
         for index, step in enumerate(steps):
             try:
-                parsed = await self._run_step(step, context, digests, sessions, deep)
+                parsed = await self._run_step(step, context, digests, sessions, deep, tools)
             except Exception as error:  # 不含 CancelledError（BaseException，原样穿透）
                 if not step.optional:
                     raise PipelineAbort(f"必要步骤 {step.name} 失败: {error}") from error
@@ -217,14 +242,28 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         digests: str,
         sessions: SessionManager,
         deep: bool = False,
+        tools: list[ToolSpec] | None = None,
     ) -> dict:
         """跑一步：无状态小调用；JSON 解析失败纠正重试一次，再失败抛 ValueError。
 
         超时（wait_for）不重试，直接向上冒泡给 run() 的步骤失败策略。
         `deep`（MAX 档）：每步预算翻倍 + 降温——慢而深，只给重大剧情节点。
+        `tools`：仅当 `step.tools=True` 且tools 非空时随调用带上模型——
+        原生 tool_calls 由 Provider 内循环自行执行；本地小模型的「文本喊话」
+        在这里识别、执行、把结果回填后重取一次（与接力思考同款语义）。
         """
+        call_tools = tools if (step.tools and tools) else None
+        # 挂了工具的步骤：system 里注入喊话约定 + 枚举可用工具名（位置对齐 relay：
+        # 约定放 system 才稳，弱模型需要工具名照抄）
+        system_content = prompt_mgr.render("think.step.system") + (
+            prompt_mgr.render(
+                "think.step.tools_hint", tool_names=[tool.tool_name for tool in call_tools]
+            )
+            if call_tools
+            else ""
+        )
         base = [
-            Message(role="system", content=prompt_mgr.render("think.step.system")),
+            Message(role="system", content=system_content),
             Message(
                 role="user",
                 content=prompt_mgr.render(
@@ -249,10 +288,19 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
                         step.max_tokens * _DEEP_MAX_TOKENS_FACTOR if deep else step.max_tokens
                     ),
                     temperature=_DEEP_TEMPERATURE if deep else step.temperature,
+                    tools=call_tools,
                 ),
                 timeout=step.timeout_s,
             )
             content = result.content or ""
+            # 文本喊话工具调用（原生格式已被 Provider 内循环消化，到这里的是喊话）
+            if call_tools:
+                normalized = sessions.normalize_tool_calls(result, _try_parse_dict(content))
+                if normalized.tool_calls:
+                    messages = await self._feed_tool_results(
+                        base, result, normalized.tool_calls, call_tools
+                    )
+                    continue
             try:
                 return _parse_step_json(content)
             except ValueError:
@@ -266,6 +314,25 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
                 ]
 
         raise AssertionError("unreachable")  # pragma: no cover - 循环必返回或抛错
+
+    @staticmethod
+    async def _feed_tool_results(
+        base: list[Message],
+        result: CompletionResult,
+        calls: list[ToolCall],
+        tools: list[ToolSpec],
+    ) -> list[Message]:
+        """执行文本喊话的工具调用，把结果回填成下一轮消息（同接力思考语义）。"""
+        outcomes = await build_executor(tools).execute_many(calls)
+        result_text = "\n".join(outcome.to_model_text() for outcome in outcomes)
+        return [
+            *base,
+            Message(role="assistant", content=result.content or "", tool_calls=calls),
+            Message(
+                role="user",
+                content=f"【工具执行结果】\n{result_text}\n请基于以上结果给出本步结论 JSON。",
+            ),
+        ]
 
     async def _conclude(
         self,
@@ -355,6 +422,18 @@ def _extract_json(text: str) -> dict:
         return msgspec.json.decode(text[start : end + 1], type=dict)
     except msgspec.DecodeError as error:
         raise ValueError(f"JSON 解析失败: {text[:80]!r}") from error
+
+
+def _try_parse_dict(text: str) -> dict | None:
+    """尽力把模型输出解析成 dict（给 normalize_tool_calls 做协议识别用）。
+
+    文本喊话的场景输出不是合法 JSON（模型在写自然语言），此时返回 None，
+    Provider 的 normalize 会退回文本模式抠工具名。
+    """
+    try:
+        return _extract_json(text)
+    except ValueError:
+        return None
 
 
 def _parse_step_json(text: str) -> dict:

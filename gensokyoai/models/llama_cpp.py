@@ -8,6 +8,81 @@ from ..core.registry import Registry
 from ..schemas.model_schema import CompletionResult, Message, ToolCall
 from .base import OpenAICompatProvider, split_think
 
+_TEXT_TOOL_PATTERNS: tuple[re.Pattern, ...] = (
+    # "调用 xxx" / "使用 xxx"
+    re.compile(r"(?:调用|使用)\s+([a-zA-Z_][a-zA-Z0-9_]*)"),
+    # "xxx(" —— 模型把工具名当函数写
+    re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\("),
+    # "需要 xxx 工具"
+    re.compile(r"需要\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+工具"),
+)
+""" 文本喊话的工具名识别模式（本地小模型不走原生协议时的现实路径）"""
+
+_ARGS_WINDOW = 120
+""" 工具名之后查找 JSON 参数的字符窗口 """
+
+
+def _json_args_after(text: str, position: int) -> str:
+    """工具名位置之后的小窗口里找 JSON 对象作为参数；找不到/不合法返回 "{}"。
+
+    花括号配对为朴素深度计数（参数内含花括号的极端场景会解析失败降级空参，
+    好过把非 JSON 当参数传）。
+    """
+    window = text[position : position + _ARGS_WINDOW]
+    start = window.find("{")
+    if start == -1:
+        return "{}"
+    depth = 0
+    for index in range(start, len(window)):
+        char = window[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = window[start : index + 1]
+                try:
+                    msgspec.json.decode(candidate, type=dict)
+                except msgspec.DecodeError:
+                    return "{}"
+                return candidate
+    return "{}"
+
+
+def extract_text_tool_calls(text: str) -> list[ToolCall]:
+    """从自然语言里提取「文本喊话」的工具调用（去重保序，支持一次多个）。
+
+    识别三类模式：`调用/使用 X`、`X(`、`需要 X 工具`；每个工具名之后的
+    小窗口内找 JSON 对象作为参数（找不到 = 空参，调用方按无参工具执行）。
+    真机实测：本地 Qwen 不走原生 tool_calls 协议，这是它的主要调用形态。
+
+    Args:
+        text: 模型的 thought / action_hint 文本
+
+    Returns:
+        list[ToolCall]: 提取到的调用（无则空列表）
+    """
+    found: list[tuple[int, str]] = []
+    for pattern in _TEXT_TOOL_PATTERNS:
+        for match in pattern.finditer(text):
+            found.append((match.start(), match.group(1)))
+    found.sort(key=lambda item: item[0])
+
+    calls: list[ToolCall] = []
+    seen: set[str] = set()
+    for position, name in found:
+        if name in seen:
+            continue
+        seen.add(name)
+        calls.append(
+            ToolCall(
+                id=f"call_{len(calls)}",
+                name=name,
+                arguments=_json_args_after(text, position),
+            )
+        )
+    return calls
+
 
 @Registry.register(name="llama_cpp", ext_type="model_provider")
 class LlamaProvider(OpenAICompatProvider):
@@ -114,47 +189,31 @@ class LlamaProvider(OpenAICompatProvider):
                     tool_calls=tool_calls,
                 )
 
-        # 3. 文本喊话（从 thought/action_hint 中提取）
+        # 3. 文本喊话（本地小模型不走原生协议时的现实路径）：
+        #    识别「调用 工具名 {"参数": 值}」，支持一次多个，JSON 参数尽力提取
         thought_and_hint = (
             f"{parsed_content.get('thought', '')} {parsed_content.get('action_hint', '')}"
         )
-        tool_names = self._extract_tool_names_from_text(thought_and_hint)
-        if tool_names:
-            # 只取第一个匹配的工具（简化处理）
-            tool_name = tool_names[0]
-            tool_calls = [
-                ToolCall(
-                    id="call_0",
-                    name=tool_name,
-                    arguments="{}",  # 默认空参数，具体参数由 BrainEngine 从上下文提取
-                )
-            ]
-            self._logger.warning(
-                f"检测到文本喊话工具调用: {tool_name}，但未生成标准格式，使用空参数"
-            )
+        shouted = self._extract_text_tool_calls(thought_and_hint)
+        if shouted:
+            for call in shouted:
+                if call.arguments == "{}":
+                    self._logger.warning(
+                        f"文本喊话工具调用: {call.name}（未识别到参数，按无参工具执行）"
+                    )
+                else:
+                    self._logger.info(f"文本喊话工具调用: {call.name} {call.arguments}")
             return CompletionResult(
                 content=result.content,
                 reasoning=result.reasoning,
                 finish_reason=result.finish_reason,
                 usage=result.usage,
                 model=result.model,
-                tool_calls=tool_calls,
+                tool_calls=shouted,
             )
 
         return result
 
-    def _extract_tool_names_from_text(self, text: str) -> list[str]:
-        """从文本中提取可能的工具名（启发式）"""
-        tool_names = []
-
-        # 匹配 "调用 xxx" 或 "使用 xxx" 模式
-        patterns = [
-            r"(?:调用|使用)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
-            r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\(",
-            r"需要\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+工具",
-        ]
-        for pattern in patterns:
-            matches = re.findall(pattern, text)
-            tool_names.extend(matches)
-
-        return list(set(tool_names))  # 去重
+    def _extract_text_tool_calls(self, text: str) -> list[ToolCall]:
+        """从自然语言里提取「文本喊话」的工具调用（委托模块级函数，便于单测）。"""
+        return extract_text_tool_calls(text)

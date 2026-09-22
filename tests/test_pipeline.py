@@ -12,12 +12,18 @@ import types
 
 import pytest
 
-from gensokyoai.core.brain.pipeline import PipelineAbort, ThinkPipeline, ThinkStep
+from gensokyoai.core.brain.pipeline import (
+    PipelineAbort,
+    ThinkPipeline,
+    ThinkStep,
+    builtin_step,
+)
 from gensokyoai.core.session_manager import SessionManager
+from gensokyoai.models.llama_cpp import extract_text_tool_calls
 from gensokyoai.roleplay.character import Character, CharacterCard
 from gensokyoai.roleplay.loop import TouhouWorld
 from gensokyoai.schemas.brain_schema import BrainThinkEffort
-from gensokyoai.schemas.model_schema import CompletionResult
+from gensokyoai.schemas.model_schema import CompletionResult, ToolSpec
 from gensokyoai.schemas.scene_schema import SceneSnapshot
 
 _SLEEP = "!sleep"
@@ -39,7 +45,9 @@ class _ScriptBackend:
 
     async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
         self.calls.append(list(messages))
-        self.kwargs.append({"max_new_tokens": max_new_tokens, "temperature": temperature})
+        self.kwargs.append(
+            {"max_new_tokens": max_new_tokens, "temperature": temperature, "tools": tools}
+        )
         reply = self._replies.pop(0) if self._replies else '{"note": "兜底结论"}'
         if reply == _SLEEP:
             await asyncio.sleep(10)
@@ -47,6 +55,16 @@ class _ScriptBackend:
 
     def normalize_tool_calls(self, result, parsed_content=None):
         return result
+
+
+class _ShoutBackend(_ScriptBackend):
+    """会在 normalize 环节识别「文本喊话」的假后端（复用 llama 的真实提取逻辑）"""
+
+    def normalize_tool_calls(self, result, parsed_content=None):
+        calls = extract_text_tool_calls(result.content or "")
+        if not calls:
+            return result
+        return CompletionResult(content=result.content, tool_calls=calls)
 
 
 def _sessions(replies: list[str]) -> tuple[SessionManager, _ScriptBackend]:
@@ -339,6 +357,125 @@ async def test_effort_none_aborts_without_calling():
             effort=BrainThinkEffort.NONE,
         )
     assert backend.calls == []
+
+
+# ---------- 工具调用（pipeline 路径） ----------
+
+
+def _fake_now() -> str:
+    """获取假时间（测试工具）"""
+    return "2026-09-22 18:38:00"
+
+
+_TIME_TOOL = ToolSpec(tool_func=_fake_now, desc="获取当前时间", name="get_current_time")
+
+
+async def test_step_tools_flag_controls_tool_passing():
+    """tools=True 的步骤才把工具带给模型；其余步骤不带（省 token）"""
+    tool_step = ThinkStep(name="anchor", instructions="感知时间", tools=True)
+    plain_step = ThinkStep(name="plain", instructions="随便想想")
+    sessions, backend = _sessions(['{"note": "a"}', '{"note": "b"}', _CONCLUSION_PASS])
+    await _chain(tool_step, plain_step).run(
+        snapshot=_snapshot(),
+        memories=[],
+        sessions=sessions,
+        persona="p",
+        effort=BrainThinkEffort.HIGH,
+        tools=[_TIME_TOOL],
+    )
+    assert backend.kwargs[0]["tools"] == [_TIME_TOOL]
+    assert backend.kwargs[1]["tools"] is None
+    assert backend.kwargs[2]["tools"] is None, "结论步不带工具"
+
+
+async def test_tool_round_executes_and_feeds_back():
+    """文本喊话：识别 -> 执行 -> 结果回填 -> 重取一次（本地 Qwen 的主用形态）"""
+    shout = '{"thought": "需要准确时间，调用 get_current_time {}", "note": "待定"}'
+    sessions, backend = _sessions([shout, '{"note": "傍晚了"}', _CONCLUSION_DRAFT])
+    # 让 fake 后端具备喊话识别能力
+    backend.__class__ = _ShoutBackend
+    step = ThinkStep(name="anchor", instructions="感知时间", tools=True)
+    conclusion = await _chain(step).run(
+        snapshot=_snapshot(),
+        memories=[],
+        sessions=sessions,
+        persona="p",
+        effort=BrainThinkEffort.LOW,
+        tools=[_TIME_TOOL],
+    )
+    assert len(backend.calls) == 3, "喊话 + 重取 + 结论"
+    second_user = backend.calls[1][-1].content
+    assert "【工具执行结果】" in second_user and "2026-09-22 18:38:00" in second_user
+    assert conclusion.verdict == "draft"
+    assert conclusion.reasoning_steps[0].thought == "傍晚了"
+
+
+async def test_run_without_tools_skips_tool_round():
+    """没传工具清单时，tools=True 的步骤也不带工具、不触发喊话轮"""
+    sessions, backend = _sessions(['{"note": "直接想"}', _CONCLUSION_PASS])
+    step = ThinkStep(name="anchor", instructions="感知时间", tools=True)
+    await _chain(step).run(
+        snapshot=_snapshot(),
+        memories=[],
+        sessions=sessions,
+        persona="p",
+        effort=BrainThinkEffort.LOW,
+        tools=None,
+    )
+    assert backend.kwargs[0]["tools"] is None
+    assert len(backend.calls) == 2, "步骤 + 结论，无喊话轮"
+
+
+def test_builtin_step_time_anchor_has_tools():
+    """内置步骤 time_anchor 默认挂工具；其余内置步骤不挂"""
+    assert builtin_step("time_anchor").tools is True
+    assert builtin_step("emotion_check").tools is False
+    assert (
+        "感知" in builtin_step("time_anchor").instructions
+        or "时间" in builtin_step("time_anchor").instructions
+    )
+
+
+def test_builtin_step_unknown_name_raises():
+    """未注册的步骤名启动即暴露（KeyError）"""
+    with pytest.raises(KeyError):
+        builtin_step("不存在的步骤")
+
+
+def test_from_names_carries_tool_flags():
+    """from_names（卡片驱动）带上内置步骤的 tools 元数据"""
+    chain = ThinkPipeline.from_names("卡片链", ["time_anchor", "emotion_check"])
+    assert [step.tools for step in chain] == [True, False]
+
+
+# ---------- 文本喊话提取（llama 后端） ----------
+
+
+def test_extract_text_tool_calls_with_json_args():
+    """喊话带 JSON 参数时提取出来（不再一律空参数）"""
+    calls = extract_text_tool_calls('我需要调用 get_weather {"city": "北京", "days": 3} 来确认')
+    assert len(calls) == 1
+    assert calls[0].name == "get_weather"
+    assert calls[0].arguments == '{"city": "北京", "days": 3}'
+
+
+def test_extract_text_tool_calls_multiple():
+    """一次喊多个工具：按出现顺序去重建多个调用"""
+    calls = extract_text_tool_calls("先调用 get_current_time {}，然后使用 get_moon_phase {}")
+    assert [c.name for c in calls] == ["get_current_time", "get_moon_phase"]
+    assert calls[0].arguments == "{}"
+
+
+def test_extract_text_tool_calls_without_json_is_empty_args():
+    """没有 JSON 参数 = 空参数（无参工具不受影响）"""
+    calls = extract_text_tool_calls("我需要调用 get_moon_phase 工具")
+    assert len(calls) == 1 and calls[0].arguments == "{}"
+
+
+def test_extract_text_tool_calls_dedup():
+    """同一工具重复喊只算一次"""
+    calls = extract_text_tool_calls("调用 get_current_time {}，再次调用 get_current_time {}")
+    assert len(calls) == 1
 
 
 # ---------- DSL / 卡片驱动 ----------

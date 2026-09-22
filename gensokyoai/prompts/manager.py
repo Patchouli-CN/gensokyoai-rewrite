@@ -86,6 +86,7 @@ def brain_think() -> str:
 3. 不要把大段内心独白写进 action_hint，它只需要给 Responder 一个“怎么演”的提示。
 4. 工具调用（如查询记忆）不计入思考轮数。当需要外部信息时，你可以直接调用工具；工具结果会自动补充到下一轮思考中。
 5. 如果思考超过了系统给定的最大轮数限制，系统会强制结束思考，你不需要关心这个限制。
+6. 需要调用工具时，直接在 thought 里写：调用 工具名 {"参数": 值}（例如：调用 get_current_time {}；参数没有可留空 {}）。系统会识别这句话、执行工具并把结果补充给你，不要自己在脑袋里假装执行结果。
 只输出 JSON 对象，不要输出任何其他内容。"""
 
 
@@ -113,6 +114,19 @@ def think_step_system() -> str:
 只输出一个 JSON 对象：
 {"note": "本步结论（一句话，≤100字）", "intent": "本步观察到的意图（可省）", "emotion": "本步感知到的情绪（可省）", "confidence": 0.0}
 只输出 JSON，不要输出任何其他内容。"""
+
+
+@prompt_mgr.prompt("think.step.tools_hint")
+def think_step_tools_hint(tool_names, **_):
+    """挂了工具的步骤专用约定（工具名在渲染时枚举，弱模型可照抄）"""
+    names = "、".join(tool_names)
+    return (
+        f"\n【可用工具】{names}\n"
+        '需要外部信息时，直接在思考里写：调用 工具名 {"参数": 值}'
+        "（例如：调用 get_current_time {}；无参可留空 {}，必须写全工具名）。"
+        "系统会识别这句话、执行工具，并把结果补充给你；"
+        "必须拿到工具结果后再下结论，不要自己编造。"
+    )
 
 
 @prompt_mgr.prompt("think.step.user")
@@ -165,6 +179,16 @@ def think_memory_link() -> str:
 @prompt_mgr.prompt("think.stance_decide")
 def think_stance_decide() -> str:
     return "综合场景与前几步结论，决定角色此刻的立场与姿态：认真回、调侃回、还是沉默看戏？一句话给出倾向。"
+
+
+@prompt_mgr.prompt("think.time_anchor")
+def think_time_anchor() -> str:
+    return (
+        "感知当前场景的时间坐标：现在几点、什么季节、是否节日。"
+        "凡是涉及具体时间/日期/月相的问题（现在几点、今天几号、今晚什么月色），"
+        "必须先调用工具获取再下结论，不要凭记忆猜；确实与时间无关时，"
+        "用场景信息给出一句话结论（如「初秋傍晚，适合赏月」）。"
+    )
 
 
 @prompt_mgr.prompt("memory.compress")

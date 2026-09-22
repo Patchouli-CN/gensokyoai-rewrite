@@ -131,7 +131,22 @@ python scripts/real_verify.py --scenario my.json
 | 换思考方式 | 改角色卡 `think_chain` 的顺序/步骤 |
 | 彻底关掉门控 | `gate.enabled: false`（维持「每条都回」的旧行为） |
 
-## 6. 模型计费（接云端 API 时）
+## 6. 工具调用
+
+引擎内置三个工具（`tools/builtin.py`）：`get_current_time` / `get_current_dateinfo` / `get_moon_phase`。加自己的工具就是在该文件里加一个 `@ToolRegistry.tool` 装饰的函数（参数 JSON Schema 从签名自动推导，同步函数自动下线程），重启生效。
+
+两条路径都能用工具：
+
+- **接力思考**（角色卡不配 `think_chain` 时）：全部工具自动挂上
+- **思考链**：步骤级开关 `tools=True` 才挂（其余步骤不挂、省 token）；内置步骤 `time_anchor` 默认开启。代码里这样写：
+
+```python
+chain = ThinkPipeline("感知链") >> ThinkStep("time_check", instructions="先确认当前时间", tools=True) >> ...
+```
+
+**本地小模型的「文本喊话」约定**：不走原生 `tool_calls` 协议的模型（如 llama-server 上的 Qwen），在思考里写 `调用 get_current_time {}` 即可——系统识别后执行并把结果回填。可带 JSON 参数：`调用 get_weather {"city": "北京"}`，支持一次喊多个。真机实测：接力路径下 Qwen 能稳定喊对；思考链步骤路径下弱 quant 可能只写「调用工具」而不写全名（换更强 quant 或云端模型更稳）。
+
+## 7. 模型计费（接云端 API 时）
 
 接第三方模型（OpenAI / Claude / DeepSeek / Gemini / Qwen……）才会产生费用。引擎的计费是**自动 + 可覆盖**的：
 

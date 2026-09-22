@@ -141,6 +141,7 @@ class BrainEngine:
                 sessions=self._sessions,
                 persona=self._persona_brief,
                 effort=effort,
+                tools=self._tools,
             )
         except PipelineAbort as error:
             self._logger.warning(f"思考链失败，降级为快速路径: {error}")
