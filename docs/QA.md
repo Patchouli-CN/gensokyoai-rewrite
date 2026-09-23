@@ -3,7 +3,7 @@
 ## 通用
 
 ### Q：这个项目是什么？和原版 GensokyoAI 什么关系？
-本地 LLM 角色扮演引擎的**重写版**：把推理、记忆、时机判断全部工程化，小上下文模型也能稳定扮演。设计思路见 [README.md](README.md)，跑法见 [QUICKSTART.md](QUICKSTART.md)。
+本地 LLM 角色扮演引擎的**重写版**：把推理、记忆、时机判断全部工程化，小上下文模型也能稳定扮演。设计思路见 [README](../README.md)，跑法见 [QUICKSTART.md](QUICKSTART.md)。
 
 ### Q：接 QQ 吗？
 引擎本身平台无关：输入走 `eyes`（`Perceiver` 协议 + OneBot11 解析器），输出走 `mouth`。当前内置入口是**控制台**与**WebSocket 文本频道**；接 QQ 需要在外面做一层协议转发（把 OneBot11 事件过 `eyes/parser.py` 打成快照），或直接以 WS 客户端身份推文本。
@@ -107,4 +107,4 @@
 `utils`/`schemas` 纯叶子；`core` 内核四个业务子包（brain/responder/memorizer/health）之间**零直接 import**，通信走事件总线或装配层注入；CI 有 AST 检查兜底，详见测试 `test_no_circular_import.py`。
 
 ### Q：文档以后要多语言怎么办？
-所有文档统一在 `docs/` 下（README / QUICKSTART / QA），按语言建子目录即可（如 `docs/en/README.md`），文件名保持稳定。
+README 放在仓库根（主页门面），其余文档统一在 `docs/` 下（QUICKSTART / QA），按语言建子目录即可（如 `docs/en/`），文件名保持稳定。
