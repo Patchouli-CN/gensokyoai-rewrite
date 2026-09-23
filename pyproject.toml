@@ -26,12 +26,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.15",
-    "mypy>=1.11",
-    "build>=1.2",
-    "hatchling",
+    # CI 门禁工具钉死本地验证过的版本——输出与行为随版本漂移，不钉 = CI 与本地
+    # 各跑各的（实例：ruff 0.16 新增「格式化 markdown 代码块」，未 pin 时 CI 装到
+    # 0.16、本地还是 0.15，format check 直接挂，而本地全绿无从复现）。
+    # 升级 = 本地过门后主动改这里 + 单独一次 reformat 提交。
+    "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
+    "ruff==0.15.4",
+    "mypy==2.1.0",
+    "build==1.4.2",
+    "hatchling==1.32.3",
 ]
 # 真 jev 后端（gate.judge=typesafe）：官方 TypeSafe Python SDK
 jev = [

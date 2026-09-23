@@ -9,6 +9,14 @@
 ## [Unreleased]
 
 ### 修复
+  - **CI 门禁工具版本漂移（红了一片没人发现是从第 26 次运行开始的）**：dev 依赖
+    `ruff>=0.15` / `mypy>=1.11` 等未 pin，CI 每次装最新——ruff 0.16 新增
+    「格式化 markdown 代码块」，`docs/QUICKSTART.md` 的长行被想重排，
+    `ruff format --check .` 在 ubuntu 上必挂；而本地还是 0.15.4（不看 .md）
+    全绿，**无从复现**。修复：CI 门禁六件套（ruff/mypy/pytest/pytest-asyncio/
+    build/hatchling）钉死本地验证过的版本，升级 = 本地过门后主动改 +
+    单独一次 reformat 提交（0.16 升级时只需重排 docs/QUICKSTART.md 一个文件，
+    已实测）。
   - **`gate.timeout_ms` 默认 4s 对本地模型 = 裁判永久超时**：真机验证发现本地
     llama 单次调用要 10~25s，4s 超时让 LocalJudge 永远走降级（裁判形同虚设）。
     默认改为 60s（settings.yaml 同步；用真 jev 云端快接口可调回 5000）。
