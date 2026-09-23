@@ -487,8 +487,9 @@ class TouhouWorld:
                     await self.trace.record(
                         turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
                     )
-                if self._ooc_audit:
-                    # 传 snapshot：jev 化审查需要诱发消息当上下文（旧 audit 只用 reply）
+                if self._ooc_audit and not self._ooc_blocking:
+                    # 传 snapshot：jev 化审查需要诱发消息当上下文（旧 audit 只用 reply）。
+                    # blocking 模式已在 _express 里审过并记账，侧链不重复跑
                     self._tasks.spawn(self._audit_reply(snapshot, reply), name="ooc-audit")
 
                 # 6. 角色状态跟踪 + 健康喂食
@@ -798,12 +799,17 @@ class TouhouWorld:
         """
         # 防复读预防性提示：两条路径都生效（流式已投递无从改起，只能事前防）
         avoid = self._parrot_avoid_hint()
-        if self.mouth.supports_streaming:
+        # blocking 闸门开启时**放弃流式**：回复必须先完整生成、过 jev 出戏审查
+        # 才放行——逐字蹦的手感换「说出口的话都过了审」（本地模型每回合多一次
+        # 审查调用；侧链模式则两不误，默认）
+        if self.mouth.supports_streaming and not self._ooc_blocking:
             reply = await self._deliver_stream(snapshot, conclusion, memories, avoid=avoid)
             await self._note_suspicious(reply)
             self._note_reply_style(reply)
             return reply
         reply = await self.responder.respond(conclusion, snapshot, memories, avoid)
+        if self._ooc_blocking:
+            reply = await self._guard_ooc_jev(snapshot, reply)
         if ooc_guard:
             reply = await self._guard_ooc(reply)
             reply = await self._guard_parrot(reply)
@@ -845,9 +851,94 @@ class TouhouWorld:
         self.logger.info(f"流式投递完成: {len(reply)}字")
         return reply
 
+    @property
+    def _ooc_blocking(self) -> bool:
+        """blocking 闸门是否生效（最终缓冲区审查通过才放行）。
+
+        生效条件三合一：配置了裁判 + jev 审查 enabled + mode=blocking。
+        生效时 `_express` 放弃流式（先完整生成、审过再发）。
+        """
+        return (
+            self._ooc_judge is not None
+            and self._ooc_judge_cfg.enabled
+            and self._ooc_judge_cfg.mode == "blocking"
+        )
+
+    async def _guard_ooc_jev(self, snapshot: SceneSnapshot, reply: str) -> str:
+        """blocking 闸门：进最终缓冲区的回复先过 jev 出戏审查，通过才放行。
+
+        判定 revise（双高/unsafe/implausible 低线）时花一次纠偏重写；
+        纠偏后仍命中硬规则则保留原句 + 告警（不死循环）。
+        flag（模糊带）与原句都直接放行——黄色预警不该有阻断权。
+
+        Args:
+            snapshot: 场景快照（诱发消息进审查 state）
+            reply: 待放行的回复
+
+        Returns:
+            str: 审查（+可能纠偏）后的回复
+        """
+        if not self._ooc_blocking:
+            return reply
+        judge = self._ooc_judge
+        assert judge is not None  # _ooc_blocking 已保证非空（mypy 收窄）
+        try:
+            recent = await self.memory.recent(5)
+            check = await audit_with_judge(
+                judge,
+                persona=self._persona_brief,
+                new_message=snapshot.content,
+                reply=reply,
+                recent=[m.content for m in reversed(recent)],
+                bot_name=self.character.name,
+                settings=self._ooc_judge_cfg,
+            )
+        except Exception:
+            # 审查自身故障 = 放行（防御不是裁判，不能让一次故障吞掉回合）
+            self.logger.exception("blocking 出戏审查失败，放行")
+            return reply
+        if check.decision != "revise":
+            if check.decision == "flag":
+                self.logger.info(f"blocking 出戏审查 flag（放行）: {check.reason}")
+            await self._record_ooc_check(check)
+            return reply
+        self.logger.warning(
+            f"blocking 出戏审查 revise，发起一次纠偏: {check.reason} | {check.answers}"
+        )
+        try:
+            corrected = await self.responder.correct(reply, f"出戏原因: {check.reason}")
+        except Exception:
+            self.logger.exception("blocking 纠偏重生成失败，保留原句")
+            await self._record_ooc_check(check)
+            return reply
+        if not corrected or self.ooc.pre_filter(corrected).is_ooc:
+            self.logger.error("纠偏后仍不可用，原样放行")
+            await self._record_ooc_check(check)
+            return reply
+        self.logger.info(f"blocking 纠偏完成: {corrected[:60]!r}")
+        await self._record_ooc_check(check)
+        return corrected
+
+    async def _record_ooc_check(self, check) -> None:
+        """jev 审查结论记账（blocking 与侧链共用）：ooc_hits/ooc_flags/ooc.rate +
+        档位下限自愈。revise 计入 hits（出戏率），flag 只计 flags 不进率——
+        模糊带的判定不该把出戏率推高触发误干预。"""
+        audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
+        hits = int(self.character.status.extra.get("ooc_hits", 0)) + (
+            1 if check.decision == "revise" else 0
+        )
+        flags = int(self.character.status.extra.get("ooc_flags", 0)) + (
+            1 if check.decision == "flag" else 0
+        )
+        self.character.status.update(ooc_audited=audited, ooc_hits=hits, ooc_flags=flags)
+        await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
+        if check.decision != "revise" and self._effort_floor is not None:
+            # 审查恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
+            self._effort_floor = None
+            self.logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
+
     def _parrot_avoid_hint(self) -> str:
         """防复读预防性提示（responder.user 的 [自我克制] 段）。
-
         Returns:
             str: 提示文本；上一轮无发言且无重复收尾时为空串（不注入）
         """
@@ -983,25 +1074,13 @@ class TouhouWorld:
             return
         if gen != self._generation:
             return
-        audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
-        hits = int(self.character.status.extra.get("ooc_hits", 0)) + (
-            1 if check.decision == "revise" else 0
-        )
-        flags = int(self.character.status.extra.get("ooc_flags", 0)) + (
-            1 if check.decision == "flag" else 0
-        )
-        self.character.status.update(ooc_audited=audited, ooc_hits=hits, ooc_flags=flags)
-        await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
         if check.decision == "revise":
             self.logger.warning(
                 f"jev 出戏审查 revise（已记账，文本不撤回）: {check.reason} | {check.answers}"
             )
         elif check.decision == "flag":
             self.logger.info(f"jev 出戏审查 flag: {check.reason} | {check.answers}")
-        if check.decision != "revise" and self._effort_floor is not None:
-            # 审查恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
-            self._effort_floor = None
-            self.logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
+        await self._record_ooc_check(check)
 
     async def _audit_reply_legacy(self, reply: str) -> None:
         """旧单点 OOC 深审（无 jev 裁判时的降级路径；只看人设+回复，无诱发消息）。"""
