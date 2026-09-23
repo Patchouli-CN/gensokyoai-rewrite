@@ -38,8 +38,16 @@ class Responder:
         conclusion: BrainConclusion,
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
+        avoid: str = "",
     ) -> str:
-        """在有状态会话中生成最终回复。"""
+        """在有状态会话中生成最终回复。
+
+        Args:
+            conclusion: Brain 结论
+            snapshot: 场景快照
+            memories: 检索到的记忆
+            avoid: 防复读提示（自我克制清单；空串不注入）
+        """
         started = time.monotonic()
         self._logger.info(
             f"生成开始: 意图={conclusion.intent} 情绪={conclusion.emotion} "
@@ -53,7 +61,13 @@ class Responder:
         memory_text = "\n".join(f"- {m.content}" for m in memories) or "（无）"
 
         # 【修复】过滤掉假的工具调用
-        draft_hint = f"初稿参考（可改写润色）: {conclusion.draft}\n" if conclusion.draft else ""
+        # 措辞从「可改写润色」改硬：「默认按初稿骨架走」——真机实录照出 Responder
+        # 把软措辞的初稿当可选建议，被用户消息里的直接指令（如"只输出数字"）带跑
+        draft_hint = (
+            f"初稿参考（默认按这个骨架说，除非初稿本身有问题）: {conclusion.draft}\n"
+            if conclusion.draft
+            else ""
+        )
         if conclusion.draft and '"tool"' in conclusion.draft:
             self._logger.warning(f"检测到伪工具调用文本，丢弃: {conclusion.draft}")
             draft_hint = ""
@@ -66,6 +80,7 @@ class Responder:
             emotion=conclusion.emotion,
             draft_hint=draft_hint,
             memory=memory_text,
+            avoid=avoid,
         )
         result = await self._sessions.call(
             self._OWNER,
@@ -97,11 +112,18 @@ class Responder:
         conclusion: BrainConclusion,
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
+        avoid: str = "",
     ):
         """流式生成最终回复：逐块 yield 文本 delta（供 mouth.begin/delta/end 投递）。
 
         与 `respond()` 走同一套 prompt / 有状态会话，但经 backend.chat_stream 逐块产出。
         支持半截续写（finish_reason=length 时继续流式拼接）与情绪润色尾缀（末块补标点）。
+
+        Args:
+            conclusion: Brain 结论
+            snapshot: 场景快照
+            memories: 检索到的记忆
+            avoid: 防复读提示（自我克制清单；空串不注入）
 
         Yields:
             str: 文本增量
@@ -116,7 +138,11 @@ class Responder:
             self._system_ready = True
 
         memory_text = "\n".join(f"- {m.content}" for m in memories) or "（无）"
-        draft_hint = f"初稿参考（可改写润色）: {conclusion.draft}\n" if conclusion.draft else ""
+        draft_hint = (
+            f"初稿参考（默认按这个骨架说，除非初稿本身有问题）: {conclusion.draft}\n"
+            if conclusion.draft
+            else ""
+        )
         if conclusion.draft and '"tool"' in conclusion.draft:
             self._logger.warning(f"检测到伪工具调用文本，丢弃: {conclusion.draft}")
             draft_hint = ""
@@ -129,6 +155,7 @@ class Responder:
             emotion=conclusion.emotion,
             draft_hint=draft_hint,
             memory=memory_text,
+            avoid=avoid,
         )
 
         parts: list[str] = []

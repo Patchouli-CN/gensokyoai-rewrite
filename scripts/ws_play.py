@@ -9,8 +9,10 @@
     python scripts/ws_play.py --scenario my.json --out logs/play.jsonl      # 自定义消息序列
     python scripts/ws_play.py --rounds 200 --max-seconds 7200               # 马拉松（带总时限）
 
-场景 JSON：[{"text": "..."}] 或纯字符串数组。注意：WS 服务端只按连接类型区分
+场景 JSON：[{"text": "...", "sleep": 秒}] 或纯字符串数组。注意：WS 服务端只按连接类型区分
 群聊/私聊（?type=），不对文本里的 @ 做解析——想测「被直球」场景请用 --scene private。
+`sleep` 字段配 `--wait-at N`：在第 N 轮前静默聆听 N 秒，诱捕**主动发言**系统
+（空闲超阈值 + 四维对话欲达标时角色会自己开口）。
 """
 
 import argparse
@@ -65,6 +67,8 @@ class _Player:
         self._user = user
         self._scene_type = scene_type
         self.rounds: list[dict] = []
+        self.startup: list[str] = []
+        self.unsolicited: list[str] = []
 
     async def __aenter__(self) -> _Player:
         self._session = aiohttp.ClientSession()
@@ -136,6 +140,58 @@ class _Player:
         )
         return reply
 
+    async def listen_until(self, deadline: float) -> list[str]:
+        """静默聆听到 deadline；把期间收到的完整发言聚成列表返回。
+
+        用来诱捕「主动发言」系统：世界空闲超阈值（默认 180s）且四维对话欲
+        达标（默认 0.35）时，角色会自己开口——这些话没有任何用户消息对应，
+        只有挂着连接听才能收到。
+
+        Args:
+            deadline: 单调时钟截止时刻
+
+        Returns:
+            list[str]: 期间收到的完整发言文本（流式帧同样聚合）
+        """
+        collected: list[str] = []
+        parts: list[str] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                msg = await asyncio.wait_for(self._ws.receive(), timeout=remaining)
+            except TimeoutError:
+                break
+            if msg.type is not aiohttp.WSMsgType.TEXT:
+                continue
+            with contextlib.suppress(json.JSONDecodeError):
+                frame = json.loads(msg.data)
+                ftype = frame.get("type")
+                if ftype == "message":
+                    collected.append(str(frame.get("text", "")))
+                elif ftype == "begin":
+                    parts = []
+                elif ftype == "delta":
+                    parts.append(str(frame.get("text", "")))
+                elif ftype == "end":
+                    collected.append("".join(parts))
+                    parts = []
+        self.unsolicited.extend(collected)
+        return collected
+
+    def note_unsolicited(self, text: str) -> None:
+        """把一条无提示发言记进回合账（文本标「[无提示发言]」，与正常轮次同盘落库）。"""
+        self.rounds.append(
+            {
+                "text": "[无提示发言]",
+                "probe": "主动发言（诱捕）",
+                "reply": text,
+                "elapsed_s": 0.0,
+                "chars": len(text),
+            }
+        )
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="WS 真机马拉松客户端")
@@ -145,6 +201,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--user", default="灵梦")
     parser.add_argument("--scene", default="group", choices=["group", "private"])
     parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument(
+        "--wait-at",
+        type=int,
+        default=0,
+        help="在第几轮前等待（配合场景 sleep 字段；0=不等待）",
+    )
     parser.add_argument(
         "--round-timeout", type=float, default=180.0, help="单轮等待秒数，到点记无回复继续下一轮"
     )
@@ -161,15 +223,18 @@ async def run(args: argparse.Namespace) -> int:
         items = json.loads(Path(args.scenario).read_text(encoding="utf-8"))
         texts = [item["text"] if isinstance(item, dict) else item for item in items]
         probes = [item.get("probe", "") if isinstance(item, dict) else "" for item in items]
+        waits = [float(item.get("sleep", 0.0)) if isinstance(item, dict) else 0.0 for item in items]
     else:
         texts = [(_TOPICS * 20)[i] for i in range(args.rounds)]
         probes = [""] * len(texts)
+        waits = [0.0] * len(texts)
 
     url = f"http://{args.host}:{args.port}/ws/{args.channel}?user={args.user}&type={args.scene}"
     started = time.monotonic()
     out_path = Path(args.out) if args.out else None
     if out_path:
         out_path.parent.mkdir(parents=True, exist_ok=True)
+    wait_at = args.wait_at
     async with _Player(url, args.user, args.scene) as player:
         for line in player.startup:
             print(f"--- [启动广播已排空] {line}", flush=True)
@@ -177,6 +242,17 @@ async def run(args: argparse.Namespace) -> int:
             if time.monotonic() - started > args.max_seconds:
                 print(f"[play] 到总时限，收尾（已完成 {index - 1} 轮）")
                 break
+            wait_s = waits[index - 1] if index <= len(waits) else 0.0
+            if index == wait_at and wait_s > 0:
+                # 只在指定轮次前等待：多留时间给「主动发言」系统冒泡
+                # （空闲超 180s 且对话欲过阈值时，角色会自己开口）
+                print(f"    [等待 {wait_s:.0f}s（诱捕主动发言）]", flush=True)
+                for frame in await player.listen_until(time.monotonic() + wait_s):
+                    print(f"--- [主动发言!] {frame}", flush=True)
+                    player.note_unsolicited(frame)
+                    if out_path:
+                        with out_path.open("a", encoding="utf-8") as handle:
+                            handle.write(json.dumps(player.rounds[-1], ensure_ascii=False) + "\n")
             print(f"\n=== [{index}/{len(texts)}] 我: {text}", flush=True)
             if index <= len(probes) and probes[index - 1]:
                 print(f"    探针: {probes[index - 1]}", flush=True)

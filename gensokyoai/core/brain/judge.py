@@ -17,7 +17,7 @@ import msgspec
 from ...prompts import prompt_mgr
 from ...schemas.model_schema import Message
 from ...utils.logger import LoggerManager
-from ..config import GateSettings
+from ..config import GateSettings, OOCJudgeSettings
 from ..session_manager import SessionManager
 from .gate import Judge, Question
 
@@ -73,6 +73,9 @@ class LocalJudge:
         max_new_tokens: int = 128,
         temperature: float = 0.2,
         timeout_s: float = 4.0,
+        owner: str = OWNER,
+        system_prompt: str = "gate.system",
+        user_prompt: str = "gate.user",
     ) -> None:
         """初始化。
 
@@ -81,11 +84,17 @@ class LocalJudge:
             max_new_tokens: 裁判输出预算（三个概率 + 题名，128 足够）
             temperature: 低温求稳（概率口径，不需要创造性）
             timeout_s: 单次裁判调用超时（保护主循环不被慢模型拖死）
+            owner: 用量记账的会话 owner（出戏审查用 brain.ooc，与门控分开记账）
+            system_prompt: 任务说明模板名（出戏审查用 ooc.judge.system）
+            user_prompt: 提问模板名（出戏审查用 ooc.judge.user）
         """
         self._sessions = sessions
         self._max_new_tokens = max_new_tokens
         self._temperature = temperature
         self._timeout_s = timeout_s
+        self._owner = owner
+        self._system_prompt = system_prompt
+        self._user_prompt = user_prompt
         self._logger = LoggerManager.get_logger("GATE")
 
     async def ask(
@@ -96,15 +105,15 @@ class LocalJudge:
             f"- {name}：{question.instructions}" for name, question in questions.items()
         )
         user = prompt_mgr.render(
-            "gate.user",
+            self._user_prompt,
             state=json.dumps(state, ensure_ascii=False),
             questions=question_text,
         )
         result = await asyncio.wait_for(
             self._sessions.call(
-                self.OWNER,
+                self._owner,
                 [
-                    Message(role="system", content=prompt_mgr.render("gate.system")),
+                    Message(role="system", content=prompt_mgr.render(self._system_prompt)),
                     Message(role="user", content=user),
                 ],
                 stateless=True,
@@ -213,5 +222,43 @@ def build_judge(gate: GateSettings, sessions: SessionManager) -> Judge | None:
             max_new_tokens=gate.max_new_tokens,
             temperature=gate.temperature,
             timeout_s=gate.timeout_ms / 1000,
+        )
+    return None
+
+
+def build_ooc_judge(
+    gate: GateSettings, ooc: OOCJudgeSettings, sessions: SessionManager
+) -> Judge | None:
+    """按配置造出戏审查裁判（与门控共用后端选择，零第二套基础设施）。
+
+    出戏审查的问题组不同（ooc_judge.build_ooc_questions）、state 不同，
+    但 Judge 协议一样——LocalJudge 换提示词/owner 即可，TypeSafeJudge 原样复用
+    （system_one 本来就是「任意 state + 任意 questions」）。
+
+    Args:
+        gate: 门控配置（judge 字段决定后端；ooc.enabled=False 时直接返回 None）
+        ooc: 出戏审查配置
+        sessions: 会话管理器（local 后端用）
+
+    Returns:
+        Judge | None: 裁判实例；未启用 / judge=none 时 None（回退旧单点 audit）
+    """
+    if not ooc.enabled:
+        return None
+    if gate.judge == "typesafe":
+        return TypeSafeJudge(
+            api_key=gate.typesafe_api_key,
+            model=gate.typesafe_model,
+            timeout_ms=ooc.timeout_ms,
+        )
+    if gate.judge == "local":
+        return LocalJudge(
+            sessions,
+            max_new_tokens=ooc.max_new_tokens,
+            temperature=ooc.temperature,
+            timeout_s=ooc.timeout_ms / 1000,
+            owner="brain.ooc",
+            system_prompt="ooc.judge.system",
+            user_prompt="ooc.judge.user",
         )
     return None

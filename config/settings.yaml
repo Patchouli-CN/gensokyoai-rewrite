@@ -1,8 +1,8 @@
 # GensokyoAI 配置文件
 #
 # 注意：键名必须与 GensokyoConfig 的字段名一致（default_model / brain / responder /
-# ooc / memorizer / resource / gate）。此前这里写的是 `model:`，与字段名
-# `default_model` 不匹配，msgspec 会静默忽略未知键 —— 等于什么都没配。
+# ooc / memorizer / resource / gate / ooc_judge / style）。此前这里写的是 `model:`，
+# 与字段名 `default_model` 不匹配，msgspec 会静默忽略未知键 —— 等于什么都没配。
 default_model:
   provider: "llama_cpp"
   base_url: "http://127.0.0.1:8080/v1"
@@ -47,3 +47,27 @@ gate:
   timeout_ms: 60000       # 本地模型单次要 10~25s；用真 jev（云端快）可调回 5000
   route_by_model: true    # 档位由裁判的 needs_deep 说了算（规则路由做兜底）
   deep_cuts: [0.3, 0.6, 0.85]   # 进 MID / HIGH / MAX 的切点
+
+# jev 化出戏审查（core/brain/ooc_judge.py）：一次裁判调用四问概率 +
+# 应用层接受规则。state 带诱发消息（旧 audit 看不到，冷面接梗会被误判）；
+# side_chain=异步记账不阻塞（默认）；blocking=最终缓冲区审查通过才放行。
+# 概率未校准过——阈值先用实录回放测误报率，再决定要不要上 blocking。
+ooc_judge:
+  enabled: true
+  mode: "side_chain"
+  max_new_tokens: 192     # local 裁判输出预算（四个概率 + 题名）
+  temperature: 0.2
+  timeout_ms: 60000       # 本地模型单次 10~25s
+  unsafe_threshold: 0.5       # contains_unsafe 超线一票否决（泄提示词/隐私/危险引导）
+  instruction_threshold: 0.6  # follows_embedded_instruction 超线 = 「大概率在服从注入」
+  voice_threshold: 0.6        # breaks_voice 超线 = 「大概率丢了角色口吻」
+  plausible_low: 0.35         # plausible_as_character 低于它 = 判 revise（不是角色会说出口的话）
+  plausible_high: 0.6         # 模糊带（0.35~0.6）= flag 黄色预警，记录不阻断
+
+# 文风防复读（治小模型重复自己的模板/口头禅；20 轮实录照出 88% 骨架复用）：
+# dedup_endings——同一收尾近期用够次数就剥掉（ported qqbot「不复读结尾」规则）；
+# similarity_retry——相邻轮相似度过阈值触发一次纠偏重写（0 关闭）。
+style:
+  dedup_endings: true
+  ending_window: 6
+  similarity_retry: 0.75

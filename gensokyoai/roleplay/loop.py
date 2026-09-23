@@ -3,7 +3,9 @@
 import asyncio
 import contextlib
 import random
+import re
 import time
+from collections import deque
 from pathlib import Path
 
 from ..core.brain.engine import BrainEngine, route
@@ -15,8 +17,9 @@ from ..core.brain.gate import (
     tier_from_deep_score,
 )
 from ..core.brain.ooc_detector import OOCDetector
+from ..core.brain.ooc_judge import audit_with_judge
 from ..core.brain.pipeline import ThinkPipeline
-from ..core.config import GateSettings
+from ..core.config import GateSettings, OOCJudgeSettings, StyleSettings
 from ..core.event_bus import EventBus
 from ..core.health import HealthMonitor
 from ..core.lifecycle import LifecycleManager
@@ -24,6 +27,15 @@ from ..core.memorizer.compressor import Compressor
 from ..core.memorizer.manager import MemoryManager
 from ..core.persistence import JsonFilePersistence, PersistenceBackend
 from ..core.registry import ToolRegistry
+from ..core.responder.anti_parrot import (
+    PARROT_REASON,
+    avoid_hint,
+    ending_key,
+    should_retry,
+    should_strip_ending,
+    similarity,
+    strip_ending,
+)
 from ..core.responder.generator import Responder
 from ..core.session_manager import SessionManager
 from ..eyes.perceiver import Perceiver
@@ -43,6 +55,38 @@ from .persistence import CharacterStateCodec, SessionPersister
 from .trace import ReasoningTrace
 
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
+
+_SUSPICIOUS_BARE = re.compile(r"^[0-9+\-*/().=\s]+$")
+""" 纯数字/符号短回复：疑似被用户消息夹带的指令带跑（也可能是冷面接梗——
+    只标记不阻断，定夺交给带上下文的 jev 出戏审查）"""
+
+_INJECTION_PATTERNS = re.compile(
+    r"(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+"
+    r"(?:instructions?|prompts?|rules?)"
+    r"|you\s+are\s+now\b"
+    r"|(?:从现在开始|此刻起)你(?:是|变成|充当)"
+    r"|无视.{0,10}(?:指令|设定|指示|提示词)"
+    r"|(?:repeat|print|show|reveal|输出|打印|重复|显示).{0,24}"
+    r"(?:system\s*prompt|提示词|系统指令)",
+    re.IGNORECASE,
+)
+""" 提示注入句型（指令改写 / 泄题）。命中只抬思考档位，不改文案——
+    误报代价仅一回合延迟，漏报代价是人设被带跑 """
+
+_EFFORT_ORDER = {
+    BrainThinkEffort.NONE: 0,
+    BrainThinkEffort.LOW: 1,
+    BrainThinkEffort.MID: 2,
+    BrainThinkEffort.HIGH: 3,
+    BrainThinkEffort.MAX: 4,
+}
+""" 档位全序（抬下限/比较用）"""
+
+
+def _effort_order(effort: BrainThinkEffort) -> int:
+    """档位的全序号。"""
+    return _EFFORT_ORDER[effort]
+
 
 _STALL_EFFORTS = {BrainThinkEffort.HIGH, BrainThinkEffort.MAX}
 """ 值得垫过渡语的档位：多轮接力思考，延迟肉眼可见 """
@@ -137,6 +181,9 @@ class TouhouWorld:
         stall_min_interval: float = 180.0,
         ooc_retry: bool = True,
         ooc_audit: bool = True,
+        ooc_judge: Judge | None = None,
+        ooc_judge_settings: OOCJudgeSettings | None = None,
+        style: StyleSettings | None = None,
         trace_steps: bool = True,
         tool_timeout: float = 10.0,
         tool_max_result_chars: int = 2000,
@@ -162,7 +209,10 @@ class TouhouWorld:
             stall_cooldown_turns: 两次过渡语之间的最小回合间隔
             stall_min_interval: 两次过渡语之间的最小时间间隔（秒）
             ooc_retry: 最终回复命中 OOC 规则时是否花一次纠偏重生成
-            ooc_audit: 是否在回复发出后跑异步 OOC 深审（不阻塞热路径）
+            ooc_audit: 是否在回复发出后跑异步 OOC 审查（不阻塞热路径）
+            ooc_judge: 出戏审查裁判（jev 化多问概率；None 回退旧单点 audit）
+            ooc_judge_settings: jev 化出戏审配置（阈值/预算；None = 默认）
+            style: 文风防复读配置（None = StyleSettings() 默认）
             session_id: 会话标识，记忆与会话快照按它隔离（多群/多用户各自一个 id）
             storage_dir: 持久化根目录
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
@@ -246,6 +296,15 @@ class TouhouWorld:
         self._stall_min_interval = stall_min_interval
         self._ooc_retry = ooc_retry
         self._ooc_audit = ooc_audit
+        self._ooc_judge = ooc_judge
+        """ jev 化出戏审查裁判（与门控共用 Judge 协议；None = 回退旧单点 audit） """
+        self._ooc_judge_cfg = ooc_judge_settings or OOCJudgeSettings()
+        self._style = style or StyleSettings()
+        """ 文风防复读配置 """
+        self._last_reply = ""
+        """ 上一轮回复原文（防复读提示/相似度检测的比对基准） """
+        self._recent_endings: deque[str] = deque(maxlen=self._style.ending_window)
+        """ 近期收尾指纹窗口（ported qqbot「不复读结尾」规则） """
         self._shutdown_drain_timeout = shutdown_drain_timeout
         """ 关闭时等后台侧链收尾的秒数 """
 
@@ -412,6 +471,7 @@ class TouhouWorld:
                     effort = self._apply_effort_floor(
                         judged if judged is not None else route(snapshot)
                     )
+                    effort = self._apply_injection_floor(snapshot, effort)
                     await self._maybe_stall(snapshot, effort, turn)
                     conclusion = await self.brain.think(snapshot, memories, effort)
 
@@ -428,7 +488,8 @@ class TouhouWorld:
                         turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
                     )
                 if self._ooc_audit:
-                    self._tasks.spawn(self._audit_reply(reply), name="ooc-audit")
+                    # 传 snapshot：jev 化审查需要诱发消息当上下文（旧 audit 只用 reply）
+                    self._tasks.spawn(self._audit_reply(snapshot, reply), name="ooc-audit")
 
                 # 6. 角色状态跟踪 + 健康喂食
                 if conclusion.emotion:
@@ -643,14 +704,38 @@ class TouhouWorld:
         """把路由结果抬到干预设定的档位下限（无下限时原样返回）。"""
         if self._effort_floor is None:
             return effort
-        order = {
-            BrainThinkEffort.NONE: 0,
-            BrainThinkEffort.LOW: 1,
-            BrainThinkEffort.MID: 2,
-            BrainThinkEffort.HIGH: 3,
-            BrainThinkEffort.MAX: 4,
-        }
-        return effort if order[effort] >= order[self._effort_floor] else self._effort_floor
+        return (
+            effort
+            if _effort_order(effort) >= _effort_order(self._effort_floor)
+            else self._effort_floor
+        )
+
+    def _apply_injection_floor(
+        self, snapshot: SceneSnapshot, effort: BrainThinkEffort
+    ) -> BrainThinkEffort:
+        """入口注入识别：命中「指令改写 / 泄题」句型时，该回合档位下限抬到 MID。
+
+        依据 20 轮真机实录：OOC 注入回合裁判判了 low、Responder 被用户消息里的
+        直接指令（"Output only numbers"）带跑——Brain 其实看穿了（draft 在角色里），
+        但拿到的思考深度不够硬。这里只抬档、不改文案（行为闸，不是审查闸）；
+        出戏本身的定夺在口层 jev 审查。
+
+        Args:
+            snapshot: 本回合场景快照（看诱发消息）
+            effort: 当前档位
+
+        Returns:
+            BrainThinkEffort: 可能被抬高的档位
+        """
+        if not _INJECTION_PATTERNS.search(snapshot.content):
+            return effort
+        floor = BrainThinkEffort.MID
+        if _effort_order(effort) >= _effort_order(floor):
+            return effort
+        self.logger.warning(
+            f"入口注入识别: 档位下限抬到 {floor.value} :: {snapshot.content[:60]!r}"
+        )
+        return floor
 
     def _should_stall(self, effort: BrainThinkEffort, turn: int) -> bool:
         """是否值得垫过渡语：仅深思考档、非开局、出了冷却期、再掷中概率。
@@ -698,36 +783,48 @@ class TouhouWorld:
     async def _express(self, snapshot, conclusion, memories, *, ooc_guard: bool = True) -> str:
         """表达 + 投递的统一入口：口层支持流式则逐块显示，否则缓冲投递。
 
-        主循环与主动发言共用；主动发言传 `ooc_guard=False`（本来就不做守门）。
+        主循环与主动发言共用；主动发言传 `ooc_guard=False`（不做硬规则守门，
+        但防复读与可疑标记照跑——它也是「说话」）。
 
         Args:
             snapshot: 场景快照
             conclusion: Brain 结论（主动发言为 pass_through 规则结论）
             memories: 检索到的记忆
-            ooc_guard: 缓冲路径是否做 OOC 预审（流式路径恒不做，靠后置深审兜底）
+            ooc_guard: 缓冲路径是否做 OOC 硬规则守门（流式路径恒不做，
+                靠后置 jev 审查兜底——已投递的文本撤不回，重在记录与干预）
 
         Returns:
-            str: 完整回复文本（供记忆落盘 / 后置深审）
+            str: 完整回复文本（供记忆落盘 / 后置审查）
         """
+        # 防复读预防性提示：两条路径都生效（流式已投递无从改起，只能事前防）
+        avoid = self._parrot_avoid_hint()
         if self.mouth.supports_streaming:
-            return await self._deliver_stream(snapshot, conclusion, memories)
-        reply = await self.responder.respond(conclusion, snapshot, memories)
+            reply = await self._deliver_stream(snapshot, conclusion, memories, avoid=avoid)
+            await self._note_suspicious(reply)
+            self._note_reply_style(reply)
+            return reply
+        reply = await self.responder.respond(conclusion, snapshot, memories, avoid)
         if ooc_guard:
             reply = await self._guard_ooc(reply)
-        await self.mouth.send(self.character.name, strip_control_chars(reply))
+            reply = await self._guard_parrot(reply)
+        await self._note_suspicious(reply)
+        final = self._dedup_ending(reply)
+        await self.mouth.send(self.character.name, strip_control_chars(final))
         self._presence.record(from_bot=True)
-        return reply
+        self._note_reply_style(reply)
+        return final
 
-    async def _deliver_stream(self, snapshot, conclusion, memories) -> str:
+    async def _deliver_stream(self, snapshot, conclusion, memories, avoid: str = "") -> str:
         """流式投递最终回复：responder.respond_stream → mouth.begin/delta/end。
 
         逐块把回复文本送到可显示的平台（口层流式），并返回完整回复文本
-        （供记忆落盘 / 后置 OOC 深审 / 状态回写）。流式模式下跳过 OOC 预审。
+        （供记忆落盘 / 后置 jev 审查 / 状态回写）。流式模式下跳过 OOC 预审。
 
         Args:
             snapshot: 场景快照
             conclusion: Brain 结论
             memories: 检索到的记忆
+            avoid: 防复读提示（生成前注入；空串不注入）
 
         Returns:
             str: 完整回复文本（含情绪润色尾缀）
@@ -735,7 +832,7 @@ class TouhouWorld:
         await self.mouth.begin(self.character.name)
         parts: list[str] = []
         try:
-            async for delta in self.responder.respond_stream(conclusion, snapshot, memories):
+            async for delta in self.responder.respond_stream(conclusion, snapshot, memories, avoid):
                 parts.append(delta)
                 if delta:
                     await self.mouth.delta(strip_control_chars(delta))
@@ -747,6 +844,74 @@ class TouhouWorld:
         self._presence.record(from_bot=True)
         self.logger.info(f"流式投递完成: {len(reply)}字")
         return reply
+
+    def _parrot_avoid_hint(self) -> str:
+        """防复读预防性提示（responder.user 的 [自我克制] 段）。
+
+        Returns:
+            str: 提示文本；上一轮无发言且无重复收尾时为空串（不注入）
+        """
+        return avoid_hint(self._last_reply, self._recent_endings)
+
+    async def _guard_parrot(self, reply: str) -> str:
+        """相邻轮相似度过阈值 -> 一次防复读纠偏重写（缓冲路径）。
+
+        流式路径文本已在投递中、无从改起，只做事前提示（见 _parrot_avoid_hint）；
+        这里兜底覆盖缓冲投递（CLI / 非流式口层）。
+
+        Args:
+            reply: 本轮新生成的回复
+
+        Returns:
+            str: 守门后的回复（重写更优返回新文本，否则原样）
+        """
+        if not should_retry(reply, self._last_reply, self._style.similarity_retry):
+            return reply
+        ratio = similarity(reply, self._last_reply)
+        self.logger.warning(f"防复读守门: 与上轮相似度 {ratio:.0%} 超阈值，发起一次重写")
+        try:
+            rewritten = await self.responder.correct(reply, PARROT_REASON)
+        except Exception:
+            self.logger.exception("防复读重写失败，保留原句")
+            return reply
+        if rewritten and similarity(rewritten, self._last_reply) < ratio:
+            return rewritten
+        self.logger.info("防复读重写后仍高于原相似度，保留原句")
+        return reply
+
+    def _dedup_ending(self, reply: str) -> str:
+        """收尾去重（ported qqbot「不复读结尾」规则）：同一收尾在近期窗口
+        已出现 ≥2 次就剥掉它。确定性规则，零 token；一句话的回复不剥。"""
+        if not self._style.dedup_endings:
+            return reply
+        if should_strip_ending(reply, list(self._recent_endings)):
+            stripped = strip_ending(reply)
+            if stripped:
+                self.logger.info(f"收尾去重: 剥掉反复使用的收尾 {ending_key(reply)!r}")
+                return stripped
+        return reply
+
+    def _note_reply_style(self, reply: str) -> None:
+        """更新防复读状态：比对基准 + 收尾指纹窗口（记原始收尾——倾向追踪，
+        模型想用什么梗是它的本能，剥不剥是我们的事）。"""
+        self._last_reply = reply
+        if self._style.dedup_endings:
+            self._recent_endings.append(ending_key(reply))
+
+    async def _note_suspicious(self, reply: str) -> None:
+        """零成本启发式：纯数字/符号超短回复 = 疑似被用户消息里夹带的指令带跑
+        （20 轮实录的 OOC 注入就是回了个「4」）。
+
+        **只标记不阻断**：这也可能是合法的冷面接梗，自动纠偏会误杀——
+        定夺交给带上下文的 jev 出戏审查（blocking 模式下才可能在出口拦下）。
+        """
+        core = reply.strip()
+        if not core or len(core) > 10 or not _SUSPICIOUS_BARE.match(core):
+            return
+        flags = int(self.character.status.extra.get("ooc_suspicious", 0)) + 1
+        self.character.status.update(ooc_suspicious=flags)
+        await self.health.record_metric("ooc.suspicious", 1.0, unit="次")
+        self.logger.warning(f"疑似被注入带跑的短回复（已标记，待 jev 审查定夺）: {reply!r}")
 
     async def _guard_ooc(self, reply: str) -> str:
         """最终回复的 OOC 规则守门：零成本快筛，命中才花一次纠偏重生成。
@@ -775,15 +940,71 @@ class TouhouWorld:
         self.logger.error(f"纠偏后仍命中 OOC，原样输出: {corrected[:60]!r}")
         return reply
 
-    async def _audit_reply(self, reply: str) -> None:
-        """后置 OOC 深审（异步侧链，不阻塞回复）。
+    async def _audit_reply(self, snapshot: SceneSnapshot, reply: str) -> None:
+        """后置出戏审查（异步侧链，不阻塞回复）。
 
-        审计结论不撤回已发出的文本，只回写角色状态与 ooc.rate 健康指标
-        （滚动出戏率超过阈值 0.5 时 HealthMonitor 自动告警）。
+        两条路径：
+        - **jev 化**（`ooc_judge` 可用且 enabled）：多问概率 + 接受规则，
+          state 带**诱发消息**——「服从了指令的形式」与「丢了角色的魂」
+          分开打分，冷面接梗不再被一刀切判死（20 轮真机实录照出的旧盲区）；
+        - 旧单点 audit（无裁判时的降级）：JSON 布尔判定，只看人设+回复。
+
+        两条路径都**不撤回已发出的文本**（流式已投递，撤不回），只回写角色
+        状态与健康指标（`ooc.rate` 超阈值时 HealthMonitor 自动抬高推理档位）。
 
         Args:
+            snapshot: 本回合场景快照（取诱发消息进审查 state）
             reply: 已发出的最终回复
         """
+        if self._ooc_judge is not None and self._ooc_judge_cfg.enabled:
+            await self._audit_reply_jev(snapshot, reply)
+            return
+        await self._audit_reply_legacy(reply)
+
+    async def _audit_reply_jev(self, snapshot: SceneSnapshot, reply: str) -> None:
+        """jev 化出戏审查侧链：多问概率 -> 三档结论 -> 记账/干预。"""
+        judge = self._ooc_judge
+        if judge is None:
+            return
+        gen = self._generation
+        try:
+            recent = await self.memory.recent(5)
+            check = await audit_with_judge(
+                judge,
+                persona=self._persona_brief,
+                new_message=snapshot.content,
+                reply=reply,
+                recent=[m.content for m in reversed(recent)],
+                bot_name=self.character.name,
+                settings=self._ooc_judge_cfg,
+            )
+        except Exception:
+            self.logger.exception("jev 出戏审查失败（不影响主链路）")
+            return
+        if gen != self._generation:
+            return
+        audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
+        hits = int(self.character.status.extra.get("ooc_hits", 0)) + (
+            1 if check.decision == "revise" else 0
+        )
+        flags = int(self.character.status.extra.get("ooc_flags", 0)) + (
+            1 if check.decision == "flag" else 0
+        )
+        self.character.status.update(ooc_audited=audited, ooc_hits=hits, ooc_flags=flags)
+        await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
+        if check.decision == "revise":
+            self.logger.warning(
+                f"jev 出戏审查 revise（已记账，文本不撤回）: {check.reason} | {check.answers}"
+            )
+        elif check.decision == "flag":
+            self.logger.info(f"jev 出戏审查 flag: {check.reason} | {check.answers}")
+        if check.decision != "revise" and self._effort_floor is not None:
+            # 审查恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
+            self._effort_floor = None
+            self.logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
+
+    async def _audit_reply_legacy(self, reply: str) -> None:
+        """旧单点 OOC 深审（无 jev 裁判时的降级路径；只看人设+回复，无诱发消息）。"""
         gen = self._generation
         try:
             verdict = await self.ooc.audit(reply, self.character.prompt)

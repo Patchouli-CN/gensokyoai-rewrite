@@ -19,7 +19,7 @@ import sys
 from aiohttp import WSMsgType, web
 
 from ...app import DEFAULT_CONFIG, build_session_and_character, resolve_resource
-from ...core.brain.judge import build_judge
+from ...core.brain.judge import build_judge, build_ooc_judge
 from ...core.config import load_config
 from ...core.resource import IngressLimiter
 from ...roleplay.hub import ChannelHub
@@ -210,8 +210,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         config = load_config(args.config or resolve_resource(DEFAULT_CONFIG))
         judge = build_judge(config.gate, sessions)
+        ooc_judge = build_ooc_judge(config.gate, config.ooc_judge, sessions)
         if config.gate.enabled:
             _logger.info(f"发言门控 on | 裁判: {type(judge).__name__ if judge else '无（纯规则）'}")
+        if ooc_judge is not None:
+            mode_text = config.ooc_judge.mode
+            _logger.info(f"jev 化出戏审查 on（{mode_text}）| 裁判: {type(ooc_judge).__name__}")
     except FileNotFoundError as err:
         print(f"启动失败: {err}", file=sys.stderr)
         return 2
@@ -220,7 +224,13 @@ def main(argv: list[str] | None = None) -> int:
         sessions=sessions,
         character=character,
         idle_ttl=args.idle_ttl,
-        world_kwargs={"judge": judge, "gate": config.gate},
+        world_kwargs={
+            "judge": judge,
+            "gate": config.gate,
+            "ooc_judge": ooc_judge,
+            "ooc_judge_settings": config.ooc_judge,
+            "style": config.style,
+        },
     )
     logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")
     try:

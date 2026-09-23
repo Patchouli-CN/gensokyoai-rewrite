@@ -109,3 +109,19 @@ class OOCVerdict(msgspec.Struct, frozen=True):
     """ 判定理由 """
     suggested_rewrite: str | None = None
     """ 建议的改写文本 """
+
+
+OOCDecision = Literal["accept", "revise", "flag"]
+""" jev 化出戏审查的三档结论：
+accept=放行 | revise=建议纠偏重生成 | flag=黄色预警（记录但不阻断） """
+
+
+class OOCCheck(msgspec.Struct, frozen=True):
+    """jev 化出戏审查结论（多问概率 + 应用层接受规则的产物）"""
+
+    decision: OOCDecision = "accept"
+    """ 三档结论 """
+    answers: dict[str, float] = {}
+    """ 各问题的 yes 概率（落盘便于阈值校准） """
+    reason: str = ""
+    """ 人类可读的判定理由 """

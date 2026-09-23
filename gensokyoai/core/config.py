@@ -11,7 +11,14 @@ import yaml
 
 from ..schemas.model_schema import ModelConfig
 
-__all__ = ["GensokyoConfig", "ModelConfig", "ResourceSettings", "load_config"]
+__all__ = [
+    "GensokyoConfig",
+    "ModelConfig",
+    "OOCJudgeSettings",
+    "ResourceSettings",
+    "StyleSettings",
+    "load_config",
+]
 
 
 class ResourceSettings(msgspec.Struct, frozen=True):
@@ -71,6 +78,55 @@ class GateSettings(msgspec.Struct, frozen=True):
     """ 活跃度统计窗口秒数（对齐 qqbot 的 5 分钟） """
 
 
+class StyleSettings(msgspec.Struct, frozen=True):
+    """文风防复读配置（治小模型「重复自己的模板/口头禅」）
+
+    20 轮真机实录照出的问题：相邻两轮回复相似度 88%（换句话输入也吐同骨架）、
+    同一个收尾梗（「来，张嘴——啊～」）连用 6 次。两项防御都是零/低成本：
+    预防性提示（生成前告知避开）+ 兜底重写（相似度过阈值触发一次纠偏）。
+    """
+
+    dedup_endings: bool = True
+    """ 收尾去重（ported qqbot「不复读结尾」规则）：同一收尾在最近窗口用了
+        够多次就剥掉它，确定性规则零 token """
+    ending_window: int = 6
+    """ 收尾去重的回看窗口（最近几条自己的回复） """
+    similarity_retry: float = 0.75
+    """ 相邻轮回复相似度达到该值触发一次防复读重写；0 = 关闭。
+        阈值参考：实录中骨架复用 88%、正常 callback 复用 <40% """
+
+
+class OOCJudgeSettings(msgspec.Struct, frozen=True):
+    """jev 化出戏审查配置（见 core/brain/ooc_judge.py）
+
+    与旧 audit（单点布尔 JSON）的区别：state 带**诱发消息**，多问概率 +
+    应用层接受规则——「服从了用户夹带指令」和「丢了角色口吻」分开打分，
+    冷面接梗（形服从、魂没丢）不再被一刀切判死。
+    """
+
+    enabled: bool = False
+    """ 是否启用 jev 化审计（关闭时回退旧单点 audit） """
+    mode: str = "side_chain"
+    """ side_chain=异步侧链不阻塞（默认， cheapest）；
+        blocking=回复进最终缓冲区，审查通过才放行（治本但每回合加一次调用） """
+    max_new_tokens: int = 192
+    """ local 裁判输出预算（四个概率 + 题名） """
+    temperature: float = 0.2
+    """ local 裁判采样温度（低温求稳） """
+    timeout_ms: int = 60000
+    """ 单次审查调用超时（本地模型一次 10~25s） """
+    unsafe_threshold: float = 0.5
+    """ contains_unsafe 超过即一票否决（泄提示词/隐私/危险引导） """
+    instruction_threshold: float = 0.6
+    """ follows_embedded_instruction 超过即「大概率在服从注入指令」 """
+    voice_threshold: float = 0.6
+    """ breaks_voice 超过即「大概率丢了角色口吻」 """
+    plausible_low: float = 0.35
+    """ plausible_as_character 低于该值：直接判 revise（大概率不是角色会说出口的话） """
+    plausible_high: float = 0.6
+    """ plausible_as_character 低于该值（但不低于 plausible_low）：模糊带，标记 flag """
+
+
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """顶层配置"""
 
@@ -91,6 +147,12 @@ class GensokyoConfig(msgspec.Struct, frozen=True):
 
     gate: GateSettings = GateSettings()
     """ 发言门控配置 """
+
+    ooc_judge: OOCJudgeSettings = OOCJudgeSettings()
+    """ jev 化出戏审查配置 """
+
+    style: StyleSettings = StyleSettings()
+    """ 文风防复读配置 """
 
     resource: ResourceSettings = ResourceSettings()
     """ 资源闸门 / 限流配置 """
