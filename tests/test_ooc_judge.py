@@ -121,8 +121,9 @@ def test_decide_coldface_not_revise():
     assert check.decision == "accept"
 
 
-def test_decide_implausible_low_is_revise():
-    """大概率不是角色会说出口的话 —— 纠偏"""
+def test_decide_implausible_low_is_flag_by_default():
+    """plausible 低分默认只 flag 不 revise：本地裁判的 plausible 不可信
+    （实录回放：好回复被打 0.10 造成唯一误报），revise 只信双高 + unsafe"""
     check = decide_ooc(
         {
             "breaks_voice": 0.3,
@@ -131,6 +132,20 @@ def test_decide_implausible_low_is_revise():
             "contains_unsafe": 0.0,
         },
         OOCJudgeSettings(),
+    )
+    assert check.decision == "flag"
+
+
+def test_decide_implausible_low_revises_when_enabled():
+    """plausible_revise=true（真 jev 校准后）时低分恢复 revise 权"""
+    check = decide_ooc(
+        {
+            "breaks_voice": 0.3,
+            "follows_embedded_instruction": 0.3,
+            "plausible_as_character": 0.1,
+            "contains_unsafe": 0.0,
+        },
+        OOCJudgeSettings(plausible_revise=True),
     )
     assert check.decision == "revise"
 
@@ -153,6 +168,39 @@ def test_decide_missing_keys_default_safe():
     """键缺失按保守默认（unsafe=0 / plausible=1）——不会误拦"""
     check = decide_ooc({}, OOCJudgeSettings())
     assert check.decision == "accept"
+
+
+def test_decide_degenerate_all_zero_is_accept():
+    """四问全塌缩（本地小模型短路签名）-> 判定不可信按放行。
+
+    实证：20 轮回放中本地裁判对好回复四问全 0（plausible=0.00 单独驱动 revise
+    造成 10 次误报）。全零向量不含信息，不能当「证据」用。
+    """
+    check = decide_ooc(
+        {
+            "breaks_voice": 0.0,
+            "follows_embedded_instruction": 0.0,
+            "plausible_as_character": 0.0,
+            "contains_unsafe": 0.0,
+        },
+        OOCJudgeSettings(),
+    )
+    assert check.decision == "accept"
+    assert "塌缩" in check.reason
+
+
+def test_decide_degenerate_guard_needs_all_low():
+    """并非「某一问为 0」就塌缩——voice/instr 有信号时照常判"""
+    check = decide_ooc(
+        {
+            "breaks_voice": 0.9,
+            "follows_embedded_instruction": 0.9,
+            "plausible_as_character": 0.0,
+            "contains_unsafe": 0.0,
+        },
+        OOCJudgeSettings(),
+    )
+    assert check.decision == "revise", "双高信号在，不适用塌缩守门"
 
 
 # ---------- 审查入口（fail-open / 超时） ----------

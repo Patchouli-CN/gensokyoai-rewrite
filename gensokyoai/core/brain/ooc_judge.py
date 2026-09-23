@@ -95,14 +95,41 @@ def build_ooc_questions(bot_name: str) -> dict[str, Question]:
     }
 
 
+_DEGENERATE_MAX = 0.05
+""" 四问概率全低于该值 = 塌缩（裁判短路，判定不可信）"""
+
+
+def _is_degenerate(answers: dict[str, float]) -> bool:
+    """四问概率是否全塌缩（本地小模型对复杂多问短路的签名）。
+
+    20 轮实录回放（temp/replay_ooc.py）照出的实证：本地裁判要么给出合理值
+    （plausible 0.8~0.95），要么四问**全给 0.00**——后者 10/11 次都是完全在
+    角色里的好回复。全零向量不含任何信息（真实「不可能」通常会伴随
+    breaks_voice>0），整组判定应按不可信丢弃，而不是让某个零值单独驱动
+    revise。云端 jev / 校准过的裁判不受此规则影响（不会四问全 <0.05）。
+    """
+    return all(
+        answers.get(name, 0.0) < _DEGENERATE_MAX
+        for name in (
+            "breaks_voice",
+            "follows_embedded_instruction",
+            "plausible_as_character",
+            "contains_unsafe",
+        )
+    )
+
+
 def decide_ooc(answers: dict[str, float], settings: OOCJudgeSettings) -> OOCCheck:
     """接受规则：多问概率 -> 三档结论（accept / revise / flag）。
 
     规则设计（按误报代价排序）：
+    0. 概率全塌缩 -> 判定不可信，accept（本地小模型多问短路的实证守门）；
     1. `contains_unsafe` 高一票否决（泄提示词/隐私/危险引导，零容忍）；
     2. `breaks_voice` 高且 `follows_embedded_instruction` 高 = 双高：
        既丢了魂又服从了形 —— 注入得逞的标准形态，纠偏；
-    3. `plausible_as_character` 低于低线：大概率不是角色会说出口的话，纠偏；
+    3. `plausible_as_character` 低于低线**且 plausible_revise 开启**：纠偏。
+       默认关：实录回放照出本地裁判的 plausible 不可信（好回复被打 0.10
+       造成唯一误报），revise 只信双高 + unsafe 两个被实录验证的信号；
     4. `plausible_as_character` 落在模糊带：黄色预警，记录但不阻断
        （宁可漏判，不误杀冷面演绎——误杀比漏判更伤 RP 体验）；
     5. 仅 `follows_embedded_instruction` 高（形服从、魂没丢）：**放行**——
@@ -115,12 +142,17 @@ def decide_ooc(answers: dict[str, float], settings: OOCJudgeSettings) -> OOCChec
     Returns:
         OOCCheck: 结论（含原始概率，供阈值校准回放）
     """
+    base = dict(answers)
+    if _is_degenerate(answers):
+        return OOCCheck(
+            decision="accept",
+            answers=base,
+            reason="四问概率全塌缩（裁判对该输入短路），判定不可信按放行",
+        )
     unsafe = answers.get("contains_unsafe", 0.0)
     instruction = answers.get("follows_embedded_instruction", 0.0)
     voice = answers.get("breaks_voice", 0.0)
     plausible = answers.get("plausible_as_character", 1.0)
-
-    base = dict(answers)
 
     if unsafe > settings.unsafe_threshold:
         return OOCCheck(
@@ -138,7 +170,7 @@ def decide_ooc(answers: dict[str, float], settings: OOCJudgeSettings) -> OOCChec
                 "（既丢魂又服从形，注入得逞形态）"
             ),
         )
-    if plausible < settings.plausible_low:
+    if settings.plausible_revise and plausible < settings.plausible_low:
         return OOCCheck(
             decision="revise",
             answers=base,

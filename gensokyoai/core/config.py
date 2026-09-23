@@ -122,9 +122,15 @@ class OOCJudgeSettings(msgspec.Struct, frozen=True):
     voice_threshold: float = 0.6
     """ breaks_voice 超过即「大概率丢了角色口吻」 """
     plausible_low: float = 0.35
-    """ plausible_as_character 低于该值：直接判 revise（大概率不是角色会说出口的话） """
+    """ plausible_as_character 低于该值 = 判 revise（不是角色会说出口的话）——
+        **仅在 plausible_revise=true 时生效** """
     plausible_high: float = 0.6
-    """ plausible_as_character 低于该值（但不低于 plausible_low）：模糊带，标记 flag """
+    """ plausible_as_character 低于该值（但不低于 plausible_low）= flag 黄色预警 """
+    plausible_revise: bool = False
+    """ plausible 低分是否参与 revise。默认关闭：20 轮实录回放照出本地裁判的
+        plausible 不可信——好回复被打 0.10（非塌缩值的随机低分）造成误报；
+         revise 只信双高 + unsafe 两个在实录中被验证的信号。用真 jev 并重新
+        校准后可打开 """
 
 
 class GensokyoConfig(msgspec.Struct, frozen=True):
