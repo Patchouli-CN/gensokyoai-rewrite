@@ -84,3 +84,12 @@ embedding:
   model: "bge-small-zh"
   timeout: 30.0
   min_score: 0.35    # 语义检索相似度下限：实测相关命中 ~0.37、噪声 ~0.30，取中间
+
+# 联网工具（web_search / fetch_url）资料策略：可靠站优先、泛搜索兜底。
+# 站点表会拼进脑内【可用工具】块，告诉模型查领域知识先 fetch_url 抓这些站
+# （thbwiki 支持 MediaWiki API：api.php?action=query&list=search 可直接搜词条），
+# 查不到再 web_search。注意 DDG 的 safesearch 对中文垃圾站过滤力弱。
+search:
+  knowledge_sites:
+    - site: thbwiki.cc
+      desc: 东方 Project 中文维基——角色设定、符卡、剧情考据都可查；支持 MediaWiki API（api.php?action=query&list=search 搜词条）

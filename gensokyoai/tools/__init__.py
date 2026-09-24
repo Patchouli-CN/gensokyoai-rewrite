@@ -10,10 +10,14 @@ from .builtin import (
     get_current_time,
     get_moon_phase,
 )
+from .fetch_url import fetch_url
+from .web_search import web_search
 
 __all__ = [
     "days_until",
+    "fetch_url",
     "get_current_dateinfo",
     "get_current_time",
     "get_moon_phase",
+    "web_search",
 ]

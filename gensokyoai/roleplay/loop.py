@@ -8,7 +8,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from ..core.brain.engine import BrainEngine, route
+from ..core.brain.engine import BrainEngine, build_tool_directive, route
 from ..core.brain.gate import (
     GateDecision,
     Judge,
@@ -19,7 +19,7 @@ from ..core.brain.gate import (
 from ..core.brain.ooc_detector import OOCDetector
 from ..core.brain.ooc_judge import audit_with_judge
 from ..core.brain.pipeline import ThinkPipeline
-from ..core.config import GateSettings, OOCJudgeSettings, StyleSettings
+from ..core.config import GateSettings, OOCJudgeSettings, SearchSettings, StyleSettings
 from ..core.event_bus import EventBus
 from ..core.health import HealthMonitor
 from ..core.lifecycle import LifecycleManager
@@ -185,6 +185,7 @@ class TouhouWorld:
         ooc_judge: Judge | None = None,
         ooc_judge_settings: OOCJudgeSettings | None = None,
         style: StyleSettings | None = None,
+        search: SearchSettings | None = None,
         trace_steps: bool = True,
         tool_timeout: float = 10.0,
         tool_max_result_chars: int = 2000,
@@ -216,6 +217,7 @@ class TouhouWorld:
             ooc_judge: 出戏审查裁判（jev 化多问概率；None 回退旧单点 audit）
             ooc_judge_settings: jev 化出戏审配置（阈值/预算；None = 默认）
             style: 文风防复读配置（None = StyleSettings() 默认）
+            search: 联网工具配置（可信知识站表 -> 脑内工具指令；None = 无指令）
             session_id: 会话标识，记忆与会话快照按它隔离（多群/多用户各自一个 id）
             storage_dir: 持久化根目录
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
@@ -282,6 +284,7 @@ class TouhouWorld:
             tool_max_result_chars=tool_max_result_chars,
             pipeline=self._build_think_pipeline(),
             persona_brief=self._persona_brief,
+            tool_directive=build_tool_directive((search or SearchSettings()).knowledge_sites),
         )
 
         self.responder = Responder(sessions=self.sessions, persona=character.prompt)

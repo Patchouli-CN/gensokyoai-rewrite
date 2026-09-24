@@ -37,11 +37,15 @@ dev = [
     "mypy==2.1.0",
     "build==1.4.2",
     "hatchling==1.32.3",
+    # web_search 工具的依赖：测试全程打桩不联网，钉死保证 CI 行为一致
+    "ddgs==9.14.4",
 ]
 # 真 jev 后端（gate.judge=typesafe）：官方 TypeSafe Python SDK
 jev = [
-    "typesafe-sdk>=0.7.1",
-]
+    "typesafe-sdk>=0.7.1",]
+# web_search 内置工具（DuckDuckGo）：未安装时工具仍注册，调用返回友好提示
+search = [
+    "ddgs>=9.14.4",]
 
 [project.scripts]
 gensokyoai = "gensokyoai.app:main"

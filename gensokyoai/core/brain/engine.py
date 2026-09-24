@@ -9,6 +9,7 @@ from ...schemas.model_schema import Message, ToolCall, ToolSpec
 from ...schemas.scene_schema import SceneSnapshot
 from ...utils.logger import LoggerManager
 from ...utils.text import try_extract_json_object
+from ..config import KnowledgeSite
 from ..session_manager import SessionManager
 from ..toolkit import DEFAULT_MAX_RESULT_CHARS, DEFAULT_TIMEOUT, build_executor
 from .ooc_detector import OOCDetector
@@ -51,6 +52,24 @@ def route(snapshot: SceneSnapshot) -> BrainThinkEffort:
     return effort
 
 
+def build_tool_directive(sites: list[KnowledgeSite]) -> str:
+    """把可信知识站表拼成工具使用指令（空表 -> 空串，不污染提示词）。
+
+    Args:
+        sites: 可信知识站配置（config.search.knowledge_sites）
+
+    Returns:
+        str: 【可信知识站】指令块；无配置时为空串
+    """
+    lines = [f"- {s.site}：{s.desc}" if s.desc else f"- {s.site}" for s in sites if s.site]
+    if not lines:
+        return ""
+    return (
+        "【可信知识站】查角色/作品/设定等领域知识时，优先用 fetch_url 抓这些站点"
+        "（或它们的站内搜索/API），查不到再用 web_search 泛搜：\n" + "\n".join(lines)
+    )
+
+
 class BrainEngine:
     """大脑引擎。实现"接力思考"循环，显式控制推理深度。"""
 
@@ -64,6 +83,7 @@ class BrainEngine:
         tool_max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
         pipeline: ThinkPipeline | None = None,
         persona_brief: str = "",
+        tool_directive: str = "",
     ) -> None:
         self._logger = LoggerManager.get_logger("BRAIN")
         self._sessions = sessions
@@ -77,6 +97,8 @@ class BrainEngine:
         self._persona_brief = persona_brief or persona
         """ 人设摘要：给「想方向」的环节（门控 / 思考链步骤 / 结论）用；
             完整人设只留给开口的 Responder（那里一个字都省不得） """
+        self._tool_directive = tool_directive
+        """ 工具使用指令（如可信知识站表），拼进【可用工具】块尾部 """
 
     async def think(
         self,
@@ -160,6 +182,8 @@ class BrainEngine:
         tool_block = (
             "\n".join(f"- {tool.signature()}" for tool in self._tools) if self._tools else ""
         )
+        if self._tool_directive:
+            tool_block += f"\n{self._tool_directive}"
 
         base_messages = [
             Message(role="system", content=prompt_mgr.render("brain.think")),

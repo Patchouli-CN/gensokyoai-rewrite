@@ -8,3 +8,4 @@ numpy
 pytest
 pytest-asyncio
 aioconsole
+ddgs>=9.14.4     # web_search 内置工具（DuckDuckGo）

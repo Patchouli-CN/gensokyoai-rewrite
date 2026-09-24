@@ -9,6 +9,18 @@
 ## [Unreleased]
 
 ### 新增
+  - **`fetch_url` 内置工具（异步）**：aiohttp 原生异步抓取（不卡事件循环），
+    SSRF 门禁（`utils/url_security.py`：非 http/https、回环、私有网段、链路本地/
+    云元数据、内网域全拦；只做字面校验不解析 DNS），HTML 剥script/style/标签 +
+    4000 字截断。安全测试独立成 `tests/security/` 子包。
+  - **可信知识站策略（`search.knowledge_sites`）**：老项目「可靠站优先、泛搜兜底」
+    的配置化复刻——站点表拼进脑内【可用工具】块（`build_tool_directive` →
+    BrainEngine.tool_directive），引导模型查领域知识先 fetch_url 知识站，
+    查不到再 web_search；settings.yaml 默认配 thbwiki（含 MediaWiki API 提示）。
+  - **`web_search` 内置工具（DuckDuckGo / ddgs）**：可选依赖（`pip install
+    '.[search]'`），未安装时工具照常注册、调用返回安装提示；结果进模型上下文
+    前由 ToolExecutor 的 `max_result_chars` 截断。注意 DDG 的 safesearch 对中文
+    垃圾站过滤力弱（实测 `on` 也会漏），要根治需换带 key 的搜索后端或域名白名单。
   - **眼层平台配置（`config/eyes/`）**：每个平台（eye）的配置自管——单文件平台
     用 `config/eyes/{平台名}.yaml`（`load_eye_config` 类型化加载，缺失回落
     schema 默认值）；多文件平台（如 nb2 的 `.env`）用 `config/eyes/{平台名}/`

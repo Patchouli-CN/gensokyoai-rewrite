@@ -13,9 +13,11 @@ from ..schemas.model_schema import ModelConfig
 
 __all__ = [
     "GensokyoConfig",
+    "KnowledgeSite",
     "ModelConfig",
     "OOCJudgeSettings",
     "ResourceSettings",
+    "SearchSettings",
     "StyleSettings",
     "load_config",
     "load_eye_config",
@@ -157,6 +159,26 @@ class EmbeddingSettings(msgspec.Struct, frozen=True):
     """ 语义检索相似度下限：低于此分的结果视为噪声丢弃（bge 分数带窄，实测噪声 ~0.30）"""
 
 
+class KnowledgeSite(msgspec.Struct, frozen=True):
+    """一个可信知识站点"""
+
+    site: str
+    """ 域名（如 thbwiki.cc）"""
+    desc: str = ""
+    """ 一句话说明（站点定位 / 是否支持站内 API，进工具指令）"""
+
+
+class SearchSettings(msgspec.Struct, frozen=True):
+    """联网工具配置：可靠站优先、web_search 兜底（老项目的资料策略）
+
+    站点表会被拼进脑内【可用工具】块（tool_directive），告诉模型查领域知识
+    先 fetch_url 抓这些站，查不到再 web_search。
+    """
+
+    knowledge_sites: list[KnowledgeSite] = []
+    """ 可信知识站点（东方 Project 场景默认 thbwiki，见 settings.yaml）"""
+
+
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """顶层配置"""
 
@@ -189,6 +211,9 @@ class GensokyoConfig(msgspec.Struct, frozen=True):
 
     embedding: EmbeddingSettings = EmbeddingSettings()
     """ 记忆向量化（语义检索）配置 """
+
+    search: SearchSettings = SearchSettings()
+    """ 联网工具配置（可信知识站优先策略）"""
 
 
 def load_config(path: str | Path) -> GensokyoConfig:
