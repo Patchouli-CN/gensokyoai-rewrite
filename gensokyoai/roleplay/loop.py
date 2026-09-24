@@ -24,6 +24,7 @@ from ..core.event_bus import EventBus
 from ..core.health import HealthMonitor
 from ..core.lifecycle import LifecycleManager
 from ..core.memorizer.compressor import Compressor
+from ..core.memorizer.embedder import Embedder
 from ..core.memorizer.manager import MemoryManager
 from ..core.persistence import JsonFilePersistence, PersistenceBackend
 from ..core.registry import ToolRegistry
@@ -190,6 +191,7 @@ class TouhouWorld:
         session_id: str = "default",
         storage_dir: str | Path = "data",
         persistence=None,
+        embedder: Embedder | None = None,
         shutdown_drain_timeout: float = 2.0,
     ) -> None:
         """
@@ -216,6 +218,7 @@ class TouhouWorld:
             session_id: 会话标识，记忆与会话快照按它隔离（多群/多用户各自一个 id）
             storage_dir: 持久化根目录
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
+            embedder: 记忆向量化器（None = 长期记忆检索退回子串匹配）
             shutdown_drain_timeout: 关闭时等待后台侧链收尾的秒数，超时则取消
         """
         self._logger = LoggerManager.get_logger("WORLD")
@@ -235,7 +238,7 @@ class TouhouWorld:
         `asyncio` 只对任务持弱引用，不登记就可能执行途中被 GC 回收；
         关闭时也靠它统一取消并等在途任务收尾 """
         self.memory = MemoryManager(
-            storage_dir=storage_dir, session_id=session_id, tasks=self._tasks
+            storage_dir=storage_dir, session_id=session_id, tasks=self._tasks, embedder=embedder
         )
         self.health = HealthMonitor(
             bus=self.bus,

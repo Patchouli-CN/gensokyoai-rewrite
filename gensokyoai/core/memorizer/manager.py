@@ -11,6 +11,7 @@ from pathlib import Path
 from ...schemas.memory_schema import MemoryItem
 from ...utils.logger import LoggerManager
 from ...utils.tasks import TaskManager
+from .embedder import Embedder
 from .store import LongMemoryStore
 
 # 核心设定，不可遗忘
@@ -33,6 +34,7 @@ class MemoryManager:
         storage_dir: str | Path | None = None,
         session_id: str | None = None,
         tasks: TaskManager | None = None,
+        embedder: Embedder | None = None,
     ) -> None:
         """初始化。
 
@@ -43,6 +45,7 @@ class MemoryManager:
                 与 storage_dir 必须同时提供或同时省略
             tasks: 后台任务管理器；None 时自建。调用方（如 TouhouWorld）传入自己的
                 管理器，可让淘汰转存的任务与其侧链一起被 drain
+            embedder: 向量化器；None 时长期记忆检索退回子串匹配
         """
         self._logger = LoggerManager.get_logger("MEMORY")
         self._tasks = tasks if tasks is not None else TaskManager("MEMORY")
@@ -66,7 +69,7 @@ class MemoryManager:
             long_path = None
         self.session_id = session_id or "default"
         """ 会话标识（纯内存模式固定为 default）"""
-        self._long_mem_store = LongMemoryStore(long_path)
+        self._long_mem_store = LongMemoryStore(long_path, embedder=embedder)
 
     async def store(self, item: MemoryItem) -> None:
         """存储一条记忆，并维护关联索引"""

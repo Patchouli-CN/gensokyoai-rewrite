@@ -133,6 +133,25 @@ class OOCJudgeSettings(msgspec.Struct, frozen=True):
         校准后可打开 """
 
 
+class EmbeddingSettings(msgspec.Struct, frozen=True):
+    """记忆向量化（embedding）配置：enabled=False 时长期记忆检索退回子串匹配"""
+
+    enabled: bool = False
+    """ 是否启用语义检索（需要可用的 OpenAI 兼容 embedding 端点）"""
+
+    base_url: str = "http://127.0.0.1:8081/v1"
+    """ embedding 服务地址（llama-server 需另起 --embedding 实例，与 chat 端口分开）"""
+
+    model: str = "bge-small-zh"
+    """ embedding 模型名 """
+
+    token: str | None = None
+    """ 访问 token（本地服务通常不需要）"""
+
+    timeout: float = 30.0
+    """ 单次向量化请求超时（秒）"""
+
+
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """顶层配置"""
 
@@ -162,6 +181,9 @@ class GensokyoConfig(msgspec.Struct, frozen=True):
 
     resource: ResourceSettings = ResourceSettings()
     """ 资源闸门 / 限流配置 """
+
+    embedding: EmbeddingSettings = EmbeddingSettings()
+    """ 记忆向量化（语义检索）配置 """
 
 
 def load_config(path: str | Path) -> GensokyoConfig:

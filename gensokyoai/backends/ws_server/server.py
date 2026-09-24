@@ -21,6 +21,7 @@ from aiohttp import WSMsgType, web
 from ...app import DEFAULT_CONFIG, build_session_and_character, resolve_resource
 from ...core.brain.judge import build_judge, build_ooc_judge
 from ...core.config import load_config
+from ...core.memorizer.embedder import build_embedder
 from ...core.resource import IngressLimiter
 from ...roleplay.hub import ChannelHub
 from ...schemas.scene_schema import SceneType
@@ -230,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             "ooc_judge": ooc_judge,
             "ooc_judge_settings": config.ooc_judge,
             "style": config.style,
+            "embedder": build_embedder(config.embedding),
         },
     )
     logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")

@@ -21,6 +21,7 @@ from typing import Any
 from .core.bootstrap import discover_all
 from .core.brain.judge import build_judge, build_ooc_judge
 from .core.config import load_config
+from .core.memorizer.embedder import build_embedder
 from .core.resource import ResourceGate
 from .core.session_factory import build_resource_gate, build_session_manager
 from .core.session_manager import SessionManager
@@ -132,6 +133,7 @@ def build_world(
     config = load_config(config_path or resolve_resource(DEFAULT_CONFIG))
     judge = build_judge(config.gate, sessions)
     ooc_judge = build_ooc_judge(config.gate, config.ooc_judge, sessions)
+    embedder = build_embedder(config.embedding)
     world_kwargs: dict[str, Any] = {}
     if storage_dir is not None:
         world_kwargs["storage_dir"] = storage_dir
@@ -146,6 +148,7 @@ def build_world(
         ooc_judge=ooc_judge,
         ooc_judge_settings=config.ooc_judge,
         style=config.style,
+        embedder=embedder,
         **world_kwargs,
     )
 

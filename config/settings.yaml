@@ -71,3 +71,13 @@ style:
   dedup_endings: true
   ending_window: 6
   similarity_retry: 0.75
+
+# 记忆语义检索（embedding）：开启后长期记忆按余弦相似度检索（向量单独存
+# vectors.msgpack，不进 long_memory.json）；关闭退回子串匹配。
+# 端点 = 任何 OpenAI 兼容 /embeddings 服务。注意 llama-server 的 --embedding
+# 实例不能同时服务 chat——本地需另起一个实例（端口与主模型分开）。
+embedding:
+  enabled: false
+  base_url: "http://127.0.0.1:8081/v1"
+  model: "bge-small-zh"
+  timeout: 30.0

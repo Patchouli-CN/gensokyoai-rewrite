@@ -22,6 +22,7 @@ dependencies = [
     "pyyaml",
     "aioconsole",
     "ayafileio>=1.5.1",
+    "numpy",
 ]
 
 [project.optional-dependencies]

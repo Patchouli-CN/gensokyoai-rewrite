@@ -4,6 +4,7 @@ msgspec
 pyyaml
 aiohttp
 ayafileio>=1.5.1
+numpy
 pytest
 pytest-asyncio
 aioconsole
