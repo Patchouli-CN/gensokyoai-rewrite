@@ -3,10 +3,23 @@
 import time
 import uuid
 from datetime import datetime
-from typing import Literal
+from enum import StrEnum
 
 import msgspec
 from msgspec import field
+
+
+class MemoryType(StrEnum):
+    """记忆类型：对话原文、内心想法、客观事实、关键事件。
+
+    值即落盘字符串（存量 long_memory.json 直接兼容）；
+    代码里统一引用枚举成员，不再散落裸字符串。
+    """
+
+    DIALOGUE = "dialogue"
+    THOUGHT = "thought"
+    FACT = "fact"
+    EVENT = "event"
 
 
 class MemoryItem(msgspec.Struct):
@@ -37,8 +50,8 @@ class MemoryItem(msgspec.Struct):
     relate_ids: set[str] = field(default_factory=set)
     """ 关联记忆 ID 的集合 """
 
-    memory_type: Literal["dialogue", "thought", "fact", "event"] = "dialogue"
-    """ 记忆类型：对话原文、内心想法、客观事实、关键事件 """
+    memory_type: MemoryType = MemoryType.DIALOGUE
+    """ 记忆类型（MemoryType；值即落盘字符串） """
 
     # --- 访问热度（遗忘曲线打分用） ---
     access_count: int = 0

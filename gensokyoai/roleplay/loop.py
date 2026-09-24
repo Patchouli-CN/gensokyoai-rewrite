@@ -44,7 +44,7 @@ from ..mouth.base import Mouth
 from ..mouth.console import ConsoleMouth
 from ..schemas.brain_schema import BrainConclusion, BrainThinkEffort
 from ..schemas.event_schema import BaseEvent, EventTopic, TurnEndPayload
-from ..schemas.memory_schema import MemoryItem
+from ..schemas.memory_schema import MemoryItem, MemoryType
 from ..schemas.model_schema import ToolSpec
 from ..schemas.scene_schema import SceneSnapshot
 from ..utils.logger import LoggerManager
@@ -564,12 +564,14 @@ class TouhouWorld:
         被 GC 回收等于这一回合的记忆凭空消失，且不会有任何报错。
         """
         user_mem = MemoryItem(
-            topic="对话", content=f"{snapshot.sender}: {snapshot.content}", memory_type="dialogue"
+            topic="对话",
+            content=f"{snapshot.sender}: {snapshot.content}",
+            memory_type=MemoryType.DIALOGUE,
         )
         char_mem = MemoryItem(
             topic="对话",
             content=f"{self.character.name}: {reply}",
-            memory_type="dialogue",
+            memory_type=MemoryType.DIALOGUE,
             relate_ids={user_mem.memory_id},
         )
         for item in [user_mem, char_mem]:
@@ -645,7 +647,7 @@ class TouhouWorld:
         item = MemoryItem(
             topic="对话",
             content=f"{snapshot.sender}: {snapshot.content}",
-            memory_type="dialogue",
+            memory_type=MemoryType.DIALOGUE,
         )
         self._tasks.spawn(
             self.bus.publish(EventBus.new(EventTopic.MEMORY_WRITE, source="gate", payload=item)),
@@ -1132,7 +1134,7 @@ class TouhouWorld:
             item = MemoryItem(
                 topic="对话摘要",
                 content=summary,
-                memory_type="fact",
+                memory_type=MemoryType.FACT,
                 importance=0.7,
             )
             await self.memory.store(item)
@@ -1205,7 +1207,7 @@ class TouhouWorld:
         char_mem = MemoryItem(
             topic="对话",
             content=f"{self.character.name}: {reply}",
-            memory_type="dialogue",
+            memory_type=MemoryType.DIALOGUE,
         )
         await self.bus.publish(
             EventBus.new(EventTopic.MEMORY_WRITE, source="initiative", payload=char_mem)

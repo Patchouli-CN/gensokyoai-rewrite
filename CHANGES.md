@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### 变更
+  - **`memory_type` 收敛为 `MemoryType` StrEnum**：值不变（存量 long_memory.json
+    直接兼容，实测旧存档解码为枚举且与字符串比较相等），loop.py 五处裸字符串
+    全部换成枚举引用——新增记忆类型只动枚举一处。
+
 ### 新增
   - **`fetch_url` 内置工具（异步）**：aiohttp 原生异步抓取（不卡事件循环），
     SSRF 门禁（`utils/url_security.py`：非 http/https、回环、私有网段、链路本地/
