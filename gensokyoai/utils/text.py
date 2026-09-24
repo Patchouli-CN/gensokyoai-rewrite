@@ -2,6 +2,8 @@
 
 import re
 
+import msgspec
+
 
 def clean_whitespace(text: str) -> str:
     """
@@ -93,3 +95,42 @@ def count_chars(text: str) -> dict[str, int]:
     ascii_count = sum(1 for c in text if ord(c) < 128)
     other = len(text) - chinese - ascii_count
     return {"chinese": chinese, "ascii": ascii_count, "other": other}
+
+
+def extract_json_object(text: str) -> dict:
+    """容错提取模型输出中的 JSON 对象（取第一个 { 到最后一个 } 的切片解码）。
+
+    小模型输出常见噪声——思考残留、```json 围栏、首尾废话——通常都落在
+    这个窗口之外。失败语义统一为 ValueError，降级策略由调用方决定。
+
+    Args:
+        text: 模型原始输出
+
+    Returns:
+        解析出的 JSON 对象
+
+    Raises:
+        ValueError: 找不到 JSON 对象或解析失败
+    """
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(f"输出不含 JSON 对象: {text[:80]!r}")
+    try:
+        return msgspec.json.decode(text[start : end + 1], type=dict)
+    except msgspec.DecodeError as err:
+        raise ValueError(f"JSON 解析失败: {text[:80]!r}") from err
+
+
+def try_extract_json_object(text: str) -> dict | None:
+    """extract_json_object 的宽容版：失败返回 None（调用方自行降级）。
+
+    Args:
+        text: 模型原始输出
+
+    Returns:
+        解析出的 JSON 对象；失败为 None
+    """
+    try:
+        return extract_json_object(text)
+    except ValueError:
+        return None

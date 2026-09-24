@@ -26,7 +26,7 @@ from .loop import TouhouWorld
 if TYPE_CHECKING:
     from .character import Character
 
-WorldFactory = Callable[[str, QueuePerceiver, BroadcastMouth], TouhouWorld]
+type WorldFactory = Callable[[str, QueuePerceiver, BroadcastMouth], TouhouWorld]
 """ 由 channel_id + 感知器 + 口层 造一个世界的工厂 """
 
 _DEFAULT_STOP_TIMEOUT = 5.0

@@ -24,7 +24,7 @@ class LongMemoryStore:
         Args:
             file_path: 落盘文件路径；None 表示纯内存（不落盘）
         """
-        self._logger = LoggerManager.get_logger("LONG MEMORY")
+        self._logger = LoggerManager.get_logger("LONGMEM")
         self._file_path = Path(file_path) if file_path is not None else None
         self._items: dict[str, MemoryItem] = {}
         self._dirty = False

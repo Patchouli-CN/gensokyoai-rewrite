@@ -18,7 +18,7 @@ class BrainThinkEffort(Enum):
     MAX = "max"  # 最深：重大剧情节点，全链 + 每步深思考（预算×2 / 低温，接力 8 轮）
 
 
-Verdict = Literal["pass_through", "draft"]
+type Verdict = Literal["pass_through", "draft"]
 """ pass_through: 无需初稿 Responder 直接生成; draft: 使用 Brain 初稿 """
 
 
@@ -111,7 +111,7 @@ class OOCVerdict(msgspec.Struct, frozen=True):
     """ 建议的改写文本 """
 
 
-OOCDecision = Literal["accept", "revise", "flag"]
+type OOCDecision = Literal["accept", "revise", "flag"]
 """ jev 化出戏审查的三档结论：
 accept=放行 | revise=建议纠偏重生成 | flag=黄色预警（记录但不阻断） """
 

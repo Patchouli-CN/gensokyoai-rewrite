@@ -1,6 +1,6 @@
-# commands/executor.py
 """命令执行器"""
 
+from ..utils.logger import LoggerManager
 from .context import CommandContext
 from .decorators import CommandDefinition, CommandRegistry
 from .parser import CommandParser, CommandType, ParsedCommand
@@ -15,6 +15,7 @@ class CommandExecutor:
         mode: str = "smart",
         registry: CommandRegistry | None = None,
     ):
+        self._logger = LoggerManager.get_logger("COMMAND")
         self.parser = CommandParser(mode=mode)
         self._registry = registry if registry else CommandRegistry()
         self._sync_parser_tags()
@@ -63,6 +64,11 @@ class CommandExecutor:
         parsed: ParsedCommand,
         context: CommandContext,
     ) -> CommandResult:
+        """执行单条已解析命令：权限闸门 -> 参数解析 -> 调用 handler。
+
+        handler 抛异常不向上传播：记日志后转成 FAILURE 结果返回，
+        一条坏命令不该炸掉整段对话。
+        """
         cmd_def = self._get_command(parsed.name)
 
         if not cmd_def:
@@ -91,8 +97,10 @@ class CommandExecutor:
 
             return result
 
-        except Exception as e:
-            return CommandResult.failure(parsed.name, str(e))
+        except Exception as err:
+            self._logger.exception(f"命令执行失败: /{parsed.name}")
+            return CommandResult.failure(parsed.name, str(err))
 
     def list_commands(self, cmd_type: CommandType | None = None) -> list[CommandDefinition]:
+        """列出已注册命令定义"""
         return self._registry.list(cmd_type)

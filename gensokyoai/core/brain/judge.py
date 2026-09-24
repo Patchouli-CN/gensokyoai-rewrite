@@ -12,11 +12,10 @@ import asyncio
 import importlib
 import json
 
-import msgspec
-
 from ...prompts import prompt_mgr
 from ...schemas.model_schema import Message
 from ...utils.logger import LoggerManager
+from ...utils.text import extract_json_object
 from ..config import GateSettings, OOCJudgeSettings
 from ..session_manager import SessionManager
 from .gate import Judge, Question
@@ -30,7 +29,7 @@ def _clamp01(value: object) -> float:
 
 
 def parse_probabilities(text: str, questions: dict[str, Question]) -> dict[str, float]:
-    """从模型输出里解析各题概率（容忍 ```json 包裹等噪声，取第一个 { 到最后一个 }）。
+    """从模型输出里解析各题概率（JSON 提取口径见 utils/text.py::extract_json_object）。
 
     Args:
         text: 模型原始输出
@@ -42,13 +41,7 @@ def parse_probabilities(text: str, questions: dict[str, Question]) -> dict[str, 
     Raises:
         ValueError: 输出不是合法 JSON 对象，或一个题都没取到
     """
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError(f"裁判输出不是 JSON: {text[:80]!r}")
-    try:
-        data = msgspec.json.decode(text[start : end + 1], type=dict)
-    except msgspec.DecodeError as error:
-        raise ValueError(f"裁判输出 JSON 解析失败: {text[:80]!r}") from error
+    data = extract_json_object(text)
 
     answers = {
         name: _clamp01(data.get(name))
@@ -131,11 +124,11 @@ def _load_typesafe():
     """惰性加载 typesafe_sdk（可选依赖）；缺失时给出可操作的报错。"""
     try:
         return importlib.import_module("typesafe_sdk")
-    except ModuleNotFoundError as error:
+    except ModuleNotFoundError as err:
         raise RuntimeError(
             "未安装 typesafe-sdk（真 jev 后端）。"
             "安装：pip install 'gensokyoai[jev]'；或把 gate.judge 改回 local/none。"
-        ) from error
+        ) from err
 
 
 class TypeSafeJudge:

@@ -167,16 +167,16 @@ class ToolSpec:
             if self._is_coro:
                 raise RuntimeError("这是一个异步工具，请使用 await ainvoke() 调用")
             return self.tool_func(**param)
-        except Exception as e:
-            return self._tool_err(e)
+        except Exception as err:
+            return self._tool_err(err)
 
     async def ainvoke(self, **param) -> Any:
         if not self._is_coro:
             raise RuntimeError("这不是异步工具，请使用 invoke() 直接调用 ")
         try:
             return await self.tool_func(**param)
-        except Exception as e:
-            return self._tool_err(e)
+        except Exception as err:
+            return self._tool_err(err)
 
 
 class ToolCall(msgspec.Struct, frozen=True):
@@ -218,7 +218,6 @@ class Usage(msgspec.Struct, frozen=True):
     cache_write_tokens: int = 0
     """ 输入中写入上下文缓存的部分（Anthropic 的 cache_creation_input_tokens /
         阿里显式缓存创建等；OpenAI 兼容协议多数厂商不单列，为 0） """
-    """ 输出消耗 """
 
 
 @dataclass(slots=True)
@@ -255,15 +254,3 @@ class CompletionResult(msgspec.Struct, frozen=True):
     """ 实际使用的模型 """
     tool_calls: list[ToolCall] | None = None
     """ 模型请求的工具调用（无则 None）"""
-
-
-if __name__ == "__main__":
-
-    def get_weather(city: str, unit: str = "celsius") -> str:
-        """获取指定城市的天气"""
-        return f"{city} 的天气很好"
-
-    t = ToolSpec(get_weather)
-    print(t.prompt())
-    print("---")
-    print(t.invoke(city="北京"))

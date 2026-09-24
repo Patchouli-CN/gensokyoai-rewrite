@@ -29,10 +29,10 @@ from ...schemas.health_schema import (
 from ...utils.logger import LoggerManager
 from ..event_bus import EventBus
 
-InterventionHandler = Callable[[HealthAlert], Awaitable[None]]
+type InterventionHandler = Callable[[HealthAlert], Awaitable[None]]
 """ 主动干预回调：收到告警后做点什么（压缩记忆 / 调高档位 / 归档冷记忆…）"""
 
-SummaryProvider = Callable[[], Any]
+type SummaryProvider = Callable[[], Any]
 """ 摘要提供者：由装配层注入（避免 core/health 反向依赖 SessionManager/ResourceGate）"""
 
 DEFAULT_THRESHOLDS: tuple[MetricThreshold, ...] = (
@@ -78,7 +78,7 @@ class HealthMonitor:
             alert_cooldown: 同级别告警冷却秒数
             clock: 时钟函数（可注入以便测试）
         """
-        self._logger = LoggerManager.get_logger("HEALTH CENTER")
+        self._logger = LoggerManager.get_logger("HEALTH")
         self._bus = bus
         self._clock = clock
         self._history_size = history_size

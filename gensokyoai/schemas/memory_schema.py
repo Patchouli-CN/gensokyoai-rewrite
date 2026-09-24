@@ -1,3 +1,5 @@
+"""记忆相关数据 —— 工作记忆与长期记忆共用的记忆单元"""
+
 import time
 import uuid
 from datetime import datetime
@@ -11,16 +13,16 @@ class MemoryItem(msgspec.Struct):
     """
     记忆单元
     支持通过 relate_ids 构建记忆图谱，实现级联查询。
-    注意：已从 frozen=True 改为可变，以支持 access_count / last_accessed_at 的动态更新。
+    可变（非 frozen）：touch() 需要动态更新 access_count / last_accessed_at。
     """
 
     memory_id: str = field(default_factory=lambda: str(uuid.uuid7()))
     """ 记忆唯一标识 (使用 UUID v7 保证时间排序) """
 
-    topic: str = field(default="")
+    topic: str = ""
     """ 主题标签，用于快速分类 (如: '人际关系', '世界观', '物品') """
 
-    content: str = field(default="")
+    content: str = ""
     """ 记忆的核心内容 (摘要或原文) """
 
     happen_time: datetime = field(default_factory=lambda: datetime.now())
@@ -38,7 +40,7 @@ class MemoryItem(msgspec.Struct):
     memory_type: Literal["dialogue", "thought", "fact", "event"] = "dialogue"
     """ 记忆类型：对话原文、内心想法、客观事实、关键事件 """
 
-    # --- 新增：动态热度字段 ---
+    # --- 访问热度（遗忘曲线打分用） ---
     access_count: int = 0
     """ 访问次数（被 Brain 检索到的次数）"""
 

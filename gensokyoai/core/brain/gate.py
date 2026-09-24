@@ -22,7 +22,7 @@ import msgspec
 from ...schemas.brain_schema import BrainThinkEffort
 from ...schemas.scene_schema import SceneSnapshot
 
-GateSource = Literal["rule", "judge", "fallback"]
+type GateSource = Literal["rule", "judge", "fallback"]
 """ 决定来源：规则直判 / 裁判打分 / 兜底 """
 
 
@@ -259,12 +259,12 @@ async def decide(
                 ),
                 build_questions(bot_name),
             )
-        except Exception as error:  # 裁判故障不拖死主链路，退化为规则
+        except Exception as err:  # 裁判故障不拖死主链路，退化为规则
             if forced_reply:
                 return GateDecision(
-                    reply=True, source="rule", reason=f"裁判异常，直连信号优先: {error}"
+                    reply=True, source="rule", reason=f"裁判异常，直连信号优先: {err}"
                 )
-            return _fallback(snapshot, bot_name, recent, f"裁判异常: {error}")
+            return _fallback(snapshot, bot_name, recent, f"裁判异常: {err}")
 
         reply_score = _probability(answers, "should_reply")
         search_score = _probability(answers, "needs_search")

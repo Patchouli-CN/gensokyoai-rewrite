@@ -142,7 +142,7 @@ class _WorldRuntimeCodec:
             try:
                 self._world._effort_floor = BrainThinkEffort(raw_floor)
             except ValueError:
-                self._world.logger.warning(f"档位下限非法，跳过: {raw_floor!r}")
+                self._world._logger.warning(f"档位下限非法，跳过: {raw_floor!r}")
         turn = data.get("stall_last_turn")
         if isinstance(turn, int):
             self._world._stall_last_turn = turn
@@ -218,7 +218,7 @@ class TouhouWorld:
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
             shutdown_drain_timeout: 关闭时等待后台侧链收尾的秒数，超时则取消
         """
-        self.logger = LoggerManager.get_logger("TOUHOU WORLD")
+        self._logger = LoggerManager.get_logger("WORLD")
         self.eye = eye
         self.character = character
         self.mouth = mouth or ConsoleMouth()
@@ -355,18 +355,18 @@ class TouhouWorld:
         async def _on_startup():
             self.restored = await self.persistence.restore()
             if self.restored:
-                self.logger.info(f"=== 幻想乡会话已恢复 | 角色: {self.character.name} ===")
+                self._logger.info(f"=== 幻想乡会话已恢复 | 角色: {self.character.name} ===")
             else:
-                self.logger.info(f"=== 幻想乡连接成功 | 角色: {self.character.name} ===")
+                self._logger.info(f"=== 幻想乡连接成功 | 角色: {self.character.name} ===")
             if self._gate.enabled:
                 judge_name = type(self._judge).__name__ if self._judge else "无（纯规则）"
-                self.logger.info(
+                self._logger.info(
                     f"门控 on | 裁判: {judge_name} | 群聊阈值: {self._gate.group_threshold}"
                 )
 
         @self.lifecycle.on_shutdown
         async def _on_shutdown():
-            self.logger.info("=== 幻想乡连接已断开 ===")
+            self._logger.info("=== 幻想乡连接已断开 ===")
             await self.persistence.flush()
             await self.eye.close()
             self.sessions.reset_all()
@@ -384,7 +384,7 @@ class TouhouWorld:
         if not items:
             return None
         pipeline = ThinkPipeline.from_card(f"{self.character.name}·思考链", items)
-        self.logger.info(
+        self._logger.info(
             f"思考链({len(pipeline)}步): {' >> '.join(step.name for step in pipeline)}"
         )
         return pipeline
@@ -397,11 +397,11 @@ class TouhouWorld:
             registered_tools = ToolRegistry.all()
             if registered_tools:
                 tools.extend(registered_tools)
-                self.logger.info(
+                self._logger.info(
                     f"加载全局注册工具: {[t.tool_func.__name__ for t in registered_tools]}"
                 )
-        except Exception as e:
-            self.logger.warning(f"加载全局注册工具失败: {e}")
+        except Exception as err:
+            self._logger.warning(f"加载全局注册工具失败: {err}")
 
         if external_tools:
             for tool in external_tools:
@@ -409,8 +409,8 @@ class TouhouWorld:
                 try:
                     ToolRegistry.register_external(tool)
                 except ValueError:
-                    self.logger.debug(f"工具已存在: {tool.tool_func.__name__}")
-            self.logger.info(f"加载外部工具: {[t.tool_func.__name__ for t in external_tools]}")
+                    self._logger.debug(f"工具已存在: {tool.tool_func.__name__}")
+            self._logger.info(f"加载外部工具: {[t.tool_func.__name__ for t in external_tools]}")
 
         seen = set()
         unique_tools = []
@@ -420,7 +420,7 @@ class TouhouWorld:
                 unique_tools.append(tool)
                 seen.add(name)
 
-        self.logger.info(f"最终工具列表: {[t.tool_func.__name__ for t in unique_tools]}")
+        self._logger.info(f"最终工具列表: {[t.tool_func.__name__ for t in unique_tools]}")
         return unique_tools
 
     async def _handle_memory_write(self, event: BaseEvent) -> None:
@@ -440,7 +440,7 @@ class TouhouWorld:
             while True:
                 # 检查是否收到停止请求
                 if getattr(self.eye, "_stop_requested", False):
-                    self.logger.info("感知器已停止，主循环退出")
+                    self._logger.info("感知器已停止，主循环退出")
                     break
 
                 # 1. 感知阶段 (Eyes)
@@ -509,7 +509,7 @@ class TouhouWorld:
                     if turn_cost
                     else ""
                 )
-                self.logger.info(
+                self._logger.info(
                     f"回合 {turn} 完成 | 延迟: {latency:.2f}s | 档位: {effort.value}{cost_text}"
                 )
                 await self.bus.publish(
@@ -521,9 +521,9 @@ class TouhouWorld:
                 )
 
         except asyncio.CancelledError:
-            self.logger.info("主循环被取消，开始优雅关闭...")
+            self._logger.info("主循环被取消，开始优雅关闭...")
         except KeyboardInterrupt:
-            self.logger.info("收到 Ctrl+C，开始优雅关闭...")
+            self._logger.info("收到 Ctrl+C，开始优雅关闭...")
         finally:
             # 代际 +1：在途后台任务的回写全部作废
             self._generation += 1
@@ -533,7 +533,7 @@ class TouhouWorld:
             # 侧链收尾：先给一小段自然完成的机会（本回合的记忆写入应落盘），
             # 超时则取消 —— 不能让慢蒸馏把关闭流程拖住
             if self._tasks.pending:
-                self.logger.info(f"等待后台侧链收尾: {self._tasks.names()}")
+                self._logger.info(f"等待后台侧链收尾: {self._tasks.names()}")
                 await self._tasks.drain(timeout=self._shutdown_drain_timeout)
             if not self.lifecycle._stopped:
                 await self.lifecycle.shutdown()
@@ -620,7 +620,7 @@ class TouhouWorld:
             else ""
         )
         deep = f" deep={decision.effort:.2f}" if decision.effort is not None else ""
-        self.logger.info(
+        self._logger.info(
             f"[gate] 回合{turn} {'REPLY' if decision.reply else 'skip'} "
             f"({decision.source}: {decision.reason}){scores}{deep} :: "
             f"{snapshot.sender}: {snapshot.content[:60]}"
@@ -692,13 +692,13 @@ class TouhouWorld:
     async def _on_context_pressure(self, alert) -> None:
         """干预：上下文占用过高 → 立刻做一次记忆蒸馏，给窗口腾地方。"""
         value = alert.metric.value if alert.metric else 0.0
-        self.logger.warning(f"上下文占用过高（{value:.0%}），触发记忆蒸馏")
+        self._logger.warning(f"上下文占用过高（{value:.0%}），触发记忆蒸馏")
         await self._distill()
 
     async def _on_ooc_spike(self, alert) -> None:
         """干预：出戏率飙升 → 抬高档位下限（文档 §3.5「自动调参」）。"""
         value = alert.metric.value if alert.metric else 0.0
-        self.logger.warning(f"出戏率偏高（{value:.2f}），推理档位下限抬到 HIGH")
+        self._logger.warning(f"出戏率偏高（{value:.2f}），推理档位下限抬到 HIGH")
         self._effort_floor = BrainThinkEffort.HIGH
 
     def _apply_effort_floor(self, effort: BrainThinkEffort) -> BrainThinkEffort:
@@ -733,7 +733,7 @@ class TouhouWorld:
         floor = BrainThinkEffort.MID
         if _effort_order(effort) >= _effort_order(floor):
             return effort
-        self.logger.warning(
+        self._logger.warning(
             f"入口注入识别: 档位下限抬到 {floor.value} :: {snapshot.content[:60]!r}"
         )
         return floor
@@ -772,14 +772,14 @@ class TouhouWorld:
         try:
             line = await self.responder.stall(snapshot)
         except Exception:
-            self.logger.exception("过渡语生成失败（跳过，不影响主链路）")
+            self._logger.exception("过渡语生成失败（跳过，不影响主链路）")
             return
         if not line:
             return
         self._stall_last_turn = turn
         self._stall_last_time = time.monotonic()
         await self.mouth.send(self.character.name, strip_control_chars(line))
-        self.logger.info(f"过渡语已投递: {line!r}")
+        self._logger.info(f"过渡语已投递: {line!r}")
 
     async def _express(self, snapshot, conclusion, memories, *, ooc_guard: bool = True) -> str:
         """表达 + 投递的统一入口：口层支持流式则逐块显示，否则缓冲投递。
@@ -843,12 +843,12 @@ class TouhouWorld:
                 if delta:
                     await self.mouth.delta(strip_control_chars(delta))
         except Exception:
-            self.logger.exception("流式生成失败（结束投递，回退为已产出文本）")
+            self._logger.exception("流式生成失败（结束投递，回退为已产出文本）")
         finally:
             await self.mouth.end()
         reply = "".join(parts)
         self._presence.record(from_bot=True)
-        self.logger.info(f"流式投递完成: {len(reply)}字")
+        self._logger.info(f"流式投递完成: {len(reply)}字")
         return reply
 
     @property
@@ -895,27 +895,27 @@ class TouhouWorld:
             )
         except Exception:
             # 审查自身故障 = 放行（防御不是裁判，不能让一次故障吞掉回合）
-            self.logger.exception("blocking 出戏审查失败，放行")
+            self._logger.exception("blocking 出戏审查失败，放行")
             return reply
         if check.decision != "revise":
             if check.decision == "flag":
-                self.logger.info(f"blocking 出戏审查 flag（放行）: {check.reason}")
+                self._logger.info(f"blocking 出戏审查 flag（放行）: {check.reason}")
             await self._record_ooc_check(check)
             return reply
-        self.logger.warning(
+        self._logger.warning(
             f"blocking 出戏审查 revise，发起一次纠偏: {check.reason} | {check.answers}"
         )
         try:
             corrected = await self.responder.correct(reply, f"出戏原因: {check.reason}")
         except Exception:
-            self.logger.exception("blocking 纠偏重生成失败，保留原句")
+            self._logger.exception("blocking 纠偏重生成失败，保留原句")
             await self._record_ooc_check(check)
             return reply
         if not corrected or self.ooc.pre_filter(corrected).is_ooc:
-            self.logger.error("纠偏后仍不可用，原样放行")
+            self._logger.error("纠偏后仍不可用，原样放行")
             await self._record_ooc_check(check)
             return reply
-        self.logger.info(f"blocking 纠偏完成: {corrected[:60]!r}")
+        self._logger.info(f"blocking 纠偏完成: {corrected[:60]!r}")
         await self._record_ooc_check(check)
         return corrected
 
@@ -935,7 +935,7 @@ class TouhouWorld:
         if check.decision != "revise" and self._effort_floor is not None:
             # 审查恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
             self._effort_floor = None
-            self.logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
+            self._logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
 
     def _parrot_avoid_hint(self) -> str:
         """防复读预防性提示（responder.user 的 [自我克制] 段）。
@@ -959,15 +959,15 @@ class TouhouWorld:
         if not should_retry(reply, self._last_reply, self._style.similarity_retry):
             return reply
         ratio = similarity(reply, self._last_reply)
-        self.logger.warning(f"防复读守门: 与上轮相似度 {ratio:.0%} 超阈值，发起一次重写")
+        self._logger.warning(f"防复读守门: 与上轮相似度 {ratio:.0%} 超阈值，发起一次重写")
         try:
             rewritten = await self.responder.correct(reply, PARROT_REASON)
         except Exception:
-            self.logger.exception("防复读重写失败，保留原句")
+            self._logger.exception("防复读重写失败，保留原句")
             return reply
         if rewritten and similarity(rewritten, self._last_reply) < ratio:
             return rewritten
-        self.logger.info("防复读重写后仍高于原相似度，保留原句")
+        self._logger.info("防复读重写后仍高于原相似度，保留原句")
         return reply
 
     def _dedup_ending(self, reply: str) -> str:
@@ -978,7 +978,7 @@ class TouhouWorld:
         if should_strip_ending(reply, list(self._recent_endings)):
             stripped = strip_ending(reply)
             if stripped:
-                self.logger.info(f"收尾去重: 剥掉反复使用的收尾 {ending_key(reply)!r}")
+                self._logger.info(f"收尾去重: 剥掉反复使用的收尾 {ending_key(reply)!r}")
                 return stripped
         return reply
 
@@ -1002,7 +1002,7 @@ class TouhouWorld:
         flags = int(self.character.status.extra.get("ooc_suspicious", 0)) + 1
         self.character.status.update(ooc_suspicious=flags)
         await self.health.record_metric("ooc.suspicious", 1.0, unit="次")
-        self.logger.warning(f"疑似被注入带跑的短回复（已标记，待 jev 审查定夺）: {reply!r}")
+        self._logger.warning(f"疑似被注入带跑的短回复（已标记，待 jev 审查定夺）: {reply!r}")
 
     async def _guard_ooc(self, reply: str) -> str:
         """最终回复的 OOC 规则守门：零成本快筛，命中才花一次纠偏重生成。
@@ -1018,17 +1018,17 @@ class TouhouWorld:
         hit = self.ooc.pre_filter(reply)
         if not hit.is_ooc:
             return reply
-        self.logger.warning(f"最终回复命中 OOC 规则（{hit.reason}），发起一次纠偏")
+        self._logger.warning(f"最终回复命中 OOC 规则（{hit.reason}），发起一次纠偏")
         try:
             corrected = await self.responder.correct(reply, hit.reason)
         except Exception:
-            self.logger.exception("OOC 纠偏重生成失败，原样输出")
+            self._logger.exception("OOC 纠偏重生成失败，原样输出")
             return reply
         if corrected and not self.ooc.pre_filter(corrected).is_ooc:
             flags = int(self.character.status.extra.get("ooc_flags", 0)) + 1
             self.character.status.update(ooc_flags=flags)
             return corrected
-        self.logger.error(f"纠偏后仍命中 OOC，原样输出: {corrected[:60]!r}")
+        self._logger.error(f"纠偏后仍命中 OOC，原样输出: {corrected[:60]!r}")
         return reply
 
     async def _audit_reply(self, snapshot: SceneSnapshot, reply: str) -> None:
@@ -1070,16 +1070,16 @@ class TouhouWorld:
                 settings=self._ooc_judge_cfg,
             )
         except Exception:
-            self.logger.exception("jev 出戏审查失败（不影响主链路）")
+            self._logger.exception("jev 出戏审查失败（不影响主链路）")
             return
         if gen != self._generation:
             return
         if check.decision == "revise":
-            self.logger.warning(
+            self._logger.warning(
                 f"jev 出戏审查 revise（已记账，文本不撤回）: {check.reason} | {check.answers}"
             )
         elif check.decision == "flag":
-            self.logger.info(f"jev 出戏审查 flag: {check.reason} | {check.answers}")
+            self._logger.info(f"jev 出戏审查 flag: {check.reason} | {check.answers}")
         await self._record_ooc_check(check)
 
     async def _audit_reply_legacy(self, reply: str) -> None:
@@ -1098,9 +1098,9 @@ class TouhouWorld:
             if not verdict.is_ooc and self._effort_floor is not None:
                 # 审计恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
                 self._effort_floor = None
-                self.logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
+                self._logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
         except Exception:
-            self.logger.exception("OOC 深审失败（不影响主链路）")
+            self._logger.exception("OOC 深审失败（不影响主链路）")
 
     async def _distill(self) -> None:
         """记忆蒸馏：把最早一批工作记忆压缩成摘要条目，然后遗忘原文。
@@ -1124,9 +1124,9 @@ class TouhouWorld:
             )
             await self.memory.store(item)
             removed = self.memory.forget([m.memory_id for m in old])
-            self.logger.info(f"记忆蒸馏: {removed} 条 -> 摘要 {len(summary)} 字")
+            self._logger.info(f"记忆蒸馏: {removed} 条 -> 摘要 {len(summary)} 字")
         except Exception:
-            self.logger.exception("记忆蒸馏失败（不影响主链路）")
+            self._logger.exception("记忆蒸馏失败（不影响主链路）")
 
     async def _initiative_loop(self) -> None:
         """主动发言后台循环：空闲超阈值时评估四维对话欲，达标即开口。
@@ -1144,7 +1144,7 @@ class TouhouWorld:
             try:
                 await self._try_speak(idle)
             except Exception:
-                self.logger.exception("主动发言评估失败")
+                self._logger.exception("主动发言评估失败")
 
     def _stopping(self) -> bool:
         """是否处于关闭流程"""
@@ -1168,7 +1168,7 @@ class TouhouWorld:
         if self._busy or gen != self._generation:
             return
 
-        self.logger.info(f"主动发言触发: 对话欲={urge:.2f} 空闲={idle:.0f}s")
+        self._logger.info(f"主动发言触发: 对话欲={urge:.2f} 空闲={idle:.0f}s")
         self._busy = True
         try:
             snapshot = SceneSnapshot(

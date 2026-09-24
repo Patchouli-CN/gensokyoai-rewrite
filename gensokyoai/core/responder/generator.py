@@ -60,14 +60,14 @@ class Responder:
 
         memory_text = "\n".join(f"- {m.content}" for m in memories) or "（无）"
 
-        # 【修复】过滤掉假的工具调用
-        # 措辞从「可改写润色」改硬：「默认按初稿骨架走」——真机实录照出 Responder
-        # 把软措辞的初稿当可选建议，被用户消息里的直接指令（如"只输出数字"）带跑
+        # 初稿措辞要硬（「默认按这个骨架走」）：软措辞会被小模型当成可选建议，
+        # 容易被用户消息里的直接指令（如"只输出数字"）带跑
         draft_hint = (
             f"初稿参考（默认按这个骨架说，除非初稿本身有问题）: {conclusion.draft}\n"
             if conclusion.draft
             else ""
         )
+        # 小模型有时会把工具调用写成文本混进初稿，这种伪工具调用直接丢弃
         if conclusion.draft and '"tool"' in conclusion.draft:
             self._logger.warning(f"检测到伪工具调用文本，丢弃: {conclusion.draft}")
             draft_hint = ""

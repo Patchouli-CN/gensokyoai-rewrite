@@ -31,6 +31,7 @@ from ...schemas.model_schema import CompletionResult, Message, ToolCall, ToolSpe
 from ...schemas.scene_schema import SceneSnapshot
 from ...utils.fluent import FluentAPI
 from ...utils.logger import LoggerManager
+from ...utils.text import extract_json_object, try_extract_json_object
 from ..session_manager import SessionManager
 from ..toolkit import build_executor
 
@@ -235,10 +236,10 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         for index, step in enumerate(steps):
             try:
                 parsed = await self._run_step(step, context, digests, sessions, deep, tools)
-            except Exception as error:  # 不含 CancelledError（BaseException，原样穿透）
+            except Exception as err:  # 不含 CancelledError（BaseException，原样穿透）
                 if not step.optional:
-                    raise PipelineAbort(f"必要步骤 {step.name} 失败: {error}") from error
-                _logger.warning(f"思考步骤 {step.name} 失败，跳过: {error}")
+                    raise PipelineAbort(f"必要步骤 {step.name} 失败: {err}") from err
+                _logger.warning(f"思考步骤 {step.name} 失败，跳过: {err}")
                 continue
             note = str(parsed.get("note", "")).strip()
             executed.append(
@@ -324,7 +325,7 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
             content = result.content or ""
             # 文本喊话工具调用（原生格式已被 Provider 内循环消化，到这里的是喊话）
             if call_tools:
-                normalized = sessions.normalize_tool_calls(result, _try_parse_dict(content))
+                normalized = sessions.normalize_tool_calls(result, try_extract_json_object(content))
                 if normalized.tool_calls:
                     messages = await self._feed_tool_results(
                         base, result, normalized.tool_calls, call_tools
@@ -396,9 +397,9 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
                 ),
                 timeout=_CONCLUSION_TIMEOUT_S,
             )
-            parsed = _extract_json(result.content or "")
-        except Exception as error:
-            raise PipelineAbort(f"结论步骤失败: {error}") from error
+            parsed = extract_json_object(result.content or "")
+        except Exception as err:
+            raise PipelineAbort(f"结论步骤失败: {err}") from err
 
         draft = str(parsed.get("draft", "")).strip()
         return BrainConclusion(
@@ -460,32 +461,9 @@ def _render_digests(steps: list[ReasoningStep]) -> str:
     return "\n".join(lines)[-_DIGEST_MAX_CHARS:]
 
 
-def _extract_json(text: str) -> dict:
-    """容错提取 JSON 对象（容忍 ```json 包裹 / 前后噪声）。"""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError(f"输出不是 JSON: {text[:80]!r}")
-    try:
-        return msgspec.json.decode(text[start : end + 1], type=dict)
-    except msgspec.DecodeError as error:
-        raise ValueError(f"JSON 解析失败: {text[:80]!r}") from error
-
-
-def _try_parse_dict(text: str) -> dict | None:
-    """尽力把模型输出解析成 dict（给 normalize_tool_calls 做协议识别用）。
-
-    文本喊话的场景输出不是合法 JSON（模型在写自然语言），此时返回 None，
-    Provider 的 normalize 会退回文本模式抠工具名。
-    """
-    try:
-        return _extract_json(text)
-    except ValueError:
-        return None
-
-
 def _parse_step_json(text: str) -> dict:
     """步骤输出解析：JSON 且必须带 note（本步结论）。"""
-    data = _extract_json(text)
+    data = extract_json_object(text)
     if "note" not in data:
         raise ValueError(f"输出缺少 note 字段: {text[:80]!r}")
     return data

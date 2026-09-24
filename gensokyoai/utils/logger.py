@@ -1,7 +1,5 @@
 """日志工具 桥接标准 logging 到 Loguru"""
 
-# GensokyoAI\utils\logging.py
-
 import asyncio
 import contextlib
 import inspect
@@ -104,7 +102,7 @@ class LoggerManager:
         """获取带模块前缀的 logger
 
         Args:
-            module_name: 模块名称，如 "BRAIN", "SECURITY", "PAYMENT"
+            module_name: 模块名称，如 "BRAIN", "MOUTH", "MEMORY"
 
         Returns:
             绑定了 module 字段的 loguru logger 实例
@@ -206,37 +204,3 @@ __all__ = [
     "LoguruHandler",
     "LoggerManager",
 ]
-
-
-# 测试代码
-if __name__ == "__main__":
-    print("=" * 60)
-    print("测试 1: 模块级 Logger")
-    print("=" * 60)
-
-    setup_logging(log_level="TRACE", log_console=True)
-
-    brain = LoggerManager.get_logger("BRAIN")
-    security = LoggerManager.get_logger("SECURITY")
-    payment = LoggerManager.get_logger("PAYMENT")
-
-    brain.trace("initializing neural network")
-    brain.debug("loading model weights")
-    security.info("user login success")
-    payment.warning("payment retry, attempt=2")
-    brain.error("model inference failed")
-    brain.critical("service cannot start, exit")
-
-    print("\n" + "=" * 60)
-    print("测试 2: 缓存验证（同一模块返回同一实例）")
-    print("=" * 60)
-
-    brain2 = LoggerManager.get_logger("BRAIN")
-    print(f"brain is brain2: {brain is brain2}")  # True
-
-    print("\n" + "=" * 60)
-    print("测试 3: 标准 logging 桥接")
-    print("=" * 60)
-
-    std_logging.info("这是标准 logging 的 INFO 日志")
-    std_logging.warning("这是标准 logging 的 WARNING 日志")

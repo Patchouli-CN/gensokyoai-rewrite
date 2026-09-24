@@ -2,20 +2,19 @@
 
 import time
 
-import msgspec
-
 from ...prompts import prompt_mgr
 from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort, ReasoningStep
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message, ToolCall, ToolSpec
 from ...schemas.scene_schema import SceneSnapshot
 from ...utils.logger import LoggerManager
+from ...utils.text import try_extract_json_object
 from ..session_manager import SessionManager
 from ..toolkit import DEFAULT_MAX_RESULT_CHARS, DEFAULT_TIMEOUT, build_executor
 from .ooc_detector import OOCDetector
 from .pipeline import PipelineAbort, ThinkPipeline
 
-_route_logger = LoggerManager.get_logger("BRAIN")
+_logger = LoggerManager.get_logger("BRAIN")
 
 _EMOTION_WORDS = ("难过", "开心", "生气", "伤心", "喜欢", "讨厌", "害怕", "哭", "笑", "感动")
 _PLOT_WORDS = ("世界", "本质", "为什么", "记得", "过去", "未来", "剧情", "故事", "命运", "秘密")
@@ -45,7 +44,7 @@ def route(snapshot: SceneSnapshot) -> BrainThinkEffort:
         effort = BrainThinkEffort.HIGH
     else:
         effort = BrainThinkEffort.MAX
-    _route_logger.debug(
+    _logger.debug(
         f"档位路由: score={score} 档位={effort.value} 输入={snapshot.content[:50]!r} "
         f"长度={len(text)} 参与者={len(snapshot.participants)}"
     )
@@ -143,8 +142,8 @@ class BrainEngine:
                 effort=effort,
                 tools=self._tools,
             )
-        except PipelineAbort as error:
-            self._logger.warning(f"思考链失败，降级为快速路径: {error}")
+        except PipelineAbort as err:
+            self._logger.warning(f"思考链失败，降级为快速路径: {err}")
             return self._fast_path(snapshot, effort)
 
     async def _relay_think(
@@ -235,14 +234,13 @@ class BrainEngine:
                 self._logger.exception("推理调用失败，降级为快速路径")
                 return self._fast_path(snapshot, effort)
 
-            # 【调试】打印模型原始输出
             self._logger.debug(f"模型原始输出: {result.content}")
 
             # 收集模型原生 thinking（think=true 时由服务端分离或 split_think 剥离而来）
             if result.reasoning:
                 raw_reasoning_parts.append(result.reasoning)
 
-            parsed = self._parse_json(result.content)
+            parsed = try_extract_json_object(result.content) or {}
             if not parsed:
                 self._logger.warning(f"推理输出 JSON 解析失败: {result.content!r}")
                 if current_round < max_rounds:
@@ -390,14 +388,3 @@ class BrainEngine:
             effort=effort,
             timestamp=time.time(),
         )
-
-    @staticmethod
-    def _parse_json(text: str) -> dict:
-        """容错解析模型输出中的 JSON 对象，失败返回空 dict"""
-        start, end = text.find("{"), text.rfind("}")
-        if start == -1 or end <= start:
-            return {}
-        try:
-            return msgspec.json.decode(text[start : end + 1], type=dict)
-        except Exception:
-            return {}

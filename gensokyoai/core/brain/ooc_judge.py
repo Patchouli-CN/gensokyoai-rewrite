@@ -226,8 +226,8 @@ async def audit_with_judge(
             ),
             timeout=settings.timeout_ms / 1000,
         )
-    except Exception as error:
-        return OOCCheck(decision="accept", reason=f"审查调用失败，按放行处理: {error}")
+    except Exception as err:
+        return OOCCheck(decision="accept", reason=f"审查调用失败，按放行处理: {err}")
     return decide_ooc(answers, settings)
 
 

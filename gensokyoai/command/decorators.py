@@ -1,4 +1,3 @@
-# commands/decorators.py
 """命令装饰器 —— 支持实例级注册表"""
 
 import inspect
@@ -34,6 +33,7 @@ class CommandDefinition:
         self.usage = usage or self._generate_usage(handler)
 
     def _generate_usage(self, handler: Callable) -> str:
+        """从函数签名生成用法串：必填参数 <name>，可选参数 [name=default]"""
         params = []
         for name, param in self._sig.parameters.items():
             if name in ("cmd", "ctx"):
@@ -45,6 +45,10 @@ class CommandDefinition:
         return f"/{self.name} " + " ".join(params) if params else f"/{self.name}"
 
     def parse_args(self, content: str) -> dict:
+        """把空格分隔的命令内容按签名解析成 kwargs（按类型标注做 int/float/bool 转换）。
+
+        转换失败的参数回退到默认值（无默认值为 None）——命令解析失败不该炸掉对话。
+        """
         args: dict[str, Any] = {}
         param_names = [p for p in self._sig.parameters if p not in ("cmd", "ctx")]
 
@@ -82,6 +86,7 @@ class CommandDefinition:
 
     @property
     def all_names(self) -> list[str]:
+        """主名 + 全部别名"""
         return [self.name] + self.aliases
 
 
@@ -92,13 +97,16 @@ class CommandRegistry:
         self._commands: dict[str, CommandDefinition] = {}
 
     def register(self, cmd_def: CommandDefinition) -> None:
+        """注册命令定义，主名与别名全部进表（键为小写）"""
         for n in cmd_def.all_names:
             self._commands[n.lower()] = cmd_def
 
     def get(self, name: str) -> CommandDefinition | None:
+        """按名字（或别名，大小写不敏感）查命令定义"""
         return self._commands.get(name.lower())
 
     def list(self, cmd_type: CommandType | None = None) -> list[CommandDefinition]:
+        """列出命令定义（按主名去重）；cmd_type 非 None 时按类型过滤"""
         seen = set()
         result = []
         for cmd in self._commands.values():
@@ -155,8 +163,10 @@ def command(
 
 
 def get_command(name: str) -> CommandDefinition | None:
+    """从全局默认注册表查命令定义"""
     return _DEFAULT_REGISTRY.get(name)
 
 
 def list_commands(cmd_type: CommandType | None = None) -> list[CommandDefinition]:
+    """列出全局默认注册表中的命令定义"""
     return _DEFAULT_REGISTRY.list(cmd_type)

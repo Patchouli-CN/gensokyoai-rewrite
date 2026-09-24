@@ -2,12 +2,11 @@
 
 import time
 
-import msgspec
-
 from ...prompts import prompt_mgr
 from ...schemas.brain_schema import OOCVerdict
 from ...schemas.model_schema import Message
 from ...utils.logger import LoggerManager
+from ...utils.text import try_extract_json_object
 from ..session_manager import SessionManager
 
 _OOC_PATTERNS = ("作为一个AI", "作为一个 AI", "语言模型", "人工智能助手", "抱歉，我不能")
@@ -71,12 +70,9 @@ class OOCDetector:
             self._logger.exception("OOC 深审调用失败，按未触发处理")
             return OOCVerdict()
 
-        start, end = result.content.find("{"), result.content.rfind("}")
-        if start == -1 or end <= start:
-            return OOCVerdict()
-        try:
-            parsed = msgspec.json.decode(result.content[start : end + 1], type=dict)
-        except Exception:
+        parsed = try_extract_json_object(result.content)
+        if parsed is None:
+            # 输出不是合法 JSON：审查证据不足，按未触发处理
             return OOCVerdict()
 
         verdict = OOCVerdict(

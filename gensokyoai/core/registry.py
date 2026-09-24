@@ -8,7 +8,7 @@ from typing import Any
 from ..schemas.model_schema import ToolFunc, ToolSpec
 from ..utils.logger import LoggerManager
 
-_registry_logger = LoggerManager.get_logger("REGISTRY")
+_logger = LoggerManager.get_logger("REGISTRY")
 
 
 class Registry:
@@ -68,7 +68,7 @@ class ToolRegistry:
 
         def decorator(func: ToolFunc) -> ToolFunc:
             tool_name = name or func.__name__
-            _registry_logger.info(f"注册工具：{tool_name}")
+            _logger.info(f"注册工具：{tool_name}")
             if tool_name in cls._tools:
                 raise ValueError(f"工具重复注册: {tool_name}")
 

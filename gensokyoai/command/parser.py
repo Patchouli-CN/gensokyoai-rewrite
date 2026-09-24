@@ -1,4 +1,3 @@
-# commands/parser.py
 """命令解析器 —— 支持标签和前缀两种模式"""
 
 import re
@@ -36,6 +35,7 @@ class TagDefinition:
 
     @property
     def all_names(self) -> list[str]:
+        """主名 + 全部别名"""
         return [self.name] + self.aliases
 
 
@@ -43,10 +43,15 @@ class ParsedCommand(Struct):
     """解析后的命令"""
 
     type: CommandType
+    """ 命令类型 """
     name: str
+    """ 命令名（小写）"""
     content: str = ""
+    """ 命令携带的内容文本 """
     args: list[str] = field(default_factory=list)
+    """ 位置参数列表 """
     raw: str = ""
+    """ 原始匹配文本（调试用）"""
 
 
 class CommandParser:

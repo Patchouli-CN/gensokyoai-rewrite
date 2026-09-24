@@ -15,7 +15,7 @@ class CharacterStats(msgspec.Struct):
     """ 当前主要情绪 """
 
     motivation: float = 0.5
-    """" 对话欲望 """
+    """ 对话欲望 """
 
     extra: dict[str, Any] = msgspec.field(default_factory=dict)
     """ 扩展状态槽位 (如: 临时buff, 任务进度) """
