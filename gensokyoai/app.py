@@ -20,13 +20,13 @@ from typing import Any
 
 from .core.bootstrap import discover_all
 from .core.brain.judge import build_judge, build_ooc_judge
-from .core.config import load_config
+from .core.config import load_config, load_eye_config
 from .core.memorizer.embedder import build_embedder
 from .core.resource import ResourceGate
 from .core.session_factory import build_resource_gate, build_session_manager
 from .core.session_manager import SessionManager
 from .eyes.base import Perceiver
-from .eyes.perceiver import ConsolePerceiver
+from .eyes.perceiver import ConsoleEyeSettings, ConsolePerceiver
 from .mouth.base import Mouth
 from .mouth.console import ConsoleMouth
 from .roleplay.character import Character, load_character
@@ -138,7 +138,9 @@ def build_world(
     if storage_dir is not None:
         world_kwargs["storage_dir"] = storage_dir
     return TouhouWorld(
-        eye=eye if eye is not None else ConsolePerceiver(sender="你"),
+        eye=eye
+        if eye is not None
+        else ConsolePerceiver(load_eye_config("console", ConsoleEyeSettings)),
         character=character,
         sessions=sessions,
         mouth=mouth if mouth is not None else ConsoleMouth(),

@@ -8,6 +8,13 @@
 
 ## [Unreleased]
 
+### 新增
+  - **眼层平台配置（`config/eyes/`）**：每个平台（eye）的配置自管——单文件平台
+    用 `config/eyes/{平台名}.yaml`（`load_eye_config` 类型化加载，缺失回落
+    schema 默认值）；多文件平台（如 nb2 的 `.env`）用 `config/eyes/{平台名}/`
+    目录（`resolve_eye_config_dir`）。console eye 首个落地（`ConsoleEyeSettings.sender`）；
+    `.env` / `*.local.yaml` 已进 gitignore（模板 `.example` 提交）。
+
 ### 修复
   - **CI 门禁工具版本漂移（红了一片没人发现是从第 26 次运行开始的）**：dev 依赖
     `ruff>=0.15` / `mypy>=1.11` 等未 pin，CI 每次装最新——ruff 0.16 新增

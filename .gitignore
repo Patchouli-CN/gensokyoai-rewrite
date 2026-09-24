@@ -34,3 +34,7 @@ temp/
 .__p*/
 .ws_probe*/
 
+
+# 平台适配器 secrets：.env / *.local.yaml 不进库（模板 .example 提交）
+config/eyes/**/.env
+config/eyes/**/*.local.yaml

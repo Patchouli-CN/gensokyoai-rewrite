@@ -6,17 +6,25 @@ import signal
 import time
 
 import aioconsole
+import msgspec
 
 from ..schemas.scene_schema import SceneSnapshot
 from .base import Perceiver
 
 
+class ConsoleEyeSettings(msgspec.Struct, frozen=True):
+    """控制台 eye 配置（`config/eyes/console.yaml`；缺失则全用默认值）"""
+
+    sender: str = "你"
+    """ 控制台输入的发送者名 """
+
+
 class ConsolePerceiver(Perceiver):
     """控制台场景适配器：本地调试用，stdin 一行 = 一条私聊消息"""
 
-    def __init__(self, sender: str = "用户") -> None:
+    def __init__(self, settings: ConsoleEyeSettings | None = None) -> None:
         super().__init__()
-        self._sender = sender
+        self._sender = (settings or ConsoleEyeSettings()).sender
 
     async def next_snapshot(self) -> SceneSnapshot | None:
         """阻塞读一行控制台输入，支持优雅关闭。

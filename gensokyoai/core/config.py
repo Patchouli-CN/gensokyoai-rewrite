@@ -18,6 +18,8 @@ __all__ = [
     "ResourceSettings",
     "StyleSettings",
     "load_config",
+    "load_eye_config",
+    "resolve_eye_config_dir",
 ]
 
 
@@ -204,3 +206,45 @@ def load_config(path: str | Path) -> GensokyoConfig:
     """
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     return msgspec.convert(data, GensokyoConfig, strict=False)
+
+
+def load_eye_config[S](
+    eye_name: str, schema: type[S], *, base_dir: str | Path = "config/eyes"
+) -> S | None:
+    """加载眼层平台配置：`{base_dir}/{eye_name}.yaml`，缺失返回 None。
+
+    每个 eye 模块自带自己的 msgspec schema（单文件平台）；多文件平台
+    （如 nb2 要吃自己的 `.env`）用 `resolve_eye_config_dir` 拿目录自行解析。
+    只找工作目录——眼层配置本质是部署方的东西，包内不自带；缺失时
+    调用方直接用 schema 默认值兜底即可。
+
+    Args:
+        eye_name: 平台名（文件名，不含后缀）
+        schema: 该 eye 的 msgspec.Struct 配置类型
+        base_dir: 眼层配置根目录（测试可指向临时目录）
+
+    Returns:
+        S | None: 解析出的强类型配置；文件不存在为 None
+
+    Raises:
+        msgspec.ValidationError: 配置字段类型不符
+    """
+    path = Path(base_dir) / f"{eye_name}.yaml"
+    if not path.exists():
+        return None
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return msgspec.convert(data, schema, strict=False)
+
+
+def resolve_eye_config_dir(eye_name: str, *, base_dir: str | Path = "config/eyes") -> Path | None:
+    """多文件平台的配置目录：`{base_dir}/{eye_name}/` 存在则返回，否则 None。
+
+    Args:
+        eye_name: 平台名（目录名）
+        base_dir: 眼层配置根目录
+
+    Returns:
+        Path | None: 配置目录；不存在为 None
+    """
+    path = Path(base_dir) / eye_name
+    return path if path.is_dir() else None
