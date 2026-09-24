@@ -1,7 +1,6 @@
 """角色扮演主循环"""
 
 import asyncio
-import contextlib
 import random
 import re
 import time
@@ -19,6 +18,7 @@ from ..core.brain.gate import (
 from ..core.brain.ooc_detector import OOCDetector
 from ..core.brain.ooc_judge import audit_with_judge
 from ..core.brain.pipeline import ThinkPipeline
+from ..core.clock import BiologicalClock
 from ..core.config import GateSettings, OOCJudgeSettings, SearchSettings, StyleSettings
 from ..core.event_bus import EventBus
 from ..core.health import HealthMonitor
@@ -307,6 +307,10 @@ class TouhouWorld:
         self._idle_threshold = idle_threshold
         self._urge_threshold = urge_threshold
 
+        # --- 生物钟：定时任务调度（首个住户 = 主动发言节拍）---
+        self.clock = BiologicalClock()
+        self.clock.every("initiative", self._initiative_interval, self._maybe_initiative)
+
         # --- 过渡语 / OOC 旋钮 ---
         self._stall_probability = stall_probability
         self._stall_cooldown_turns = stall_cooldown_turns
@@ -449,11 +453,11 @@ class TouhouWorld:
             await self.memory.store(event.payload)
 
     async def start(self) -> None:
-        """启动主循环（开场白 + 主动发言后台任务 + 优雅关闭）"""
+        """启动主循环（开场白 + 生物钟 + 优雅关闭）"""
         await self.lifecycle.startup()
         if not self.restored:
             await self._greet()
-        initiative_task = asyncio.create_task(self._initiative_loop())
+        await self.clock.start()
 
         turn = self.persistence.turn_count
         try:
@@ -548,9 +552,7 @@ class TouhouWorld:
         finally:
             # 代际 +1：在途后台任务的回写全部作废
             self._generation += 1
-            initiative_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await initiative_task
+            await self.clock.stop()
             # 侧链收尾：先给一小段自然完成的机会（本回合的记忆写入应落盘），
             # 超时则取消 —— 不能让慢蒸馏把关闭流程拖住
             if self._tasks.pending:
@@ -1151,23 +1153,21 @@ class TouhouWorld:
         except Exception:
             self._logger.exception("记忆蒸馏失败（不影响主链路）")
 
-    async def _initiative_loop(self) -> None:
-        """主动发言后台循环：空闲超阈值时评估四维对话欲，达标即开口。
+    async def _maybe_initiative(self) -> None:
+        """主动发言节拍（生物钟住户）：空闲超阈值时评估四维对话欲，达标即开口。
 
         零思考 token：不经过 Brain，直接用规则结论驱动 Responder。
         """
-        while True:
-            await asyncio.sleep(self._initiative_interval)
-            if self._busy or self._stopping():
-                continue
-            idle = time.monotonic() - self._last_activity
-            if idle < self._idle_threshold:
-                continue
+        if self._busy or self._stopping():
+            return
+        idle = time.monotonic() - self._last_activity
+        if idle < self._idle_threshold:
+            return
 
-            try:
-                await self._try_speak(idle)
-            except Exception:
-                self._logger.exception("主动发言评估失败")
+        try:
+            await self._try_speak(idle)
+        except Exception:
+            self._logger.exception("主动发言评估失败")
 
     def _stopping(self) -> bool:
         """是否处于关闭流程"""

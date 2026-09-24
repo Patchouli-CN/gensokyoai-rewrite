@@ -17,6 +17,11 @@
     全部换成枚举引用——新增记忆类型只动枚举一处。
 
 ### 新增
+  - **生物钟 `BiologicalClock`（`core/clock.py`）**：世界内的定时任务调度——
+    `every()` 周期任务 / `once()` 一次性任务（老项目 reminders 的 at 语义），
+    任务异常隔离不影响心跳，`stop()` 随世界关闭。while+sleep 极简实现不引
+    调度库；原 `_initiative_loop` 主动发言收编为首个住户（`_maybe_initiative`
+    单次节拍，行为不变）。将来的定时蒸馏 / 睡眠巩固直接注册进来即可。
   - **知识缓存（`core/memorizer/knowledge.py`，语义记忆层）**：联网工具
     （web_search / fetch_url）在世界装配时自动套缓存包装（签名/文档透明）——
     L1 会话内 TTL 精确缓存（`search.cache_ttl_s`）；L2 成功结果归档为
