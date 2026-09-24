@@ -61,9 +61,9 @@ def get_moon_phase() -> str:
     Returns:
         str: 形如 "盈凸月（月龄 10.3 天）"
     """
-    elapsed = (time.time() - _NEW_MOON_EPOCH) % _SYNODIC_MONTH
-    index = int(elapsed / _SYNODIC_MONTH * 8) % 8
-    return f"{_MOON_PHASES[index]}（月龄 {elapsed:.1f} 天）"
+    elapsed_days = ((time.time() - _NEW_MOON_EPOCH) / 86400) % _SYNODIC_MONTH
+    index = int(elapsed_days / _SYNODIC_MONTH * 8) % 8
+    return f"{_MOON_PHASES[index]}（月龄 {elapsed_days:.1f} 天）"
 
 
 @ToolRegistry.tool
