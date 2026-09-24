@@ -5,7 +5,6 @@ import contextlib
 import signal
 import time
 
-import aioconsole
 import msgspec
 
 from ..schemas.scene_schema import SceneSnapshot
@@ -47,8 +46,10 @@ class ConsolePerceiver(Perceiver):
         stop_task = None
 
         try:
-            # 用 asyncio.wait 让 ainput 和停止信号赛跑
-            input_task = asyncio.create_task(aioconsole.ainput("输入你的消息："))
+            # 用 asyncio.wait 让 stdin 读取和停止信号赛跑
+            # （input 是阻塞调用，下线程执行；取消后底层线程会阻塞到用户回车为止，
+            #   控制台调试眼睛可接受——此前 aioconsole 在 Windows 上同样杀不掉读线程）
+            input_task = asyncio.create_task(asyncio.to_thread(input, "输入你的消息："))
             stop_task = asyncio.create_task(stop_event.wait())
 
             done, pending = await asyncio.wait(

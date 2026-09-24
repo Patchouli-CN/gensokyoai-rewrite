@@ -9,6 +9,9 @@
 ## [Unreleased]
 
 ### 变更
+  - **移除 aioconsole 依赖**：它只有一处实质用途（console eye 读 stdin），
+    换成标准库 `asyncio.to_thread(input)`；少一个依赖，pytest 唯一的
+    DeprecationWarning（其内部用了 3.16 将删的 DefaultEventLoopPolicy）随之消失。
   - **`memory_type` 收敛为 `MemoryType` StrEnum**：值不变（存量 long_memory.json
     直接兼容，实测旧存档解码为枚举且与字符串比较相等），loop.py 五处裸字符串
     全部换成枚举引用——新增记忆类型只动枚举一处。
