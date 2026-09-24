@@ -22,6 +22,7 @@ __all__ = [
     "BrainConclusion",
     "BrainThinkEffort",
     "CompletionResult",
+    "EventTopic",
     "HealthAlert",
     "HealthMetric",
     "HealthReport",
@@ -39,7 +40,6 @@ __all__ = [
     "TenantQuota",
     "ToolCall",
     "ToolSpec",
-    "EventTopic",
     "Usage",
     "Verdict",
 ]

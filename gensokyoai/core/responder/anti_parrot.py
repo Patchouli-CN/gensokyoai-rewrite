@@ -19,7 +19,10 @@ from collections.abc import Iterable, Sequence
 __all__ = [
     "avoid_hint",
     "ending_key",
+    "should_retry",
+    "should_strip_ending",
     "similarity",
+    "split_sentences",
     "strip_ending",
 ]
 
