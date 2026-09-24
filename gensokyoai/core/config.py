@@ -151,6 +151,9 @@ class EmbeddingSettings(msgspec.Struct, frozen=True):
     timeout: float = 30.0
     """ 单次向量化请求超时（秒）"""
 
+    min_score: float = 0.35
+    """ 语义检索相似度下限：低于此分的结果视为噪声丢弃（bge 分数带窄，实测噪声 ~0.30）"""
+
 
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """顶层配置"""

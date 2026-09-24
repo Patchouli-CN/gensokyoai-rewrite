@@ -192,6 +192,7 @@ class TouhouWorld:
         storage_dir: str | Path = "data",
         persistence=None,
         embedder: Embedder | None = None,
+        memory_min_score: float = 0.0,
         shutdown_drain_timeout: float = 2.0,
     ) -> None:
         """
@@ -219,6 +220,7 @@ class TouhouWorld:
             storage_dir: 持久化根目录
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
             embedder: 记忆向量化器（None = 长期记忆检索退回子串匹配）
+            memory_min_score: 语义检索相似度下限（0 = 不过滤；config.embedding.min_score 传入）
             shutdown_drain_timeout: 关闭时等待后台侧链收尾的秒数，超时则取消
         """
         self._logger = LoggerManager.get_logger("WORLD")
@@ -238,7 +240,11 @@ class TouhouWorld:
         `asyncio` 只对任务持弱引用，不登记就可能执行途中被 GC 回收；
         关闭时也靠它统一取消并等在途任务收尾 """
         self.memory = MemoryManager(
-            storage_dir=storage_dir, session_id=session_id, tasks=self._tasks, embedder=embedder
+            storage_dir=storage_dir,
+            session_id=session_id,
+            tasks=self._tasks,
+            embedder=embedder,
+            min_score=memory_min_score,
         )
         self.health = HealthMonitor(
             bus=self.bus,
@@ -470,7 +476,8 @@ class TouhouWorld:
                         continue
 
                     # 3. 决策阶段 (Brain)；深思考前先垫一句角色过渡语遮延迟
-                    memories = await self.memory.recent(5)
+                    # 以当前消息为关联词，顺带把长期记忆里的相关旧事捞进来（语义检索）
+                    memories = await self.memory.recent(5, search_term=snapshot.content)
                     effort = self._apply_effort_floor(
                         judged if judged is not None else route(snapshot)
                     )

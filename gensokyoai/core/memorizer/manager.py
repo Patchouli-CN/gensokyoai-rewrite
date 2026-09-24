@@ -35,6 +35,7 @@ class MemoryManager:
         session_id: str | None = None,
         tasks: TaskManager | None = None,
         embedder: Embedder | None = None,
+        min_score: float = 0.0,
     ) -> None:
         """初始化。
 
@@ -69,7 +70,7 @@ class MemoryManager:
             long_path = None
         self.session_id = session_id or "default"
         """ 会话标识（纯内存模式固定为 default）"""
-        self._long_mem_store = LongMemoryStore(long_path, embedder=embedder)
+        self._long_mem_store = LongMemoryStore(long_path, embedder=embedder, min_score=min_score)
 
     async def store(self, item: MemoryItem) -> None:
         """存储一条记忆，并维护关联索引"""

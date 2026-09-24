@@ -113,3 +113,23 @@ async def test_vectors_persist_to_sidecar(tmp_path):
     results = await store2.retrieve_by_topic("参拜神社")
     assert results[0].content == "寺庙香火很旺"
     assert embedder2.calls == [["参拜神社"]]
+
+
+async def test_min_score_filters_noise():
+    """相似度下限：全是低分噪声时返回空，而不是硬塞 top-N"""
+    embedder = FakeEmbedder(
+        {
+            "寺庙香火很旺": [1.0, 0.0],
+            "晚饭吃了咖喱": [0.0, 1.0],
+            # 与两个候选都近乎垂直/反向：最高分 ~0.1，模拟真机噪声带
+            "毫不相关的查询": [-0.5, 0.05],
+        }
+    )
+    store = LongMemoryStore(embedder=embedder, min_score=0.5)
+    await store.dump([MemoryItem(content="寺庙香火很旺"), MemoryItem(content="晚饭吃了咖喱")])
+    assert await store.retrieve_by_topic("毫不相关的查询") == []
+
+    # 下限为 0 时不过滤（非负即收），保持旧行为
+    store_open = LongMemoryStore(embedder=embedder, min_score=0.0)
+    await store_open.dump([MemoryItem(content="寺庙香火很旺"), MemoryItem(content="晚饭吃了咖喱")])
+    assert len(await store_open.retrieve_by_topic("毫不相关的查询")) == 1

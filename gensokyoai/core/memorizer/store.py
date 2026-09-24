@@ -23,16 +23,23 @@ class LongMemoryStore:
     未配 embedder 时检索退回子串匹配，行为与旧版一致。
     """
 
-    def __init__(self, file_path: str | Path | None = None, embedder: Embedder | None = None):
+    def __init__(
+        self,
+        file_path: str | Path | None = None,
+        embedder: Embedder | None = None,
+        min_score: float = 0.0,
+    ):
         """初始化。
 
         Args:
             file_path: 落盘文件路径；None 表示纯内存（不落盘）
             embedder: 向量化器；None 时 retrieve_by_topic 退回子串匹配
+            min_score: 语义检索相似度下限，低于下限的结果丢弃（0 = 不过滤）
         """
         self._logger = LoggerManager.get_logger("LONGMEM")
         self._file_path = Path(file_path) if file_path is not None else None
         self._embedder = embedder
+        self._min_score = min_score
         self._items: dict[str, MemoryItem] = {}
         self._vectors: dict[str, list[float]] = {}
         self._dirty = False
@@ -171,7 +178,14 @@ class LongMemoryStore:
                 self._logger.exception("查询向量化失败，本次退回子串匹配")
             else:
                 ranked = cosine_rank(query, self._vectors, limit=limit)
-                return [self._items[key] for key, _ in ranked if key in self._items]
+                hits = [
+                    self._items[key]
+                    for key, score in ranked
+                    if key in self._items and score >= self._min_score
+                ]
+                if not hits and ranked:
+                    self._logger.debug(f"语义检索无一过线（min_score={self._min_score}），返回空")
+                return hits
 
         matches = [
             item for item in self._items.values() if item.topic == topic or topic in item.content

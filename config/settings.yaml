@@ -42,7 +42,9 @@ resource:
 gate:
   enabled: true
   judge: "local"          # local=主模型当裁判 | typesafe=真 jev（需 pip install '.[jev]'）| none=纯规则
-  group_threshold: 0.6    # 群里没人点名时，裁判 should_reply 达到该值才接话（调低更活跃）
+  group_threshold: 0.8    # 群里没人点名时，裁判 should_reply 达到该值才接话（调低更活跃）。
+                          # 实测 local 裁判对无人点名闲聊打 0.6~0.8，0.6 等于见话就接；
+                          # 复读链交给将来的平台侧 eyes 插件（同内容滑窗计数+冷却），core 不内置
   search_threshold: 0.1
   timeout_ms: 60000       # 本地模型单次要 10~25s；用真 jev（云端快）可调回 5000
   route_by_model: true    # 档位由裁判的 needs_deep 说了算（规则路由做兜底）
@@ -77,7 +79,8 @@ style:
 # 端点 = 任何 OpenAI 兼容 /embeddings 服务。注意 llama-server 的 --embedding
 # 实例不能同时服务 chat——本地需另起一个实例（端口与主模型分开）。
 embedding:
-  enabled: false
+  enabled: true
   base_url: "http://127.0.0.1:8081/v1"
   model: "bge-small-zh"
   timeout: 30.0
+  min_score: 0.35    # 语义检索相似度下限：实测相关命中 ~0.37、噪声 ~0.30，取中间

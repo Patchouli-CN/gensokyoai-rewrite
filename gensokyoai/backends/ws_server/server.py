@@ -232,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             "ooc_judge_settings": config.ooc_judge,
             "style": config.style,
             "embedder": build_embedder(config.embedding),
+            "memory_min_score": config.embedding.min_score,
         },
     )
     logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")
