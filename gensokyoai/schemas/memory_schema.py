@@ -20,6 +20,8 @@ class MemoryType(StrEnum):
     THOUGHT = "thought"
     FACT = "fact"
     EVENT = "event"
+    KNOWLEDGE = "knowledge"
+    """ 联网查来的资料（知识缓存 L2 落库用；语义记忆，区别于对话的情景记忆） """
 
 
 class MemoryItem(msgspec.Struct):

@@ -90,6 +90,7 @@ embedding:
 # （thbwiki 支持 MediaWiki API：api.php?action=query&list=search 可直接搜词条），
 # 查不到再 web_search。注意 DDG 的 safesearch 对中文垃圾站过滤力弱。
 search:
+  cache_ttl_s: 1800.0    # 知识缓存 L1（会话内精确缓存）秒数；L2 长期记忆永久
   knowledge_sites:
     - site: thbwiki.cc
       desc: 东方 Project 中文维基——角色设定、符卡、剧情考据都可查；支持 MediaWiki API（api.php?action=query&list=search 搜词条）

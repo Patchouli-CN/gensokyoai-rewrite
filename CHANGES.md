@@ -14,6 +14,12 @@
     全部换成枚举引用——新增记忆类型只动枚举一处。
 
 ### 新增
+  - **知识缓存（`core/memorizer/knowledge.py`，语义记忆层）**：联网工具
+    （web_search / fetch_url）在世界装配时自动套缓存包装（签名/文档透明）——
+    L1 会话内 TTL 精确缓存（`search.cache_ttl_s`）；L2 成功结果归档为
+    `MemoryType.KNOWLEDGE` 条目进长期记忆并向量化，以后聊到相关话题经
+    search_term 关联检索自然捞起，不再重复联网。时效词（今天/最新/价格……）
+    命中的查询只进 L1 不进 L2；失败/空结果不缓存不归档。
   - **`fetch_url` 内置工具（异步）**：aiohttp 原生异步抓取（不卡事件循环），
     SSRF 门禁（`utils/url_security.py`：非 http/https、回环、私有网段、链路本地/
     云元数据、内网域全拦；只做字面校验不解析 DNS），HTML 剥script/style/标签 +

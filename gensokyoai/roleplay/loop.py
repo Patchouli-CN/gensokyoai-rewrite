@@ -25,6 +25,7 @@ from ..core.health import HealthMonitor
 from ..core.lifecycle import LifecycleManager
 from ..core.memorizer.compressor import Compressor
 from ..core.memorizer.embedder import Embedder
+from ..core.memorizer.knowledge import KnowledgeCache
 from ..core.memorizer.manager import MemoryManager
 from ..core.persistence import JsonFilePersistence, PersistenceBackend
 from ..core.registry import ToolRegistry
@@ -248,6 +249,10 @@ class TouhouWorld:
             embedder=embedder,
             min_score=memory_min_score,
         )
+        self._knowledge = KnowledgeCache(
+            self.memory, ttl_s=(search or SearchSettings()).cache_ttl_s
+        )
+        """ 联网工具知识缓存（L1 会话内 + L2 落本世界长期记忆） """
         self.health = HealthMonitor(
             bus=self.bus,
             session_provider=self._session_health,
@@ -431,6 +436,9 @@ class TouhouWorld:
             if name not in seen:
                 unique_tools.append(tool)
                 seen.add(name)
+
+        # 联网工具套知识缓存（L1 TTL + L2 落长期记忆；对工具链路透明）
+        unique_tools = self._knowledge.wrap_all(unique_tools)
 
         self._logger.info(f"最终工具列表: {[t.tool_func.__name__ for t in unique_tools]}")
         return unique_tools

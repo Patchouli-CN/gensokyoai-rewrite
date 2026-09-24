@@ -178,6 +178,9 @@ class SearchSettings(msgspec.Struct, frozen=True):
     knowledge_sites: list[KnowledgeSite] = []
     """ 可信知识站点（东方 Project 场景默认 thbwiki，见 settings.yaml）"""
 
+    cache_ttl_s: float = 1800.0
+    """ 知识缓存 L1（会话内精确缓存）有效秒数；L2 长期记忆不受此限 """
+
 
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """顶层配置"""
