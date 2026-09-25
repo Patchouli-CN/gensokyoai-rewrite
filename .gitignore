@@ -38,3 +38,6 @@ temp/
 # 平台适配器 secrets：.env / *.local.yaml 不进库（模板 .example 提交）
 config/eyes/**/.env
 config/eyes/**/*.local.yaml
+
+# nb2 桥接插件：独立部署单元（跑在 NoneBot2 进程），不进引擎仓库，避免耦合
+nb2_plugin/
