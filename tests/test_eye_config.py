@@ -4,7 +4,7 @@ import msgspec
 import pytest
 
 from gensokyoai.core.config import load_eye_config, resolve_eye_config_dir
-from gensokyoai.eyes.perceiver import ConsoleEyeSettings, ConsolePerceiver
+from gensokyoai.satori.perceiver import ConsoleEyeSettings, ConsolePerceiver
 
 
 def test_load_eye_config_reads_typed(tmp_path):

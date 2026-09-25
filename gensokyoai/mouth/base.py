@@ -1,6 +1,6 @@
 """口层抽象 —— 场景输出适配器（架构文档 §3.1 的对称输出层）。
 
-与 eyes（输入感知）对称：eyes 看，mouth 说，brain 在中间想。
+与 satori（输入感知）对称：satori 看，mouth 说，brain 在中间想。
 """
 
 from abc import ABC, abstractmethod

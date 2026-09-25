@@ -1,7 +1,7 @@
 """分层依赖检查 —— 业务子包之间零直接 import，通信走事件总线 / L4 注入（架构文档 §7.3）
 
 结构说明：brain/responder/memorizer/health 收进 core/ 作为引擎内核，
-eyes（平台感知）、roleplay（领域内容）、models（模型接入）是可替换边缘层。
+satori（平台感知，觉）、roleplay（领域内容）、models（模型接入）是可替换边缘层。
 内核子包之间依然禁止互相 import，否则 core 会退化成一锅巨石。
 """
 
@@ -11,13 +11,13 @@ from pathlib import Path
 GENSOKYOAI_DIR = Path(__file__).resolve().parent.parent / "gensokyoai"
 
 FORBIDDEN_CROSS_IMPORTS = {
-    "core/brain": {"core/responder", "core/memorizer", "core/health", "eyes", "roleplay"},
-    "core/responder": {"core/brain", "core/memorizer", "core/health", "eyes", "roleplay"},
-    "core/memorizer": {"core/brain", "core/responder", "core/health", "eyes", "roleplay"},
-    "core/health": {"core/brain", "core/responder", "core/memorizer", "eyes", "roleplay"},
-    "eyes": {"core/brain", "core/responder", "core/memorizer", "core/health", "roleplay"},
+    "core/brain": {"core/responder", "core/memorizer", "core/health", "satori", "roleplay"},
+    "core/responder": {"core/brain", "core/memorizer", "core/health", "satori", "roleplay"},
+    "core/memorizer": {"core/brain", "core/responder", "core/health", "satori", "roleplay"},
+    "core/health": {"core/brain", "core/responder", "core/memorizer", "satori", "roleplay"},
+    "satori": {"core/brain", "core/responder", "core/memorizer", "core/health", "roleplay"},
     # roleplay 不设禁入清单：它是角色扮演场景的装配层（类似 L4），
-    # 允许组装 core 业务与 eyes；但反向依赖（core/eyes -> roleplay）仍然禁止。
+    # 允许组装 core 业务与 satori；但反向依赖（core/satori -> roleplay）仍然禁止。
 }
 
 CORE_TOP_FORBIDDEN = {
@@ -25,7 +25,7 @@ CORE_TOP_FORBIDDEN = {
     "core/responder",
     "core/memorizer",
     "core/health",
-    "eyes",
+    "satori",
     "roleplay",
     "models",
 }

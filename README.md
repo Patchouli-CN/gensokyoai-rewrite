@@ -96,7 +96,7 @@ gensokyoai/
 │   ├── memorizer/  #   记忆：分级存储 / 蒸馏
 │   └── health/     #   监控：指标 / 告警 / 干预
 ├── models/         # 模型接入：llama_cpp / qwen_local / 价格表
-├── eyes/           # 感知层：perceiver / 多路合流 / OneBot11 解析
+├── satori/         # 感知层（觉）：perceiver / 多路合流 / OneBot11 解析
 ├── mouth/          # 口层：console / 广播+流式
 ├── roleplay/       # 领域：角色卡 / 主循环 / 频道中枢
 ├── command/        # 命令子系统：解析 / 执行 / 权限

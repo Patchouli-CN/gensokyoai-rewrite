@@ -1,9 +1,9 @@
-"""roleplay 角色与 eyes 解析 单元测试"""
+"""roleplay 角色与 satori 解析 单元测试"""
 
 import pytest
 
-from gensokyoai.eyes.parser import build_snapshot, parse_message
 from gensokyoai.roleplay.character import Character, CharacterCard, load_character
+from gensokyoai.satori.parser import build_snapshot, parse_message
 from gensokyoai.schemas.scene_schema import SceneEvent
 
 

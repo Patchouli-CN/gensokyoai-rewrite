@@ -38,9 +38,9 @@ from gensokyoai.app import (  # noqa: E402
 )
 from gensokyoai.core.brain.judge import build_judge  # noqa: E402
 from gensokyoai.core.config import load_config  # noqa: E402
-from gensokyoai.eyes.queue import QueuePerceiver  # noqa: E402
 from gensokyoai.mouth.broadcast import BroadcastMouth  # noqa: E402
 from gensokyoai.roleplay.loop import TouhouWorld  # noqa: E402
+from gensokyoai.satori.queue import QueuePerceiver  # noqa: E402
 from gensokyoai.schemas.scene_schema import SceneSnapshot  # noqa: E402
 from gensokyoai.utils.logger import setup_logging  # noqa: E402
 

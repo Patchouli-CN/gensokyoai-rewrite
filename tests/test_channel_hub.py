@@ -3,10 +3,10 @@
 import asyncio
 
 from gensokyoai.core.session_manager import SessionManager
-from gensokyoai.eyes.queue import QueuePerceiver
 from gensokyoai.mouth.broadcast import BroadcastMouth
 from gensokyoai.roleplay.character import Character, CharacterCard
 from gensokyoai.roleplay.hub import ChannelHub
+from gensokyoai.satori.queue import QueuePerceiver
 from gensokyoai.schemas.model_schema import CompletionResult
 from gensokyoai.schemas.scene_schema import SceneSnapshot
 
@@ -35,7 +35,7 @@ class _Sink:
 
 
 class _FakeWorld:
-    """只与 eyes/mouth 打交道的假世界：收到一条就回一句。"""
+    """只与 satori/mouth 打交道的假世界：收到一条就回一句。"""
 
     def __init__(self, perceiver: QueuePerceiver, mouth: BroadcastMouth) -> None:
         self._eye = perceiver

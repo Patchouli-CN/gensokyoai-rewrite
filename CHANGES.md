@@ -9,6 +9,11 @@
 ## [Unreleased]
 
 ### 变更
+  - **`eyes` 模块改名 `satori`**：感知层以古明地觉命名——觉（さとり）是读心的
+    感知能力，模块管所有平台眼睛；单个平台适配器仍称 eye（`ConsoleEyeSettings`、
+    `load_eye_config`、`config/eyes/` 不动），觉统御众目。同步改名：事件主题
+    `eyes.snapshot` → `satori.snapshot`（该主题无订阅方，纯预留）、日志标签
+    `EYES` → `SATORI`、分层依赖检查表与全部 import。
   - **移除 aioconsole 依赖**：它只有一处实质用途（console eye 读 stdin），
     换成标准库 `asyncio.to_thread(input)`；少一个依赖，pytest 唯一的
     DeprecationWarning（其内部用了 3.16 将删的 DefaultEventLoopPolicy）随之消失。

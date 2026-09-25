@@ -6,7 +6,7 @@ import msgspec
 class EventTopic:
     """事件主题常量（Phase 1 主链路）"""
 
-    SNAPSHOT = "eyes.snapshot"
+    SNAPSHOT = "satori.snapshot"
     """ Eyes -> 编排者：场景快照 """
     BRAIN_CONCLUSION = "brain.conclusion"
     """ Brain -> Responder：结构化结论 """

@@ -1,4 +1,4 @@
-"""eyes基类"""
+"""satori 基类 —— 感知层（觉）：各路平台眼睛（perceiver）的统一抽象"""
 
 from abc import ABC, abstractmethod
 
@@ -7,10 +7,10 @@ from ..utils.logger import LoggerManager
 
 
 class Perceiver(ABC):
-    """Eyes 场景适配器：把平台差异（QQ群/私聊/频道）屏蔽成统一快照流"""
+    """Satori 场景适配器：把平台差异（QQ群/私聊/频道）屏蔽成统一快照流"""
 
     def __init__(self) -> None:
-        self._logger = LoggerManager.get_logger("EYES")
+        self._logger = LoggerManager.get_logger("SATORI")
         self._stop_requested = False
 
     @abstractmethod

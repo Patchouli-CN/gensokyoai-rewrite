@@ -44,7 +44,7 @@ gate:
   judge: "local"          # local=主模型当裁判 | typesafe=真 jev（需 pip install '.[jev]'）| none=纯规则
   group_threshold: 0.8    # 群里没人点名时，裁判 should_reply 达到该值才接话（调低更活跃）。
                           # 实测 local 裁判对无人点名闲聊打 0.6~0.8，0.6 等于见话就接；
-                          # 复读链交给将来的平台侧 eyes 插件（同内容滑窗计数+冷却），core 不内置
+                          # 复读链交给将来的平台侧 satori 插件（同内容滑窗计数+冷却），core 不内置
   search_threshold: 0.1
   timeout_ms: 60000       # 本地模型单次要 10~25s；用真 jev（云端快）可调回 5000
   route_by_model: true    # 档位由裁判的 needs_deep 说了算（规则路由做兜底）

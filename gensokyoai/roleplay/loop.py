@@ -40,9 +40,9 @@ from ..core.responder.anti_parrot import (
 )
 from ..core.responder.generator import Responder
 from ..core.session_manager import SessionManager
-from ..eyes.perceiver import Perceiver
 from ..mouth.base import Mouth
 from ..mouth.console import ConsoleMouth
+from ..satori.perceiver import Perceiver
 from ..schemas.brain_schema import BrainConclusion, BrainThinkEffort
 from ..schemas.event_schema import BaseEvent, EventTopic, TurnEndPayload
 from ..schemas.memory_schema import MemoryItem, MemoryType

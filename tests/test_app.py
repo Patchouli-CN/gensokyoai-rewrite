@@ -68,8 +68,8 @@ def test_build_session_and_character_returns_assembled_pair():
 
 def test_build_world_uses_injected_io_and_session_id(tmp_path):
     """注入的 eye/mouth 被采用，session_id 透传"""
-    from gensokyoai.eyes.queue import QueuePerceiver
     from gensokyoai.mouth.broadcast import BroadcastMouth
+    from gensokyoai.satori.queue import QueuePerceiver
 
     eye, mouth = QueuePerceiver(), BroadcastMouth()
     world = build_world(
@@ -88,8 +88,8 @@ def test_build_world_uses_injected_io_and_session_id(tmp_path):
 
 def test_build_world_defaults_to_console_io(tmp_path):
     """不注入时默认给控制台感知器与口层"""
-    from gensokyoai.eyes.perceiver import ConsolePerceiver
     from gensokyoai.mouth.console import ConsoleMouth
+    from gensokyoai.satori.perceiver import ConsolePerceiver
 
     world = build_world(
         config_path=_ROOT / DEFAULT_CONFIG,

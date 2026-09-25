@@ -6,7 +6,7 @@
 本地 LLM 角色扮演引擎的**重写版**：把推理、记忆、时机判断全部工程化，小上下文模型也能稳定扮演。设计思路见 [README](../README.md)，跑法见 [QUICKSTART.md](QUICKSTART.md)。
 
 ### Q：接 QQ 吗？
-引擎本身平台无关：输入走 `eyes`（`Perceiver` 协议 + OneBot11 解析器），输出走 `mouth`。当前内置入口是**控制台**与**WebSocket 文本频道**；接 QQ 需要在外面做一层协议转发（把 OneBot11 事件过 `eyes/parser.py` 打成快照），或直接以 WS 客户端身份推文本。
+引擎本身平台无关：输入走 `satori`（`Perceiver` 协议 + OneBot11 解析器），输出走 `mouth`。当前内置入口是**控制台**与**WebSocket 文本频道**；接 QQ 需要在外面做一层协议转发（把 OneBot11 事件过 `satori/parser.py` 打成快照），或直接以 WS 客户端身份推文本。
 
 ### Q：`command/` 目录是干嘛的？
 命令子系统（解析 / 执行 / 权限分级），供上层把自己平台的命令（如 `/reset`）接进来；主循环默认不启用。

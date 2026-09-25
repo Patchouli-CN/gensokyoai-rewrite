@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 
 from ..core.resource import tenant_scope
 from ..core.session_manager import SessionManager
-from ..eyes.queue import QueuePerceiver
 from ..mouth.broadcast import BroadcastMouth, DeliverSink
+from ..satori.queue import QueuePerceiver
 from ..schemas.scene_schema import SceneSnapshot, SceneType
 from ..utils.logger import LoggerManager
 from .loop import TouhouWorld

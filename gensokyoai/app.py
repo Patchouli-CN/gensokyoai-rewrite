@@ -25,12 +25,12 @@ from .core.memorizer.embedder import build_embedder
 from .core.resource import ResourceGate
 from .core.session_factory import build_resource_gate, build_session_manager
 from .core.session_manager import SessionManager
-from .eyes.base import Perceiver
-from .eyes.perceiver import ConsoleEyeSettings, ConsolePerceiver
 from .mouth.base import Mouth
 from .mouth.console import ConsoleMouth
 from .roleplay.character import Character, load_character
 from .roleplay.loop import TouhouWorld
+from .satori.base import Perceiver
+from .satori.perceiver import ConsoleEyeSettings, ConsolePerceiver
 from .utils.logger import LoggerManager, setup_logging
 
 DEFAULT_CONFIG = "config/settings.yaml"
