@@ -3,7 +3,7 @@ loguru
 msgspec
 pyyaml
 aiohttp
-ayafileio>=1.5.1
+ayafileio>=1.6.0
 numpy
 pytest
 pytest-asyncio
