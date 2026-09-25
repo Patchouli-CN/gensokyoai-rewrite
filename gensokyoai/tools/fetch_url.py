@@ -9,6 +9,7 @@
 
 import html
 import re
+from urllib.parse import urljoin
 
 import aiohttp
 
@@ -20,6 +21,9 @@ _logger = LoggerManager.get_logger("FETCH")
 
 _FETCH_TIMEOUT = aiohttp.ClientTimeout(total=10)
 """ 单次抓取超时 """
+
+_MAX_REDIRECTS = 5
+""" 重定向跟随上限（每一跳都重新过 SSRF 门禁） """
 
 _MAX_BYTES = 1_048_576
 """ 响应读取上限（1 MB）"""
@@ -54,22 +58,37 @@ async def fetch_url(url: str) -> str:
     url = url.strip()
     if not url:
         return "URL 不能为空"
+
+    # 手动跟随重定向：每一跳都重新过 SSRF 门禁（302 到内网 / 云元数据是经典绕过）
+    current = url
     try:
-        validate_external_url(url)
+        async with aiohttp.ClientSession(timeout=_FETCH_TIMEOUT, headers=_USER_AGENT) as session:
+            for _ in range(_MAX_REDIRECTS + 1):
+                try:
+                    validate_external_url(current)
+                except UnsafeUrlError as err:
+                    _logger.info(f"fetch_url 拦截（{url[:80]} -> {current[:80]}）: {err.reason}")
+                    return f"这个地址不允许访问（{err.reason}）"
+
+                try:
+                    async with session.get(current, allow_redirects=False) as response:
+                        status = response.status
+                        if status in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("Location")
+                            if not location:
+                                return f"抓取失败：HTTP {status}（重定向无目标）"
+                            current = urljoin(current, location)
+                            continue
+                        content_type = response.headers.get("Content-Type", "")
+                        raw = await response.content.read(_MAX_BYTES + 1)
+                        break
+                except Exception as err:
+                    _logger.debug(f"fetch_url 抓取失败（{current[:80]}）: {err}")
+                    return f"抓取失败（{type(err).__name__}），稍后再试"
+            else:
+                return f"抓取失败：重定向次数超过 {_MAX_REDIRECTS} 次"
     except UnsafeUrlError as err:
         return f"这个地址不允许访问（{err.reason}）"
-
-    try:
-        async with (
-            aiohttp.ClientSession(timeout=_FETCH_TIMEOUT, headers=_USER_AGENT) as session,
-            session.get(url, allow_redirects=True) as response,
-        ):
-            status = response.status
-            content_type = response.headers.get("Content-Type", "")
-            raw = await response.content.read(_MAX_BYTES + 1)
-    except Exception as err:
-        _logger.debug(f"fetch_url 抓取失败（{url[:80]}）: {err}")
-        return f"抓取失败（{type(err).__name__}），稍后再试"
 
     text = raw.decode("utf-8", "replace")
     if "html" in content_type.lower():

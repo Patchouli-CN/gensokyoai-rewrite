@@ -32,6 +32,13 @@ type WorldFactory = Callable[[str, QueuePerceiver, BroadcastMouth], TouhouWorld]
 _DEFAULT_STOP_TIMEOUT = 5.0
 """ 回收时等世界优雅关闭的秒数，超时才强杀 """
 
+_DEFAULT_MAX_CHANNELS = 32
+""" 同时存活的频道数上限（防刷随机频道名耗尽资源） """
+
+
+class ChannelLimitError(RuntimeError):
+    """频道数到达上限，拒绝新建"""
+
 
 @dataclass
 class Channel:
@@ -64,6 +71,7 @@ class ChannelHub:
         stop_timeout: float = _DEFAULT_STOP_TIMEOUT,
         world_kwargs: dict | None = None,
         clock=time.monotonic,
+        max_channels: int = _DEFAULT_MAX_CHANNELS,
     ) -> None:
         """初始化。
 
@@ -76,6 +84,7 @@ class ChannelHub:
             stop_timeout: 回收时等世界优雅关闭的秒数
             world_kwargs: 透传给默认工厂的 TouhouWorld 额外参数（如 OOC / 过渡语旋钮）
             clock: 时钟函数（可注入以便测试）
+            max_channels: 同时存活频道数上限，满了再建新频道抛 `ChannelLimitError`
         """
         self._logger = LoggerManager.get_logger("HUB")
         self._sessions = sessions
@@ -85,6 +94,7 @@ class ChannelHub:
         self._stop_timeout = stop_timeout
         self._world_kwargs = dict(world_kwargs or {})
         self._clock = clock
+        self._max_channels = max_channels
         self._channels: dict[str, Channel] = {}
         self._factory: WorldFactory = world_factory or self._default_world
 
@@ -218,10 +228,15 @@ class ChannelHub:
         return channel.mouth.subscriber_count if channel else 0
 
     def _get_or_create(self, channel_id: str) -> Channel:
-        """取频道；不存在则建世界并启动其主循环。"""
+        """取频道；不存在则建世界并启动其主循环（满员抛 `ChannelLimitError`）。"""
         channel = self._channels.get(channel_id)
         if channel is not None:
             return channel
+
+        if len(self._channels) >= self._max_channels:
+            raise ChannelLimitError(
+                f"频道数到达上限（{self._max_channels}），拒绝新建: {channel_id}"
+            )
 
         perceiver = QueuePerceiver()
         mouth = BroadcastMouth()
@@ -258,4 +273,4 @@ class ChannelHub:
         return f"ChannelHub(channels={self.channel_ids()})"
 
 
-__all__ = ["Channel", "ChannelHub", "WorldFactory"]
+__all__ = ["Channel", "ChannelHub", "ChannelLimitError", "WorldFactory"]

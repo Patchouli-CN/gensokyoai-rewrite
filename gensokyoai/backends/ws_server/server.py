@@ -23,15 +23,26 @@ from ...core.brain.judge import build_judge, build_ooc_judge
 from ...core.config import load_config
 from ...core.memorizer.embedder import build_embedder
 from ...core.resource import IngressLimiter
-from ...roleplay.hub import ChannelHub
+from ...roleplay.hub import ChannelHub, ChannelLimitError
 from ...schemas.scene_schema import SceneType
 from ...utils.logger import LoggerManager, setup_logging
-from ...utils.text import strip_control_chars
+from ...utils.text import is_safe_channel_id, strip_control_chars
 
 _logger = LoggerManager.get_logger("WS")
 
 HUB_KEY: web.AppKey[ChannelHub] = web.AppKey("hub", ChannelHub)
 """ 应用上下文里的频道中枢键 """
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+""" 回环监听地址白名单（之外必须配 token） """
+
+_MAX_USER_LEN = 32
+""" 自报昵称的长度上限（日志/限流键卫生） """
+
+
+def _check_token(query_token: str | None, expected: str | None) -> bool:
+    """接入令牌校验：未配置（expected=None）时放行；配置了必须精确匹配。"""
+    return expected is None or (query_token is not None and query_token == expected)
 
 
 class WsSink:
@@ -61,6 +72,7 @@ def build_app(
     limiter: IngressLimiter | None = None,
     default_channel: str = "lobby",
     heartbeat: float = 30.0,
+    token: str | None = None,
 ) -> web.Application:
     """构建 aiohttp 应用（路由 `/ws/{channel}` 与 `/ws`）。
 
@@ -69,6 +81,7 @@ def build_app(
         limiter: 入口令牌桶；None 表示不限流
         default_channel: 未指定频道时使用的默认频道
         heartbeat: WS 心跳秒数
+        token: 接入令牌；非 None 时客户端必须带 `?token=` 才能握手
 
     Returns:
         web.Application: 可直接交给 `web.run_app` / `AppRunner`
@@ -78,7 +91,13 @@ def build_app(
         channel_id = request.match_info.get("channel") or request.query.get(
             "channel", default_channel
         )
-        user = request.query.get("user", "访客")
+        # 频道名直接决定落盘路径（session_id），必须是无路径语义的安全标识
+        if not is_safe_channel_id(channel_id):
+            raise web.HTTPBadRequest(text="非法频道名（仅允许字母/数字/_/-，1~64 字符）")
+        if token is not None and not _check_token(request.query.get("token"), token):
+            raise web.HTTPForbidden(text="token 无效")
+
+        user = strip_control_chars(request.query.get("user", "访客"))[:_MAX_USER_LEN] or "访客"
         scene_type: SceneType = (
             "private_chat" if request.query.get("type") == "private" else "group_chat"
         )
@@ -86,7 +105,12 @@ def build_app(
         ws = web.WebSocketResponse(heartbeat=heartbeat)
         await ws.prepare(request)
         sink = WsSink(ws)
-        hub.attach(channel_id, sink)
+        try:
+            hub.attach(channel_id, sink)
+        except ChannelLimitError:
+            _logger.warning(f"频道满员，拒绝连接: channel={channel_id} user={user}")
+            await ws.close(code=1013, message=b"channel limit reached")
+            return ws
         _logger.info(
             f"WS 连接: channel={channel_id} user={user} 在线={hub.online_count(channel_id)}"
         )
@@ -133,6 +157,7 @@ async def serve(
     host: str = "127.0.0.1",
     port: int = 8081,
     limiter: IngressLimiter | None = None,
+    token: str | None = None,
 ) -> web.AppRunner:
     """启动 WS 服务（非阻塞），返回 runner 以便调用方控制生命周期。
 
@@ -141,11 +166,12 @@ async def serve(
         host: 监听地址
         port: 监听端口
         limiter: 入口令牌桶
+        token: 接入令牌（非回环监听时强烈建议设置）
 
     Returns:
         web.AppRunner: 已 setup + start 的 runner（调用方负责 cleanup）
     """
-    app = build_app(hub=hub, limiter=limiter)
+    app = build_app(hub=hub, limiter=limiter, token=token)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
@@ -170,10 +196,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--character", default=None, help="角色卡路径（默认用仓库/包内自带）")
     parser.add_argument("--log-level", default="INFO", help="日志级别")
     parser.add_argument("--idle-ttl", type=float, default=600.0, help="频道空闲回收秒数")
+    parser.add_argument("--token", default=None, help="接入令牌（非回环监听时强烈建议设置）")
     return parser
 
 
-async def run_server(hub: ChannelHub, *, host: str, port: int, limiter=None) -> None:
+async def run_server(hub: ChannelHub, *, host: str, port: int, limiter=None, token=None) -> None:
     """起服务并常驻，直到被取消（关闭时回收频道与 runner）。
 
     Args:
@@ -181,8 +208,9 @@ async def run_server(hub: ChannelHub, *, host: str, port: int, limiter=None) -> 
         host: 监听地址
         port: 监听端口
         limiter: 入口令牌桶
+        token: 接入令牌
     """
-    runner = await serve(hub, host=host, port=port, limiter=limiter)
+    runner = await serve(hub, host=host, port=port, limiter=limiter, token=token)
     try:
         await asyncio.Event().wait()
     finally:
@@ -237,10 +265,19 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")
+    if args.host not in _LOOPBACK_HOSTS and not args.token:
+        logger.warning(
+            f"⚠ 正在监听非回环地址 {args.host} 且未设置 --token："
+            "网络上任何人都能连上来消耗你的模型资源！要么加 --token，要么绑回 127.0.0.1"
+        )
     try:
         asyncio.run(
             run_server(
-                hub, host=args.host, port=args.port, limiter=IngressLimiter(rate=1.0, burst=3)
+                hub,
+                host=args.host,
+                port=args.port,
+                limiter=IngressLimiter(rate=1.0, burst=3),
+                token=args.token,
             )
         )
     except KeyboardInterrupt:

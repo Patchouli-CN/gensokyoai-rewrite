@@ -4,6 +4,23 @@ import re
 
 import msgspec
 
+_CHANNEL_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def is_safe_channel_id(channel_id: str) -> bool:
+    """频道名是否安全——它会直接拼进落盘路径，必须不含任何路径语义字符。
+
+    只允许字母 / 数字 / 下划线 / 连字符，1~64 字符；`..`、斜杠、反斜杠、
+    百分号编码、Unicode 同形字一律拒绝。
+
+    Args:
+        channel_id: 待校验频道名
+
+    Returns:
+        bool: 是否可安全用作频道 / 会话标识
+    """
+    return bool(_CHANNEL_ID_PATTERN.fullmatch(channel_id))
+
 
 def clean_whitespace(text: str) -> str:
     """

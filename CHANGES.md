@@ -14,6 +14,29 @@
     `load_eye_config`、`config/eyes/` 不动），觉统御众目。同步改名：事件主题
     `eyes.snapshot` → `satori.snapshot`（该主题无订阅方，纯预留）、日志标签
     `EYES` → `SATORI`、分层依赖检查表与全部 import。
+
+### 安全
+  - **SSRF 门禁加固（`utils/url_security.py`）**：补 inet_aton 数字变体解析
+    （纯 Python 实现，十进制 `2130706433` / 十六进制 `0x7f000001` / 八进制
+    `0177.0.0.1` / 少段缩写 `127.1`——Windows 的 socket.inet_aton 会把
+    255.255.255.255 误判为非法，不可依赖）；主机名归一化（解百分号编码、
+    去尾部点 `localhost.`、小写）；禁 userinfo 欺骗；拦 IPv4 映射 / 6to4 /
+    Teredo 等嵌 v4 的 IPv6 过渡地址。
+  - **`fetch_url` 重定向逐跳复检**：不再 `allow_redirects=True` 裸跟——
+    手动跟随（上限 5 跳），每一跳重新过 SSRF 门禁，公网链接 302 到
+    127.0.0.1 / 云元数据当场拦停（SillyTavern CVE-2026-46372 同款洞）。
+  - **WS 入口净化**：`channel_id` 白名单校验（`[A-Za-z0-9_-]{1,64}`，
+    `is_safe_channel_id`）——它原样变成 session_id 拼进三处落盘路径，
+    `?channel=../../x` 路径逃逸（SillyTavern CVE-2026-34524 同款）就此封死；
+    自报昵称去控制字符 + 截断 32 字（日志/限流键卫生）。
+  - **频道数上限**：`ChannelHub(max_channels=32)`，满员拒绝新建世界
+    （`ChannelLimitError`，WS 侧回 1013 关闭），防刷随机频道名耗尽资源。
+  - **接入令牌**：WS 新增 `--token`（握手须带 `?token=`）；监听非回环地址
+    且未配 token 时启动大字告警。
+  - **攻击测试全家桶（`tests/security/`）**：SSRF 变体（数字 IP / 尾点 /
+    编码 / userinfo / IPv6 嵌套）、重定向跳转剧本（离线假会话断言每一跳）、
+    频道名路径穿越（含全角斜杠 / Unicode 同形字）、路径纵深验证、
+    token 校验、频道洪泛。
   - **移除 aioconsole 依赖**：它只有一处实质用途（console eye 读 stdin），
     换成标准库 `asyncio.to_thread(input)`；少一个依赖，pytest 唯一的
     DeprecationWarning（其内部用了 3.16 将删的 DefaultEventLoopPolicy）随之消失。
