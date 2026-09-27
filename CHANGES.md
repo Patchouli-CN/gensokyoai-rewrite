@@ -9,6 +9,10 @@
 ## [Unreleased]
 
 ### 变更
+  - **模块 docstring 去工单化**：main / app / gate / ooc_judge / pipeline /
+    toolkit / health.monitor / anti_parrot / initiative / clock 十个模块的
+    文档字符串从「原来怎样 → 为什么改」的工单叙事改成「是什么 + 关键约束」
+    的当前态描述——历史决策与实录证据归 CHANGES.md，模块头只留契约。
   - **术语解绑：「jev」全面改名 System-1**：项目术语不绑定第三方模型的
     营销名——代码/文档/日志中的「jev 化出戏审查」「jev 式发言门控」统一为
     「System-1 出戏审查 / System-1 发言门控」（README 门控一节本就用 System-1

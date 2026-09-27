@@ -1,4 +1,4 @@
-"""主动发言评估 —— 原版 GensokyoAI 四维对话欲的规则化移植（零 token）。
+"""主动发言评估 —— 四维对话欲的规则评分（零 token）。
 
 四维（与角色卡 motivation_weights 对齐）：
 - expression  表达欲：角色天性基础值（来自角色卡 expression_base，话痨 vs 沉默寡言）

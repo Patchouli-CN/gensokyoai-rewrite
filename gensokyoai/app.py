@@ -1,10 +1,5 @@
 """程序装配入口 —— 仓库内 `main.py` 与安装后的 `gensokyoai` 命令共用同一条装配路径。
 
-此前装配逻辑写在**仓库根目录**的 `main.py` 里，而 wheel 只打包 `gensokyoai/`：
-`pip install` 之后既没有 console 入口，也没有配置文件 —— 等于装完跑不起来。
-
-现在把装配收进包里：
-
 - `build_world()`：纯装配（配置 → 会话 → 角色 → 口层 → TouhouWorld），
   CLI / WebSocket 后端 / 测试复用同一条路径
 - `main()`：控制台 CLI 入口，`[project.scripts]` 指向它

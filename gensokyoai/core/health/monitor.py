@@ -1,15 +1,12 @@
 """系统健康监控 —— HealthCenter（架构文档 §3.5）
 
-职责是「监控 **+ 主动干预**」，旧实现只有前半截：阈值判断一律 `value >= threshold`、
-会话摘要是写死的 stub、而且发了告警事件**没人订阅**。
-
-现在补齐四件事：
+职责是「监控 + 主动干预」：
 
 - **阈值带方向**：`MetricThreshold.lower_is_worse` 区分「越高越坏 / 越低越坏」
-- **边沿触发 + 冷却**：指标持续超限不会每回合刷告警（原先会刷屏、干预会反复触发）
-- **聚合摘要**：报告给 avg/min/max/p95，而不是把上百条原始样本全 dump 出去
+- **边沿触发 + 冷却**：指标持续超限不会每回合刷告警，干预不反复触发
+- **聚合摘要**：报告给 avg/min/max/p95，不把上百条原始样本 dump 出去
 - **主动干预**：`register_intervention(metric, handler)` 注册回调，超限时被调用。
-  回调由**装配层**（TouhouWorld）注册，因此本模块不反向依赖 memorizer / roleplay，
+  回调由**装配层**（TouhouWorld）注册，本模块不反向依赖 memorizer / roleplay，
   分层铁律不破。
 """
 

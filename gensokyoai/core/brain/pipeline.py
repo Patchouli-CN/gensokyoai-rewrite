@@ -13,8 +13,8 @@
   - 每步 `asyncio.wait_for` 超时隔离，慢模型不会把整条链/主循环拖死；
   - 失败只捕 `Exception`：`asyncio.CancelledError`（BaseException）**原样穿透**，
     关闭/取消流程不被吞；
-  - `run()` 内部**零 `create_task`**：不在思考链路里造 fire-and-forget
-    （CHANGES 0.0.19 的 GC 教训），所有等待都内联完成。
+  - `run()` 内部**零 `create_task`**：不在思考链路里造 fire-and-forget，
+    所有等待都内联完成（弱引用任务的 GC 风险见 `utils/tasks.py`）。
 """
 
 import asyncio

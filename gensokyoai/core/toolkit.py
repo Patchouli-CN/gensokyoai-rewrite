@@ -1,10 +1,7 @@
 """工具执行器 —— 全项目**唯一**的工具执行点。
 
-此前执行逻辑在 `models/base.py._execute_tools`（Provider 层工具循环）和
-`core/brain/engine.py._execute_tool_calls`（接力思考循环）里**各写了一遍**：
-查表 → 解析参数 JSON → invoke/ainvoke → catch → 转字符串。两份实现必然漂移。
-
-本模块把这些统一到 `ToolExecutor`，并补上原先缺的四件事：
+所有工具调用统一走 `ToolExecutor`（查表 → 解析参数 JSON → invoke → 转结果），
+内置四道保护：
 
 - **结果截断**：工具返回大字符串会撑爆 8K 上下文，超长一律截断并标注
 - **超时**：工具不再能永久挂住调用链

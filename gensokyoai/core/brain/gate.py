@@ -1,7 +1,5 @@
 """System-1 发言门控 —— 混合架构：规则预筛明显信号，群聊模糊带才交裁判。
 
-移植自 Mist-wu/qqbot 的 System-1 门控（「该不该说话」交给快思考裁判）的思路，按本项目约束改造：
-
 - **裁判可插拔**：`Judge` 是协议，本地模型（`LocalJudge`）与 TypeSafe
   system_one（`TypeSafeJudge`，可选依赖）同一接口，`decide` 逻辑零改动；
 - **混合门控**：收尾语 / 私聊 / 被 @ 这类明显信号由零成本规则直接定，
@@ -9,7 +7,9 @@
 - **兜底完整**：裁判缺失或异常时退化为「点名才回」，行为可预期。
 
 防刷屏**不设硬冷却**：把「近窗口内自己说了多少、距上次发言多久」写进
-state（`PresenceTracker`），让裁判自己权衡 —— 与 qqbot 一致。
+state（`PresenceTracker`），让裁判自己权衡。
+
+思路源自 Mist-wu/qqbot 的 System-1 门控。
 """
 
 import re
