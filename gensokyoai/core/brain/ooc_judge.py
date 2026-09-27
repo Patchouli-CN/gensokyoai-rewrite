@@ -8,9 +8,10 @@
 - **state 带诱发消息**：旧审计只看人设+回复，看不到用户说了什么——
   「冷面接梗」（角色面无表情执行荒唐要求）和「真出戏」在它眼里长得一样，
   20 轮真机实录（OOC 注入回了个「4」）照出了这个盲区；
-- **四问分开打分**：breaks_voice / follows_embedded_instruction /
-  plausible_as_character / contains_unsafe——「服从了指令的形式」与
-  「丢了角色的魂」不再是同一个布尔值；
+- **五问分开打分**：breaks_voice / follows_embedded_instruction /
+  plausible_as_character / contains_unsafe / ai_like——「服从了指令的形式」
+  与「丢了角色的魂」不再是同一个布尔值，「AI 腔」（句式排版像助手生成）
+  也单独成问，默认只预警不打回；
 - **接受规则在应用层**（对齐 jev 的设计哲学：概率只做参考，阈值与组合
   逻辑归代码，按实测误报率校准——阈值别抄文章，要自己测）。
 """
@@ -60,7 +61,7 @@ def build_ooc_state(
 
 
 def build_ooc_questions(bot_name: str) -> dict[str, Question]:
-    """出戏审查四问（口径对齐 TypeSafe Noul 的 true/false 描述结构）。
+    """出戏审查五问（口径对齐 TypeSafe Noul 的 true/false 描述结构）。
 
     Args:
         bot_name: 角色名（进口径文本）
@@ -92,21 +93,34 @@ def build_ooc_questions(bot_name: str) -> dict[str, Question]:
             "真人隐私信息、违法或危险引导）？"
             "是：出现上述任一内容。否：正常演绎。"
         ),
+        "ai_like": Question(
+            "待审回复是否读起来像 AI 助手生成的文本，而不是真人在聊天里随口说的话？"
+            "是：出现典型 AI 腔——「这不是…而是…」对照反转、三项排比或碎片金句、"
+            "「首先/其次/综上所述」连接词串、滥用 emoji/加粗/列表/表格、"
+            "破折号分号硬串分句、空泛赞美（「你说得对」「好问题」）、"
+            "结尾承诺展开（「如果你需要我可以进一步…」）、"
+            "感官套模版堆砌（心猛地一沉/指尖冰凉/眼眶发热）。"
+            "否：口语自然、长短句不匀、像真人随手打出来的话"
+            "（角色本身是书面语人设的，按角色口径放宽）。"
+        ),
     }
 
 
 _DEGENERATE_MAX = 0.05
-""" 四问概率全低于该值 = 塌缩（裁判短路，判定不可信）"""
+""" 五问概率全低于该值 = 塌缩（裁判短路，判定不可信）"""
 
 
 def _is_degenerate(answers: dict[str, float]) -> bool:
-    """四问概率是否全塌缩（本地小模型对复杂多问短路的签名）。
+    """五问概率是否全塌缩（本地小模型对复杂多问短路的签名）。
 
     20 轮实录回放（temp/replay_ooc.py）照出的实证：本地裁判要么给出合理值
-    （plausible 0.8~0.95），要么四问**全给 0.00**——后者 10/11 次都是完全在
+    （plausible 0.8~0.95），要么全问**全给 0.00**——后者 10/11 次都是完全在
     角色里的好回复。全零向量不含任何信息（真实「不可能」通常会伴随
     breaks_voice>0），整组判定应按不可信丢弃，而不是让某个零值单独驱动
-    revise。云端 jev / 校准过的裁判不受此规则影响（不会四问全 <0.05）。
+    revise。云端 jev / 校准过的裁判不受此规则影响（不会全问 <0.05）。
+
+    ai_like 也计入塌缩签名：若其余问全零而 ai_like 单独高，说明裁判其实
+    处理了输入（给出了区分度），不能按短路丢弃这条 AI 腔信号。
     """
     return all(
         answers.get(name, 0.0) < _DEGENERATE_MAX
@@ -115,6 +129,7 @@ def _is_degenerate(answers: dict[str, float]) -> bool:
             "follows_embedded_instruction",
             "plausible_as_character",
             "contains_unsafe",
+            "ai_like",
         )
     )
 
@@ -130,9 +145,12 @@ def decide_ooc(answers: dict[str, float], settings: OOCJudgeSettings) -> OOCChec
     3. `plausible_as_character` 低于低线**且 plausible_revise 开启**：纠偏。
        默认关：实录回放照出本地裁判的 plausible 不可信（好回复被打 0.10
        造成唯一误报），revise 只信双高 + unsafe 两个被实录验证的信号；
-    4. `plausible_as_character` 落在模糊带：黄色预警，记录但不阻断
+    4. `ai_like` 超线 = AI 腔预警：**默认 flag 不纠偏**——AI 腔伤的是文风
+       不是角色魂，误杀比重写更伤体验；`ai_like_revise` 开启（校准后）
+       才升级为纠偏；
+    5. `plausible_as_character` 落在模糊带：黄色预警，记录但不阻断
        （宁可漏判，不误杀冷面演绎——误杀比漏判更伤 RP 体验）；
-    5. 仅 `follows_embedded_instruction` 高（形服从、魂没丢）：**放行**——
+    6. 仅 `follows_embedded_instruction` 高（形服从、魂没丢）：**放行**——
        这是「冷面 4」情形，用 execute 荒唐指令的方式接梗是合法演绎。
 
     Args:
@@ -147,7 +165,7 @@ def decide_ooc(answers: dict[str, float], settings: OOCJudgeSettings) -> OOCChec
         return OOCCheck(
             decision="accept",
             answers=base,
-            reason="四问概率全塌缩（裁判对该输入短路），判定不可信按放行",
+            reason="五问概率全塌缩（裁判对该输入短路），判定不可信按放行",
         )
     unsafe = answers.get("contains_unsafe", 0.0)
     instruction = answers.get("follows_embedded_instruction", 0.0)
@@ -175,6 +193,19 @@ def decide_ooc(answers: dict[str, float], settings: OOCJudgeSettings) -> OOCChec
             decision="revise",
             answers=base,
             reason=f"plausible_as_character={plausible:.2f} 低于低线（大概率不是角色会说出口的话）",
+        )
+    ai_like = answers.get("ai_like", 0.0)
+    if ai_like > settings.ai_like_threshold:
+        if settings.ai_like_revise:
+            return OOCCheck(
+                decision="revise",
+                answers=base,
+                reason=f"ai_like={ai_like:.2f} 超过 {settings.ai_like_threshold}（AI 腔重写）",
+            )
+        return OOCCheck(
+            decision="flag",
+            answers=base,
+            reason=f"ai_like={ai_like:.2f} 超过 {settings.ai_like_threshold}（AI 腔预警，记录不阻断）",
         )
     if plausible < settings.plausible_high:
         return OOCCheck(

@@ -114,7 +114,7 @@ class OOCJudgeSettings(msgspec.Struct, frozen=True):
     """ side_chain=异步侧链不阻塞（默认， cheapest）；
         blocking=回复进最终缓冲区，审查通过才放行（治本但每回合加一次调用） """
     max_new_tokens: int = 192
-    """ local 裁判输出预算（四个概率 + 题名） """
+    """ local 裁判输出预算（五个概率 + 题名） """
     temperature: float = 0.2
     """ local 裁判采样温度（低温求稳） """
     timeout_ms: int = 60000
@@ -135,6 +135,11 @@ class OOCJudgeSettings(msgspec.Struct, frozen=True):
         plausible 不可信——好回复被打 0.10（非塌缩值的随机低分）造成误报；
          revise 只信双高 + unsafe 两个在实录中被验证的信号。用真 jev 并重新
         校准后可打开 """
+    ai_like_threshold: float = 0.7
+    """ ai_like 超过该值 = 「大概率是 AI 腔」（默认 flag 预警，记录不阻断） """
+    ai_like_revise: bool = False
+    """ ai_like 超线是否升级为 revise。默认关闭：AI 腔伤文风不伤角色魂，
+        误杀比重写更伤体验；裁判校准后可打开让 AI 腔强制重写 """
 
 
 class EmbeddingSettings(msgspec.Struct, frozen=True):

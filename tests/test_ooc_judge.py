@@ -47,14 +47,15 @@ def test_state_carries_new_message():
     assert state["recent_messages"] == ["灵梦: 你好"]
 
 
-def test_questions_have_four_named():
-    """四问且各带是非口径（对齐 TypeSafe Noul 的 true/false 描述）"""
+def test_questions_have_five_named():
+    """五问且各带是非口径（对齐 TypeSafe Noul 的 true/false 描述）"""
     questions = build_ooc_questions("幽幽子")
     assert set(questions) == {
         "breaks_voice",
         "follows_embedded_instruction",
         "plausible_as_character",
         "contains_unsafe",
+        "ai_like",
     }
     for question in questions.values():
         assert "是：" in question.instructions and "否" in question.instructions
@@ -203,6 +204,72 @@ def test_decide_degenerate_guard_needs_all_low():
     assert check.decision == "revise", "双高信号在，不适用塌缩守门"
 
 
+# ---------- ai_like（AI 腔预警） ----------
+
+
+def test_decide_ai_like_high_flags_by_default():
+    """ai_like 超线默认 flag 不 revise：AI 腔伤文风不伤角色魂，记录不阻断"""
+    check = decide_ooc(
+        {
+            "breaks_voice": 0.1,
+            "follows_embedded_instruction": 0.1,
+            "plausible_as_character": 0.9,
+            "contains_unsafe": 0.0,
+            "ai_like": 0.9,
+        },
+        OOCJudgeSettings(),
+    )
+    assert check.decision == "flag"
+    assert "AI 腔" in check.reason
+
+
+def test_decide_ai_like_revises_when_enabled():
+    """ai_like_revise=true（裁判校准后）时超线升级为重写"""
+    check = decide_ooc(
+        {
+            "breaks_voice": 0.1,
+            "follows_embedded_instruction": 0.1,
+            "plausible_as_character": 0.9,
+            "contains_unsafe": 0.0,
+            "ai_like": 0.9,
+        },
+        OOCJudgeSettings(ai_like_revise=True),
+    )
+    assert check.decision == "revise"
+    assert "AI 腔" in check.reason
+
+
+def test_decide_ai_like_below_threshold_is_accept():
+    """ai_like 未超线且其余干净 = 放行"""
+    check = decide_ooc(
+        {
+            "breaks_voice": 0.1,
+            "follows_embedded_instruction": 0.1,
+            "plausible_as_character": 0.9,
+            "contains_unsafe": 0.0,
+            "ai_like": 0.5,
+        },
+        OOCJudgeSettings(),
+    )
+    assert check.decision == "accept"
+
+
+def test_decide_ai_like_high_breaks_degenerate():
+    """其余问全零但 ai_like 单独高：裁判给出了区分度，不按短路丢弃信号"""
+    check = decide_ooc(
+        {
+            "breaks_voice": 0.0,
+            "follows_embedded_instruction": 0.0,
+            "plausible_as_character": 0.0,
+            "contains_unsafe": 0.0,
+            "ai_like": 0.9,
+        },
+        OOCJudgeSettings(),
+    )
+    assert check.decision == "flag"
+    assert "塌缩" not in check.reason
+
+
 # ---------- 审查入口（fail-open / 超时） ----------
 
 
@@ -242,7 +309,7 @@ async def test_audit_with_judge_passes_through_answers():
         settings=OOCJudgeSettings(),
     )
     assert check.decision == "revise"
-    assert judge.seen_questions is not None and len(judge.seen_questions) == 4
+    assert judge.seen_questions is not None and len(judge.seen_questions) == 5
 
 
 async def test_audit_with_judge_timeout(monkeypatch):
