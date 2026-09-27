@@ -210,7 +210,7 @@ def ooc_audit() -> str:
 """
 
 
-# ---- jev 化出戏审查（core/brain/ooc_judge.py 用）：多问概率，口径与 Noul 对齐 ----
+# ---- System-1 出戏审查（core/brain/ooc_judge.py 用）：多问概率，口径与 Noul 对齐 ----
 
 
 @prompt_mgr.prompt("ooc.judge.system")

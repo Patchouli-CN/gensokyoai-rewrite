@@ -1,4 +1,4 @@
-"""jev 化出戏审查单元测试 —— state 构造 / 问题组 / 接受规则 / 裁判工厂 / 提示词。"""
+"""System-1 出戏审查单元测试 —— state 构造 / 问题组 / 接受规则 / 裁判工厂 / 提示词。"""
 
 import pytest
 
@@ -138,7 +138,7 @@ def test_decide_implausible_low_is_flag_by_default():
 
 
 def test_decide_implausible_low_revises_when_enabled():
-    """plausible_revise=true（真 jev 校准后）时低分恢复 revise 权"""
+    """plausible_revise=true（TypeSafe 校准后）时低分恢复 revise 权"""
     check = decide_ooc(
         {
             "breaks_voice": 0.3,

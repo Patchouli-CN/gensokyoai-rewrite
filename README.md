@@ -34,7 +34,7 @@
 **发言门控（System-1 层）**
 
 - 新消息先过零成本规则（收尾语 / 私聊 / 被 @ 直判），群聊模糊带才调裁判——一次调用同时回答「该不该接话」和「该想多深」。
-- 裁判后端可插拔：本地模型（`LocalJudge`，无状态小调用）或真 [TypeSafe jev](https://typesafe.ai)（可选依赖）。
+- 裁判后端可插拔：本地模型（`LocalJudge`，无状态小调用）或 [TypeSafe](https://typesafe.ai) system one（可选依赖）。
 - 裁判挂了会自动退化：不接的回合回落「点名才回」，档位回落规则路由。
 - OOC 三重守门：初稿规则预筛（零成本）→ 命中才纠偏重生成 → 发出后异步深审。出戏率飙升时自动抬高推理档位下限，恢复后自行撤销。
 
@@ -128,7 +128,7 @@ python scripts/real_verify.py --fresh   # 真机验证（需要本地 llama-serv
 ## 相关项目
 
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) — llama-server 推理后端
-- [TypeSafe AI](https://typesafe.ai) — jev 决策模型（可选裁判后端）
+- [TypeSafe AI](https://typesafe.ai) — system one 决策模型（可选裁判后端）
 - [ayafileio](https://github.com/Patchouli-CN/ayafileio) — 自家跨平台真异步文件 IO
 - [MaiBot](https://github.com/Mai-with-u/MaiBot) — 回复时机 / 表情 / 记忆思路的来源
 

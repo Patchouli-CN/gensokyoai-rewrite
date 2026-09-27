@@ -60,7 +60,7 @@ EXIT_WORDS = {"exit", "quit", "q", "退出"}
 
 _SUSPICIOUS_BARE = re.compile(r"^[0-9+\-*/().=\s]+$")
 """ 纯数字/符号短回复：疑似被用户消息夹带的指令带跑（也可能是冷面接梗——
-    只标记不阻断，定夺交给带上下文的 jev 出戏审查）"""
+    只标记不阻断，定夺交给带上下文的 System-1 出戏审查）"""
 
 _INJECTION_PATTERNS = re.compile(
     r"(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+"
@@ -160,7 +160,7 @@ class TouhouWorld:
     扮演主循环 (Role-Play Loop)
     负责协调 Eyes, Brain, Responder 和 Memorizer 的完整生命周期。
     支持生命周期管理（启动/关闭回调）、记忆蒸馏、主动发言（对话欲）、
-    深思考过渡语与 OOC 守门/后置深审、jev 式发言门控（见 core/brain/gate.py）。
+    深思考过渡语与 OOC 守门/后置深审、System-1 发言门控（见 core/brain/gate.py）。
     """
 
     def __init__(
@@ -215,8 +215,8 @@ class TouhouWorld:
             stall_min_interval: 两次过渡语之间的最小时间间隔（秒）
             ooc_retry: 最终回复命中 OOC 规则时是否花一次纠偏重生成
             ooc_audit: 是否在回复发出后跑异步 OOC 审查（不阻塞热路径）
-            ooc_judge: 出戏审查裁判（jev 化多问概率；None 回退旧单点 audit）
-            ooc_judge_settings: jev 化出戏审配置（阈值/预算；None = 默认）
+            ooc_judge: 出戏审查裁判（System-1 多问概率；None 回退旧单点 audit）
+            ooc_judge_settings: System-1 出戏审查配置（阈值/预算；None = 默认）
             style: 文风防复读配置（None = StyleSettings() 默认）
             search: 联网工具配置（可信知识站表 -> 脑内工具指令；None = 无指令）
             session_id: 会话标识，记忆与会话快照按它隔离（多群/多用户各自一个 id）
@@ -294,7 +294,7 @@ class TouhouWorld:
 
         self.responder = Responder(sessions=self.sessions, persona=character.prompt)
 
-        # --- 发言门控（jev 式混合门控；enabled=False 时维持「每条都回」旧行为）---
+        # --- 发言门控（System-1 混合门控；enabled=False 时维持「每条都回」旧行为）---
         self._gate = gate if gate is not None else GateSettings()
         self._judge = judge
         self._presence = PresenceTracker(window_s=self._gate.presence_window_s)
@@ -318,7 +318,7 @@ class TouhouWorld:
         self._ooc_retry = ooc_retry
         self._ooc_audit = ooc_audit
         self._ooc_judge = ooc_judge
-        """ jev 化出戏审查裁判（与门控共用 Judge 协议；None = 回退旧单点 audit） """
+        """ System-1 出戏审查裁判（与门控共用 Judge 协议；None = 回退旧单点 audit） """
         self._ooc_judge_cfg = ooc_judge_settings or OOCJudgeSettings()
         self._style = style or StyleSettings()
         """ 文风防复读配置 """
@@ -513,7 +513,7 @@ class TouhouWorld:
                         turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
                     )
                 if self._ooc_audit and not self._ooc_blocking:
-                    # 传 snapshot：jev 化审查需要诱发消息当上下文（旧 audit 只用 reply）。
+                    # 传 snapshot：System-1 审查需要诱发消息当上下文（旧 audit 只用 reply）。
                     # blocking 模式已在 _express 里审过并记账，侧链不重复跑
                     self._tasks.spawn(self._audit_reply(snapshot, reply), name="ooc-audit")
 
@@ -744,7 +744,7 @@ class TouhouWorld:
         依据 20 轮真机实录：OOC 注入回合裁判判了 low、Responder 被用户消息里的
         直接指令（"Output only numbers"）带跑——Brain 其实看穿了（draft 在角色里），
         但拿到的思考深度不够硬。这里只抬档、不改文案（行为闸，不是审查闸）；
-        出戏本身的定夺在口层 jev 审查。
+        出戏本身的定夺在口层 System-1 审查。
 
         Args:
             snapshot: 本回合场景快照（看诱发消息）
@@ -817,14 +817,14 @@ class TouhouWorld:
             conclusion: Brain 结论（主动发言为 pass_through 规则结论）
             memories: 检索到的记忆
             ooc_guard: 缓冲路径是否做 OOC 硬规则守门（流式路径恒不做，
-                靠后置 jev 审查兜底——已投递的文本撤不回，重在记录与干预）
+                靠后置 System-1 审查兜底——已投递的文本撤不回，重在记录与干预）
 
         Returns:
             str: 完整回复文本（供记忆落盘 / 后置审查）
         """
         # 防复读预防性提示：两条路径都生效（流式已投递无从改起，只能事前防）
         avoid = self._parrot_avoid_hint()
-        # blocking 闸门开启时**放弃流式**：回复必须先完整生成、过 jev 出戏审查
+        # blocking 闸门开启时**放弃流式**：回复必须先完整生成、过 System-1 出戏审查
         # 才放行——逐字蹦的手感换「说出口的话都过了审」（本地模型每回合多一次
         # 审查调用；侧链模式则两不误，默认）
         if self.mouth.supports_streaming and not self._ooc_blocking:
@@ -834,7 +834,7 @@ class TouhouWorld:
             return reply
         reply = await self.responder.respond(conclusion, snapshot, memories, avoid)
         if self._ooc_blocking:
-            reply = await self._guard_ooc_jev(snapshot, reply)
+            reply = await self._guard_ooc_judge(snapshot, reply)
         if ooc_guard:
             reply = await self._guard_ooc(reply)
             reply = await self._guard_parrot(reply)
@@ -849,7 +849,7 @@ class TouhouWorld:
         """流式投递最终回复：responder.respond_stream → mouth.begin/delta/end。
 
         逐块把回复文本送到可显示的平台（口层流式），并返回完整回复文本
-        （供记忆落盘 / 后置 jev 审查 / 状态回写）。流式模式下跳过 OOC 预审。
+        （供记忆落盘 / 后置 System-1 审查 / 状态回写）。流式模式下跳过 OOC 预审。
 
         Args:
             snapshot: 场景快照
@@ -880,7 +880,7 @@ class TouhouWorld:
     def _ooc_blocking(self) -> bool:
         """blocking 闸门是否生效（最终缓冲区审查通过才放行）。
 
-        生效条件三合一：配置了裁判 + jev 审查 enabled + mode=blocking。
+        生效条件三合一：配置了裁判 + System-1 审查 enabled + mode=blocking。
         生效时 `_express` 放弃流式（先完整生成、审过再发）。
         """
         return (
@@ -889,8 +889,8 @@ class TouhouWorld:
             and self._ooc_judge_cfg.mode == "blocking"
         )
 
-    async def _guard_ooc_jev(self, snapshot: SceneSnapshot, reply: str) -> str:
-        """blocking 闸门：进最终缓冲区的回复先过 jev 出戏审查，通过才放行。
+    async def _guard_ooc_judge(self, snapshot: SceneSnapshot, reply: str) -> str:
+        """blocking 闸门：进最终缓冲区的回复先过 System-1 出戏审查，通过才放行。
 
         判定 revise（双高/unsafe/implausible 低线）时花一次纠偏重写；
         纠偏后仍命中硬规则则保留原句 + 告警（不死循环）。
@@ -945,7 +945,7 @@ class TouhouWorld:
         return corrected
 
     async def _record_ooc_check(self, check) -> None:
-        """jev 审查结论记账（blocking 与侧链共用）：ooc_hits/ooc_flags/ooc.rate +
+        """System-1 审查结论记账（blocking 与侧链共用）：ooc_hits/ooc_flags/ooc.rate +
         档位下限自愈。revise 计入 hits（出戏率），flag 只计 flags 不进率——
         模糊带的判定不该把出戏率推高触发误干预。"""
         audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
@@ -1019,7 +1019,7 @@ class TouhouWorld:
         （20 轮实录的 OOC 注入就是回了个「4」）。
 
         **只标记不阻断**：这也可能是合法的冷面接梗，自动纠偏会误杀——
-        定夺交给带上下文的 jev 出戏审查（blocking 模式下才可能在出口拦下）。
+        定夺交给带上下文的 System-1 出戏审查（blocking 模式下才可能在出口拦下）。
         """
         core = reply.strip()
         if not core or len(core) > 10 or not _SUSPICIOUS_BARE.match(core):
@@ -1027,7 +1027,7 @@ class TouhouWorld:
         flags = int(self.character.status.extra.get("ooc_suspicious", 0)) + 1
         self.character.status.update(ooc_suspicious=flags)
         await self.health.record_metric("ooc.suspicious", 1.0, unit="次")
-        self._logger.warning(f"疑似被注入带跑的短回复（已标记，待 jev 审查定夺）: {reply!r}")
+        self._logger.warning(f"疑似被注入带跑的短回复（已标记，待 System-1 审查定夺）: {reply!r}")
 
     async def _guard_ooc(self, reply: str) -> str:
         """最终回复的 OOC 规则守门：零成本快筛，命中才花一次纠偏重生成。
@@ -1060,7 +1060,7 @@ class TouhouWorld:
         """后置出戏审查（异步侧链，不阻塞回复）。
 
         两条路径：
-        - **jev 化**（`ooc_judge` 可用且 enabled）：多问概率 + 接受规则，
+        - **System-1 多问**（`ooc_judge` 可用且 enabled）：多问概率 + 接受规则，
           state 带**诱发消息**——「服从了指令的形式」与「丢了角色的魂」
           分开打分，冷面接梗不再被一刀切判死（20 轮真机实录照出的旧盲区）；
         - 旧单点 audit（无裁判时的降级）：JSON 布尔判定，只看人设+回复。
@@ -1073,12 +1073,12 @@ class TouhouWorld:
             reply: 已发出的最终回复
         """
         if self._ooc_judge is not None and self._ooc_judge_cfg.enabled:
-            await self._audit_reply_jev(snapshot, reply)
+            await self._audit_reply_judge(snapshot, reply)
             return
         await self._audit_reply_legacy(reply)
 
-    async def _audit_reply_jev(self, snapshot: SceneSnapshot, reply: str) -> None:
-        """jev 化出戏审查侧链：多问概率 -> 三档结论 -> 记账/干预。"""
+    async def _audit_reply_judge(self, snapshot: SceneSnapshot, reply: str) -> None:
+        """System-1 出戏审查侧链：多问概率 -> 三档结论 -> 记账/干预。"""
         judge = self._ooc_judge
         if judge is None:
             return
@@ -1095,20 +1095,20 @@ class TouhouWorld:
                 settings=self._ooc_judge_cfg,
             )
         except Exception:
-            self._logger.exception("jev 出戏审查失败（不影响主链路）")
+            self._logger.exception("System-1 出戏审查失败（不影响主链路）")
             return
         if gen != self._generation:
             return
         if check.decision == "revise":
             self._logger.warning(
-                f"jev 出戏审查 revise（已记账，文本不撤回）: {check.reason} | {check.answers}"
+                f"System-1 出戏审查 revise（已记账，文本不撤回）: {check.reason} | {check.answers}"
             )
         elif check.decision == "flag":
-            self._logger.info(f"jev 出戏审查 flag: {check.reason} | {check.answers}")
+            self._logger.info(f"System-1 出戏审查 flag: {check.reason} | {check.answers}")
         await self._record_ooc_check(check)
 
     async def _audit_reply_legacy(self, reply: str) -> None:
-        """旧单点 OOC 深审（无 jev 裁判时的降级路径；只看人设+回复，无诱发消息）。"""
+        """旧单点 OOC 深审（无 System-1 裁判时的降级路径；只看人设+回复，无诱发消息）。"""
         gen = self._generation
         try:
             verdict = await self.ooc.audit(reply, self.character.prompt)

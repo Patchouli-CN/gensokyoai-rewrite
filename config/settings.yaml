@@ -36,21 +36,21 @@ resource:
   ingress_rate: 0.0
   ingress_burst: 0
 
-# 发言门控 + 模型化档位路由（jev 式 System-1 层）：
+# 发言门控 + 模型化档位路由（System-1 层）：
 # 一次裁判调用同时回答「该不该接话」和「该想多深」（needs_deep 分数 -> 档位）。
 # 裁判挂了自动退化：不接的回合回落「点名才回」，档位回落规则 route()。
 gate:
   enabled: true
-  judge: "local"          # local=主模型当裁判 | typesafe=真 jev（需 pip install '.[jev]'）| none=纯规则
+  judge: "local"          # local=主模型当裁判 | typesafe=TypeSafe system one（需 pip install '.[typesafe]'）| none=纯规则
   group_threshold: 0.8    # 群里没人点名时，裁判 should_reply 达到该值才接话（调低更活跃）。
                           # 实测 local 裁判对无人点名闲聊打 0.6~0.8，0.6 等于见话就接；
                           # 复读链交给将来的平台侧 satori 插件（同内容滑窗计数+冷却），core 不内置
   search_threshold: 0.1
-  timeout_ms: 60000       # 本地模型单次要 10~25s；用真 jev（云端快）可调回 5000
+  timeout_ms: 60000       # 本地模型单次要 10~25s；用 TypeSafe（云端快）可调回 5000
   route_by_model: true    # 档位由裁判的 needs_deep 说了算（规则路由做兜底）
   deep_cuts: [0.3, 0.6, 0.85]   # 进 MID / HIGH / MAX 的切点
 
-# jev 化出戏审查（core/brain/ooc_judge.py）：一次裁判调用五问概率 +
+# System-1 出戏审查（core/brain/ooc_judge.py）：一次裁判调用五问概率 +
 # 应用层接受规则。state 带诱发消息（旧 audit 看不到，冷面接梗会被误判）；
 # side_chain=异步记账不阻塞（默认）；blocking=最终缓冲区审查通过才放行。
 # 概率未校准过——阈值先用实录回放测误报率，再决定要不要上 blocking。

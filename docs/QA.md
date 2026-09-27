@@ -16,8 +16,8 @@
 ### Q：支持哪些模型后端？
 通过 Registry 注册 Provider：`llama_cpp`（llama-server，带思考段分离与模板参数处理）与 `qwen_local`（任何 OpenAI 兼容端点：vLLM / 云端网关等）。`brain / responder / ooc / memorizer` 可分别路由到不同模型（共享或分模型实例都行）。
 
-### Q：真 jev（TypeSafe）必须装吗？
-不必须。门控裁判默认用**本地模型**（`LocalJudge`，复用主模型的无状态小调用）。想用真 jev 就 `pip install '.[jev]'`，然后把 `gate.judge` 改成 `"typesafe"`——协议不变，行为无缝切换。
+### Q：TypeSafe system one 必须装吗？
+不必须。门控裁判默认用**本地模型**（`LocalJudge`，复用主模型的无状态小调用）。想用 TypeSafe 就 `pip install '.[typesafe]'`，然后把 `gate.judge` 改成 `"typesafe"`——协议不变，行为无缝切换。
 
 ### Q：五档推理是什么？和普通 temperature/max_tokens 有什么区别？
 档位（`NONE/LOW/MID/HIGH/MAX`）决定**思考链跑几步 / 接力跑几轮**，是结构性深度，不是采样参数。例如 LOW 只跑收尾步（1 次调用），HIGH 跑全链，MAX 每步预算翻倍且降温。

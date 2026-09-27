@@ -14,10 +14,10 @@
 llama-server -m your-model.gguf --port 8080 --ctx-size 32768
 ```
 
-可选：真 jev 裁判（[TypeSafe](https://typesafe.ai) API key）：
+可选：[TypeSafe](https://typesafe.ai) system one 裁判（需 API key）：
 
 ```bash
-pip install '.[jev]'   # typesafe-sdk；装完在 settings.yaml 把 gate.judge 改成 "typesafe"
+pip install '.[typesafe]'   # typesafe-sdk；装完在 settings.yaml 把 gate.judge 改成 "typesafe"
 ```
 
 ## 2. 安装
@@ -49,7 +49,7 @@ resource:                 # 资源闸门：保护本地单模型（串行稀缺�
 
 gate:                     # 发言门控 + 模型化档位路由
   enabled: true
-  judge: "local"          # local=主模型当裁判 | typesafe=真 jev | none=纯规则
+  judge: "local"          # local=主模型当裁判 | typesafe=TypeSafe system one | none=纯规则
   group_threshold: 0.6    # 群里没人点名时，裁判 should_reply 达到该值才接话
   timeout_ms: 60000       # 裁判调用超时（本地模型单次 10~25s，别调太小）
   route_by_model: true    # 档位由裁判的 needs_deep 说了算

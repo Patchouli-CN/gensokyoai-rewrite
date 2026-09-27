@@ -112,12 +112,12 @@ class OOCVerdict(msgspec.Struct, frozen=True):
 
 
 type OOCDecision = Literal["accept", "revise", "flag"]
-""" jev 化出戏审查的三档结论：
+""" System-1 出戏审查的三档结论：
 accept=放行 | revise=建议纠偏重生成 | flag=黄色预警（记录但不阻断） """
 
 
 class OOCCheck(msgspec.Struct, frozen=True):
-    """jev 化出戏审查结论（多问概率 + 应用层接受规则的产物）"""
+    """System-1 出戏审查结论（多问概率 + 应用层接受规则的产物）"""
 
     decision: OOCDecision = "accept"
     """ 三档结论 """

@@ -244,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             _logger.info(f"发言门控 on | 裁判: {type(judge).__name__ if judge else '无（纯规则）'}")
         if ooc_judge is not None:
             mode_text = config.ooc_judge.mode
-            _logger.info(f"jev 化出戏审查 on（{mode_text}）| 裁判: {type(ooc_judge).__name__}")
+            _logger.info(f"System-1 出戏审查 on（{mode_text}）| 裁判: {type(ooc_judge).__name__}")
     except FileNotFoundError as err:
         print(f"启动失败: {err}", file=sys.stderr)
         return 2

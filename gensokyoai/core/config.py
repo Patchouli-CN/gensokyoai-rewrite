@@ -47,7 +47,7 @@ class ResourceSettings(msgspec.Struct, frozen=True):
 
 
 class GateSettings(msgspec.Struct, frozen=True):
-    """发言门控配置（jev 式混合门控，见 core/brain/gate.py）
+    """发言门控配置（System-1 混合门控，见 core/brain/gate.py）
 
     门控是行为变更：代码默认 `enabled=False`（直接构造世界时维持「每条都回」的
     旧行为）；`config/settings.yaml` 显式打开。
@@ -56,11 +56,11 @@ class GateSettings(msgspec.Struct, frozen=True):
     enabled: bool = False
     """ 是否启用反应路径门控（私聊/被 @ 由规则直判，不受影响） """
     judge: str = "local"
-    """ 裁判后端：local=主模型当裁判 | typesafe=真 jev（需装 .[jev]）| none=纯规则 """
+    """ 裁判后端：local=主模型当裁判 | typesafe=TypeSafe system one（需装 .[typesafe]）| none=纯规则 """
     typesafe_api_key: str = ""
     """ TypeSafe API key（judge=typesafe；空则用 SDK 环境变量） """
     typesafe_model: str = "jev-latest"
-    """ jev 模型名 """
+    """ TypeSafe 模型名 """
     group_threshold: float = 0.6
     """ 群聊未点名时，should_reply 达到该值才接话（调低更活跃） """
     search_threshold: float = 0.1
@@ -101,7 +101,7 @@ class StyleSettings(msgspec.Struct, frozen=True):
 
 
 class OOCJudgeSettings(msgspec.Struct, frozen=True):
-    """jev 化出戏审查配置（见 core/brain/ooc_judge.py）
+    """System-1 出戏审查配置（见 core/brain/ooc_judge.py）
 
     与旧 audit（单点布尔 JSON）的区别：state 带**诱发消息**，多问概率 +
     应用层接受规则——「服从了用户夹带指令」和「丢了角色口吻」分开打分，
@@ -109,7 +109,7 @@ class OOCJudgeSettings(msgspec.Struct, frozen=True):
     """
 
     enabled: bool = False
-    """ 是否启用 jev 化审计（关闭时回退旧单点 audit） """
+    """ 是否启用 System-1 审计（关闭时回退旧单点 audit） """
     mode: str = "side_chain"
     """ side_chain=异步侧链不阻塞（默认， cheapest）；
         blocking=回复进最终缓冲区，审查通过才放行（治本但每回合加一次调用） """
@@ -133,7 +133,7 @@ class OOCJudgeSettings(msgspec.Struct, frozen=True):
     plausible_revise: bool = False
     """ plausible 低分是否参与 revise。默认关闭：20 轮实录回放照出本地裁判的
         plausible 不可信——好回复被打 0.10（非塌缩值的随机低分）造成误报；
-         revise 只信双高 + unsafe 两个在实录中被验证的信号。用真 jev 并重新
+         revise 只信双高 + unsafe 两个在实录中被验证的信号。用 TypeSafe system one 并重新
         校准后可打开 """
     ai_like_threshold: float = 0.7
     """ ai_like 超过该值 = 「大概率是 AI 腔」（默认 flag 预警，记录不阻断） """
@@ -209,7 +209,7 @@ class GensokyoConfig(msgspec.Struct, frozen=True):
     """ 发言门控配置 """
 
     ooc_judge: OOCJudgeSettings = OOCJudgeSettings()
-    """ jev 化出戏审查配置 """
+    """ System-1 出戏审查配置 """
 
     style: StyleSettings = StyleSettings()
     """ 文风防复读配置 """

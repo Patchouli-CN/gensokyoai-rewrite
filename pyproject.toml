@@ -39,8 +39,8 @@ dev = [
     # web_search 工具的依赖：测试全程打桩不联网，钉死保证 CI 行为一致
     "ddgs==9.14.4",
 ]
-# 真 jev 后端（gate.judge=typesafe）：官方 TypeSafe Python SDK
-jev = [
+# TypeSafe system one 后端（gate.judge=typesafe）：官方 TypeSafe Python SDK
+typesafe = [
     "typesafe-sdk>=0.7.1",]
 # web_search 内置工具（DuckDuckGo）：未安装时工具仍注册，调用返回友好提示
 search = [

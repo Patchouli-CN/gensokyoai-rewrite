@@ -1,4 +1,4 @@
-"""JeV 式发言门控测试：规则预筛 / 裁判打分 / 兜底 / 两个裁判后端 / 世界接线"""
+"""System-1 发言门控测试：规则预筛 / 裁判打分 / 兜底 / 两个裁判后端 / 世界接线"""
 
 import asyncio
 import types
@@ -433,7 +433,7 @@ def _patch_typesafe(monkeypatch) -> None:
 
 
 def test_typesafe_judge_extracts_probabilities(monkeypatch):
-    """真 jev：Noul 为题、取 answers 里的概率"""
+    """TypeSafe：Noul 为题、取 answers 里的概率"""
     _patch_typesafe(monkeypatch)
     client = _FakeTypeSafeClient({"should_reply": 0.82, "addressed": 0.4})
 
@@ -463,7 +463,7 @@ def test_typesafe_judge_raises_when_sdk_missing(monkeypatch):
 
 
 def test_typesafe_judge_raises_on_empty_answers(monkeypatch):
-    """jev 没返回可用概率时抛错，交给兜底"""
+    """TypeSafe 没返回可用概率时抛错，交给兜底"""
     _patch_typesafe(monkeypatch)
     client = _FakeTypeSafeClient({})
     with pytest.raises(ValueError):

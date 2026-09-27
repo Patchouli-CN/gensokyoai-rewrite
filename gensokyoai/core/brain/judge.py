@@ -1,4 +1,4 @@
-"""裁判后端 —— LocalJudge（本地模型无状态小调用）与 TypeSafeJudge（真 jev，可选依赖）。
+"""裁判后端 —— LocalJudge（本地模型无状态小调用）与 TypeSafeJudge（TypeSafe system_one，可选依赖）。
 
 两个后端实现同一个 `Judge` 协议（见 `gate.py`），门控逻辑不感知差异：
 
@@ -126,13 +126,13 @@ def _load_typesafe():
         return importlib.import_module("typesafe_sdk")
     except ModuleNotFoundError as err:
         raise RuntimeError(
-            "未安装 typesafe-sdk（真 jev 后端）。"
-            "安装：pip install 'gensokyoai[jev]'；或把 gate.judge 改回 local/none。"
+            "未安装 typesafe-sdk（TypeSafe system one 后端）。"
+            "安装：pip install 'gensokyoai[typesafe]'；或把 gate.judge 改回 local/none。"
         ) from err
 
 
 class TypeSafeJudge:
-    """真 jev：官方 typesafe-sdk 的 system_one（Noul 是非题 -> 概率）。"""
+    """TypeSafe 官方 SDK 的 system_one（Noul 是非题 -> 概率）。"""
 
     def __init__(
         self,
@@ -146,7 +146,7 @@ class TypeSafeJudge:
 
         Args:
             api_key: TypeSafe API key；空则用 SDK 默认（环境变量 TYPESAFE_API_KEY）
-            model: jev 模型名
+            model: TypeSafe 模型名
             timeout_ms: SDK 调用超时（毫秒）
             client: 预构造的客户端（测试注入；None 时惰性构造）
         """
@@ -188,8 +188,8 @@ class TypeSafeJudge:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[name] = _clamp01(value)
         if not out:
-            raise ValueError(f"jev 未返回可用概率: {answers!r}")
-        self._logger.debug(f"jev 裁判: {out}")
+            raise ValueError(f"TypeSafe 未返回可用概率: {answers!r}")
+        self._logger.debug(f"typesafe 裁判: {out}")
         return out
 
 
