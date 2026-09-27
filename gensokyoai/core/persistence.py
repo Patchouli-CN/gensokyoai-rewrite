@@ -144,13 +144,12 @@ class JsonFilePersistence:
 
     @staticmethod
     async def _copy_file(src: Path, dst: Path) -> None:
-        """ayafileio 读+写的文件复制。
+        """文件复制，委托 ayafileio.acopy（OS 快车道 / 位置读写流水线兜底）。
 
-        不保留 `shutil.copy2` 的元数据（.bak 只用于灾难恢复，mtime 无意义），
-        换取整条路径零线程占用。
+        流水线自带短写循环（旧实现不检查 write 返回值，大文件有截断隐患）；
+        Windows 快车道 CopyFile2 顺带保留元数据，对 .bak 灾难恢复场景无副作用。
         """
-        async with ayafileio.open(src, "rb") as reader, ayafileio.open(dst, "wb") as writer:
-            await writer.write(await reader.read())
+        await ayafileio.acopy(src, dst)
 
     def _quarantine_file(self, path: Path) -> None:
         """把无法恢复的坏文件移入隔离区留证，不让它阻塞启动"""

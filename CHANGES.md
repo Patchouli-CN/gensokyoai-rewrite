@@ -14,6 +14,10 @@
     `load_eye_config`、`config/eyes/` 不动），觉统御众目。同步改名：事件主题
     `eyes.snapshot` → `satori.snapshot`（该主题无订阅方，纯预留）、日志标签
     `EYES` → `SATORI`、分层依赖检查表与全部 import。
+  - **持久化备份复制切换到 `ayafileio.acopy`**：`core/persistence.py` 的
+    `.bak` 备份/恢复复制不再手写"读全文 + 写全文"——acopy 走 OS 快车道
+    （Windows CopyFile2 / Linux copy_file_range），流水线兜底自带短写循环，
+    顺带修掉旧实现不检查 write 返回值的大文件截断隐患。
 
 ### 安全
   - **SSRF 门禁加固（`utils/url_security.py`）**：补 inet_aton 数字变体解析
