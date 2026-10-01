@@ -118,6 +118,69 @@ async def test_ws_end_to_end_streams_reply(tmp_path):
         await hub.shutdown()
 
 
+async def test_ws_json_envelope_overrides_per_message(tmp_path):
+    """JSON 信封逐条覆盖发送者/direct；纯文本帧回落连接 query（向后兼容）"""
+    hub, app = _build(tmp_path)
+    submits: list[dict] = []
+    original_submit = hub.submit
+
+    def _spy(channel_id, **kwargs):
+        submits.append(kwargs)
+        original_submit(channel_id, **kwargs)
+
+    hub.submit = _spy  # type: ignore[method-assign]
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g123?user=首连者")
+        await asyncio.sleep(0.05)
+        # 群场景：长连由「首连者」建立，但后续每条消息有自己的发送者
+        await ws.send_str('{"text": "在吗", "user": "群友甲", "direct": true}')
+        await ws.send_str("纯文本消息")
+        await asyncio.sleep(0.3)  # 等服务端消费
+
+        assert len(submits) == 2
+        first, second = submits
+        assert first["user"] == "群友甲"
+        assert first["text"] == "在吗"
+        assert first["is_direct"] is True
+        assert first["scene_type"] == "group_chat"
+        assert second["user"] == "首连者"
+        assert second["is_direct"] is False
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+async def test_ws_envelope_invalid_falls_back(tmp_path):
+    """非法信封（坏 JSON / text 非字符串）按纯文本处理，不炸连接"""
+    hub, app = _build(tmp_path)
+    submits: list[dict] = []
+    original_submit = hub.submit
+
+    def _spy(channel_id, **kwargs):
+        submits.append(kwargs)
+        original_submit(channel_id, **kwargs)
+
+    hub.submit = _spy  # type: ignore[method-assign]
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1?user=小明")
+        await asyncio.sleep(0.05)
+        await ws.send_str('{"text": 123}')  # text 非字符串 → 整条当文本
+        await asyncio.sleep(0.3)
+
+        assert len(submits) == 1
+        assert submits[0]["text"] == '{"text": 123}'
+        assert submits[0]["user"] == "小明"
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
 async def test_ws_ingress_limiter_replies_notice(tmp_path):
     """入口限流：超速的消息被当场回绝（notice），不进入模型"""
     hub, app = _build(tmp_path, limiter=IngressLimiter(rate=0.001, burst=1))

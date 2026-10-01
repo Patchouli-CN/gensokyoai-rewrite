@@ -10,10 +10,18 @@
 - **多路复用**由 `ChannelHub` 承担：同频道的所有连接合流成一条快照流
 - **入口限流**先于模型：超速只回一句提示，不消耗任何模型资源
 - **输出流式**：角色说话经 `BroadcastMouth` 逐帧广播，多端同步看到「逐字蹦」
+
+输入协议（TEXT 帧，两种形态向后兼容）：
+- **纯文本**：整条即消息内容；发送者 / 场景 / is_direct 取连接 query
+- **JSON 信封**：`{"text": ..., "user": ..., "direct": true}`——群场景里
+  「谁发的」和「是否直接针对角色（如 QQ @bot）」是**每条消息**的属性，
+  长连复用时不能绑死在连接 query 上，故用信封逐条覆盖
 """
 
 import argparse
 import asyncio
+import contextlib
+import json
 import sys
 
 from aiohttp import WSMsgType, web
@@ -115,15 +123,34 @@ def build_app(
             f"WS 连接: channel={channel_id} user={user} 在线={hub.online_count(channel_id)}"
         )
 
+        # 私聊必直通；群场景里客户端可用 ?direct=1 在连接级标记「直接针对角色」
+        conn_direct = scene_type == "private_chat" or request.query.get("direct") == "1"
         try:
             async for msg in ws:
                 if msg.type is not WSMsgType.TEXT:
                     continue
-                text = (msg.data or "").strip()
+                raw = (msg.data or "").strip()
+                if not raw:
+                    continue
+                # 每条消息的默认值取连接级属性，JSON 信封可逐条覆盖
+                msg_user = user
+                msg_direct = conn_direct
+                text = raw
+                if raw.startswith("{"):
+                    with contextlib.suppress(ValueError, AttributeError):
+                        envelope = json.loads(raw)
+                        if isinstance(envelope, dict) and isinstance(envelope.get("text"), str):
+                            text = envelope["text"].strip()
+                            if isinstance(envelope.get("user"), str) and envelope["user"].strip():
+                                msg_user = (
+                                    strip_control_chars(envelope["user"].strip())[:_MAX_USER_LEN]
+                                    or user
+                                )
+                            msg_direct = conn_direct or envelope.get("direct") is True
                 if not text:
                     continue
                 if limiter is not None:
-                    wait = limiter.check(user)
+                    wait = limiter.check(msg_user)
                     if wait > 0:
                         await ws.send_json(
                             {
@@ -134,10 +161,10 @@ def build_app(
                         continue
                 hub.submit(
                     channel_id,
-                    user=user,
+                    user=msg_user,
                     text=strip_control_chars(text),
                     scene_type=scene_type,
-                    is_direct=scene_type == "private_chat",
+                    is_direct=msg_direct,
                 )
         finally:
             hub.detach(channel_id, sink)

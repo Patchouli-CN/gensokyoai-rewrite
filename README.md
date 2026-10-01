@@ -64,6 +64,9 @@ python main.py            # 控制台模式，直接和角色对话
 
 完整步骤见 [docs/QUICKSTART.md](docs/QUICKSTART.md)，常见问题见 [docs/QA.md](docs/QA.md)。
 
+接入 QQ（OneBot v11）：起 `gensokyoai-ws` 后，用 [nb2_plugin/](nb2_plugin/README.md) 里的
+NoneBot2 桥接插件把群聊/私聊桥进来——插件跑在独立进程，QQ 侧出事不伤引擎。
+
 ## 五档推理深度
 
 | 档位 | 思考链（配了卡片链） | 接力思考（未配卡） | 适用场景 |
