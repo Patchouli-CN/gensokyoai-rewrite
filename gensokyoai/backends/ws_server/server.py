@@ -229,6 +229,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.5,
         help="输入合并窗口秒数：窗内消息攒批合成一回合（治话没说完/多人同时@）；0 关闭",
     )
+    parser.add_argument(
+        "--stall-probability",
+        type=float,
+        default=None,
+        help="过渡语触发概率（不传用世界默认值）；QQ 群聊部署建议 0——过渡语会多发一条气泡",
+    )
     parser.add_argument("--token", default=None, help="接入令牌（非回环监听时强烈建议设置）")
     return parser
 
@@ -282,21 +288,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"启动失败: {err}", file=sys.stderr)
         return 2
 
+    world_kwargs: dict = {
+        "judge": judge,
+        "gate": config.gate,
+        "ooc_judge": ooc_judge,
+        "ooc_judge_settings": config.ooc_judge,
+        "style": config.style,
+        "search": config.search,
+        "embedder": build_embedder(config.embedding),
+        "memory_min_score": config.embedding.min_score,
+    }
+    if args.stall_probability is not None:
+        world_kwargs["stall_probability"] = args.stall_probability
     hub = ChannelHub(
         sessions=sessions,
         character=character,
         idle_ttl=args.idle_ttl,
         merge_window=args.merge_window,
-        world_kwargs={
-            "judge": judge,
-            "gate": config.gate,
-            "ooc_judge": ooc_judge,
-            "ooc_judge_settings": config.ooc_judge,
-            "style": config.style,
-            "search": config.search,
-            "embedder": build_embedder(config.embedding),
-            "memory_min_score": config.embedding.min_score,
-        },
+        world_kwargs=world_kwargs,
     )
     logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")
     if args.host not in _LOOPBACK_HOSTS and not args.token:
