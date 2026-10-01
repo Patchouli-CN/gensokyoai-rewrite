@@ -223,6 +223,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--character", default=None, help="角色卡路径（默认用仓库/包内自带）")
     parser.add_argument("--log-level", default="INFO", help="日志级别")
     parser.add_argument("--idle-ttl", type=float, default=600.0, help="频道空闲回收秒数")
+    parser.add_argument(
+        "--merge-window",
+        type=float,
+        default=1.5,
+        help="输入合并窗口秒数：窗内消息攒批合成一回合（治话没说完/多人同时@）；0 关闭",
+    )
     parser.add_argument("--token", default=None, help="接入令牌（非回环监听时强烈建议设置）")
     return parser
 
@@ -280,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
         sessions=sessions,
         character=character,
         idle_ttl=args.idle_ttl,
+        merge_window=args.merge_window,
         world_kwargs={
             "judge": judge,
             "gate": config.gate,

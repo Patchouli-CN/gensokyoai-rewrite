@@ -72,6 +72,7 @@ class ChannelHub:
         world_kwargs: dict | None = None,
         clock=time.monotonic,
         max_channels: int = _DEFAULT_MAX_CHANNELS,
+        merge_window: float = 0.0,
     ) -> None:
         """初始化。
 
@@ -85,6 +86,8 @@ class ChannelHub:
             world_kwargs: 透传给默认工厂的 TouhouWorld 额外参数（如 OOC / 过渡语旋钮）
             clock: 时钟函数（可注入以便测试）
             max_channels: 同时存活频道数上限，满了再建新频道抛 `ChannelLimitError`
+            merge_window: 输入合并窗口秒数（透传 QueuePerceiver；>0 时窗内消息
+                攒批合并成一条快照，治「话没说完」与「多人同时 @」）
         """
         self._logger = LoggerManager.get_logger("HUB")
         self._sessions = sessions
@@ -95,6 +98,7 @@ class ChannelHub:
         self._world_kwargs = dict(world_kwargs or {})
         self._clock = clock
         self._max_channels = max_channels
+        self._merge_window = merge_window
         self._channels: dict[str, Channel] = {}
         self._factory: WorldFactory = world_factory or self._default_world
 
@@ -238,7 +242,7 @@ class ChannelHub:
                 f"频道数到达上限（{self._max_channels}），拒绝新建: {channel_id}"
             )
 
-        perceiver = QueuePerceiver()
+        perceiver = QueuePerceiver(merge_window=self._merge_window)
         mouth = BroadcastMouth()
         world = self._factory(channel_id, perceiver, mouth)
         now = self._clock()
