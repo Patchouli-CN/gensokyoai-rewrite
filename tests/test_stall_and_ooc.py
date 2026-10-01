@@ -113,7 +113,9 @@ async def test_maybe_stall_prints_and_marks(capsys):
     assert "幽幽子" in out and "唔……让我想想" in out
     assert world._stall_last_turn == 2
     assert len(backend.calls) == 1
-    assert backend.calls[0]["max_new_tokens"] == 256, "过渡语小预算，但要给思考模式留 reasoning 余量"
+    assert backend.calls[0]["max_new_tokens"] == 256, (
+        "过渡语小预算，但要给思考模式留 reasoning 余量"
+    )
     assert "冥界有没有好吃的点心" in backend.calls[0]["messages"][-1].content
 
 
