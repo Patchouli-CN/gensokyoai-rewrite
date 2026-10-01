@@ -27,6 +27,7 @@ import sys
 from aiohttp import WSMsgType, web
 
 from ...app import DEFAULT_CONFIG, build_session_and_character, resolve_resource
+from ...command import CommandContext, CommandExecutor
 from ...core.brain.judge import build_judge, build_ooc_judge
 from ...core.config import load_config
 from ...core.memorizer.embedder import build_embedder
@@ -35,6 +36,7 @@ from ...roleplay.hub import ChannelHub, ChannelLimitError
 from ...schemas.scene_schema import SceneType
 from ...utils.logger import LoggerManager, setup_logging
 from ...utils.text import is_safe_channel_id, strip_control_chars
+from .commands import WsCommandState, build_executor, role_level
 
 _logger = LoggerManager.get_logger("WS")
 
@@ -81,6 +83,7 @@ def build_app(
     default_channel: str = "lobby",
     heartbeat: float = 30.0,
     token: str | None = None,
+    executor: CommandExecutor | None = None,
 ) -> web.Application:
     """构建 aiohttp 应用（路由 `/ws/{channel}` 与 `/ws`）。
 
@@ -90,6 +93,7 @@ def build_app(
         default_channel: 未指定频道时使用的默认频道
         heartbeat: WS 心跳秒数
         token: 接入令牌；非 None 时客户端必须带 `?token=` 才能握手
+        executor: 斜杠指令执行器；None 时 / 消息按普通聊天处理
 
     Returns:
         web.Application: 可直接交给 `web.run_app` / `AppRunner`
@@ -135,6 +139,7 @@ def build_app(
                 # 每条消息的默认值取连接级属性，JSON 信封可逐条覆盖
                 msg_user = user
                 msg_direct = conn_direct
+                msg_role = request.query.get("role")
                 text = raw
                 if raw.startswith("{"):
                     with contextlib.suppress(ValueError, AttributeError):
@@ -147,7 +152,24 @@ def build_app(
                                     or user
                                 )
                             msg_direct = conn_direct or envelope.get("direct") is True
+                            if isinstance(envelope.get("role"), str):
+                                msg_role = envelope["role"]
                 if not text:
+                    continue
+                # 斜杠指令：走 command 子系统本地处理，不进会话、不吃限流、不调模型；
+                # 未知指令/权限不足对用户静默（不暴露指令面）
+                if executor is not None and text.startswith("/"):
+
+                    async def _send(reply: str) -> None:
+                        await ws.send_json({"type": "message", "speaker": "系统", "text": reply})
+
+                    ctx = CommandContext(
+                        source="ws",
+                        issuer=msg_user,
+                        permission=role_level(msg_role),
+                        metadata={"send": _send, "state": executor._state},  # type: ignore[attr-defined]
+                    )
+                    await executor.execute(text, ctx)
                     continue
                 if limiter is not None:
                     wait = limiter.check(msg_user)
@@ -185,6 +207,7 @@ async def serve(
     port: int = 8081,
     limiter: IngressLimiter | None = None,
     token: str | None = None,
+    executor: CommandExecutor | None = None,
 ) -> web.AppRunner:
     """启动 WS 服务（非阻塞），返回 runner 以便调用方控制生命周期。
 
@@ -194,11 +217,12 @@ async def serve(
         port: 监听端口
         limiter: 入口令牌桶
         token: 接入令牌（非回环监听时强烈建议设置）
+        executor: 斜杠指令执行器；None 时 / 消息按普通聊天处理
 
     Returns:
         web.AppRunner: 已 setup + start 的 runner（调用方负责 cleanup）
     """
-    app = build_app(hub=hub, limiter=limiter, token=token)
+    app = build_app(hub=hub, limiter=limiter, token=token, executor=executor)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
@@ -239,7 +263,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def run_server(hub: ChannelHub, *, host: str, port: int, limiter=None, token=None) -> None:
+async def run_server(
+    hub: ChannelHub, *, host: str, port: int, limiter=None, token=None, executor=None
+) -> None:
     """起服务并常驻，直到被取消（关闭时回收频道与 runner）。
 
     Args:
@@ -249,7 +275,7 @@ async def run_server(hub: ChannelHub, *, host: str, port: int, limiter=None, tok
         limiter: 入口令牌桶
         token: 接入令牌
     """
-    runner = await serve(hub, host=host, port=port, limiter=limiter, token=token)
+    runner = await serve(hub, host=host, port=port, limiter=limiter, token=token, executor=executor)
     try:
         await asyncio.Event().wait()
     finally:
@@ -307,6 +333,15 @@ def main(argv: list[str] | None = None) -> int:
         merge_window=args.merge_window,
         world_kwargs=world_kwargs,
     )
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        version = _pkg_version("gensokyoai")
+    except Exception:
+        version = "dev"
+    executor = build_executor(
+        WsCommandState(sessions=sessions, hub=hub, config=config, version=version)
+    )
     logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")
     if args.host not in _LOOPBACK_HOSTS and not args.token:
         logger.warning(
@@ -321,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
                 port=args.port,
                 limiter=IngressLimiter(rate=1.0, burst=3),
                 token=args.token,
+                executor=executor,
             )
         )
     except KeyboardInterrupt:
