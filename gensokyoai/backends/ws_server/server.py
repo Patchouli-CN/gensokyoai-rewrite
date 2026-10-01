@@ -259,6 +259,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="过渡语触发概率（不传用世界默认值）；QQ 群聊部署建议 0——过渡语会多发一条气泡",
     )
+    parser.add_argument(
+        "--initiative-interval",
+        type=float,
+        default=None,
+        help="主动发言评估周期秒数（不传用世界默认值 30）；调巨大即关闭沉默碎碎念",
+    )
     parser.add_argument("--token", default=None, help="接入令牌（非回环监听时强烈建议设置）")
     return parser
 
@@ -326,6 +332,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.stall_probability is not None:
         world_kwargs["stall_probability"] = args.stall_probability
+    if args.initiative_interval is not None:
+        world_kwargs["initiative_interval"] = args.initiative_interval
     hub = ChannelHub(
         sessions=sessions,
         character=character,
