@@ -50,6 +50,8 @@ def test_project_settings_file_key_matches():
     assert config.default_model.provider == "kimi"
     assert config.default_model.model_name == "kimi-k2.6"
     assert config.default_model.context_window == 32768
+    assert config.ws.merge_window == 1.5
+    assert config.ws.stall_probability == 0.0
 
 
 def test_session_factory_applies_context_window():

@@ -23,6 +23,7 @@ __all__ = [
     "ResourceSettings",
     "SearchSettings",
     "StyleSettings",
+    "WsServerSettings",
     "load_config",
     "load_eye_config",
     "resolve_eye_config_dir",
@@ -194,6 +195,26 @@ class SearchSettings(msgspec.Struct, frozen=True):
     """ 知识缓存 L1（会话内精确缓存）有效秒数；L2 长期记忆不受此限 """
 
 
+class WsServerSettings(msgspec.Struct, frozen=True):
+    """ws_server 后端的部署策略（优先级：CLI 旗标 > 本节 > 世界默认值）
+
+    这些是「部署怎么跑」的行为旋钮，不是进程参数——放配置文件而不是
+    一股脑堆命令行（--host/--port/--token 这类进程绑定仍走 CLI）。
+    """
+
+    idle_ttl: float = 600.0
+    """ 频道空闲回收秒数 """
+
+    merge_window: float = 1.5
+    """ 输入合并窗口秒数（治话没说完/多人同时@）；0 关闭 """
+
+    stall_probability: float | None = None
+    """ 过渡语触发概率；None = 世界默认值。QQ 群聊建议 0（过渡语多发一条气泡） """
+
+    initiative_interval: float | None = None
+    """ 主动发言评估周期秒数；None = 世界默认值 30。调巨大即关闭沉默碎碎念 """
+
+
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """顶层配置"""
 
@@ -229,6 +250,9 @@ class GensokyoConfig(msgspec.Struct, frozen=True):
 
     search: SearchSettings = SearchSettings()
     """ 联网工具配置（可信知识站优先策略）"""
+
+    ws: WsServerSettings = WsServerSettings()
+    """ ws_server 后端部署策略 """
 
 
 def load_config(path: str | Path) -> GensokyoConfig:

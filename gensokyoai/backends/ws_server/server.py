@@ -246,24 +246,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=None, help="配置文件路径（默认用仓库/包内自带）")
     parser.add_argument("--character", default=None, help="角色卡路径（默认用仓库/包内自带）")
     parser.add_argument("--log-level", default="INFO", help="日志级别")
-    parser.add_argument("--idle-ttl", type=float, default=600.0, help="频道空闲回收秒数")
+    parser.add_argument(
+        "--idle-ttl",
+        type=float,
+        default=None,
+        help="频道空闲回收秒数（默认取 settings.yaml 的 ws 节）",
+    )
     parser.add_argument(
         "--merge-window",
         type=float,
-        default=1.5,
-        help="输入合并窗口秒数：窗内消息攒批合成一回合（治话没说完/多人同时@）；0 关闭",
+        default=None,
+        help="输入合并窗口秒数（默认取 settings.yaml 的 ws 节）；0 关闭",
     )
     parser.add_argument(
         "--stall-probability",
         type=float,
         default=None,
-        help="过渡语触发概率（不传用世界默认值）；QQ 群聊部署建议 0——过渡语会多发一条气泡",
+        help="过渡语触发概率（默认取 settings.yaml 的 ws 节）；QQ 群聊建议 0",
     )
     parser.add_argument(
         "--initiative-interval",
         type=float,
         default=None,
-        help="主动发言评估周期秒数（不传用世界默认值 30）；调巨大即关闭沉默碎碎念",
+        help="主动发言评估周期秒数（默认取 settings.yaml 的 ws 节）；调巨大即关碎碎念",
     )
     parser.add_argument("--token", default=None, help="接入令牌（非回环监听时强烈建议设置）")
     return parser
@@ -330,15 +335,27 @@ def main(argv: list[str] | None = None) -> int:
         "embedder": build_embedder(config.embedding),
         "memory_min_score": config.embedding.min_score,
     }
-    if args.stall_probability is not None:
-        world_kwargs["stall_probability"] = args.stall_probability
-    if args.initiative_interval is not None:
-        world_kwargs["initiative_interval"] = args.initiative_interval
+    stall = (
+        args.stall_probability
+        if args.stall_probability is not None
+        else config.ws.stall_probability
+    )
+    if stall is not None:
+        world_kwargs["stall_probability"] = stall
+    initiative = (
+        args.initiative_interval
+        if args.initiative_interval is not None
+        else config.ws.initiative_interval
+    )
+    if initiative is not None:
+        world_kwargs["initiative_interval"] = initiative
     hub = ChannelHub(
         sessions=sessions,
         character=character,
-        idle_ttl=args.idle_ttl,
-        merge_window=args.merge_window,
+        idle_ttl=args.idle_ttl if args.idle_ttl is not None else config.ws.idle_ttl,
+        merge_window=(
+            args.merge_window if args.merge_window is not None else config.ws.merge_window
+        ),
         world_kwargs=world_kwargs,
     )
     try:
