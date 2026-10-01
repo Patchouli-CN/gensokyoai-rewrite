@@ -45,7 +45,8 @@ responder:
   base_url: "https://api.moonshot.cn/v1"
   token: "${MOONSHOT_API_KEY}"
   model_name: "kimi-k2.6"
-  think: false
+  think: true                   # 表达层要创作力：走思考模式温度锁 1.0（k2.6 允许的上限），
+                                # 代价是每条约几百 reasoning token（~¥0.01）；brain/裁判保持非思考省钱
   price:
     currency: "CNY"
     tiers:

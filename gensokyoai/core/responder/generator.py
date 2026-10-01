@@ -221,7 +221,9 @@ class Responder:
         result = await self._sessions.call(
             self._OWNER,
             [Message(role="user", content=user)],
-            max_new_tokens=48,
+            # 256 而非 48：responder 走思考模式（如 kimi think=true）时
+            # reasoning 会先吃掉一两百 token，48 会被吃光吐出空过渡语
+            max_new_tokens=256,
             temperature=0.95,
         )
         line = result.content.strip().strip('"“” \n')
