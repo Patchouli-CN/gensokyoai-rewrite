@@ -86,11 +86,43 @@ def test_llama_provider_prefers_reasoning_content():
 
 
 def test_registry_has_model_providers():
-    """两个模型提供者均已注册"""
+    """模型提供者均已注册"""
     assert Registry.get("llama_cpp") is LlamaProvider
+    from gensokyoai.models.kimi import KimiProvider
     from gensokyoai.models.qwen_local import QwenLocalProvider
 
     assert Registry.get("qwen_local") is QwenLocalProvider
+    assert Registry.get("kimi") is KimiProvider
+
+
+def _kimi_payload(think: bool) -> dict:
+    """构造带 think 配置的 KimiProvider 请求体"""
+    from gensokyoai.models.kimi import KimiProvider
+
+    provider = KimiProvider().config(
+        ModelConfig(base_url="https://api.moonshot.cn/v1", model_name="kimi-k2.6", think=think),
+    )
+    return provider._build_payload(
+        [Message(role="user", content="你好")],
+        max_new_tokens=400,
+        temperature=0.2,
+        stop=None,
+    )
+
+
+def test_kimi_payload_non_thinking_locks_temperature():
+    """think=False（默认）走非思考模式：reasoning_effort=none + 温度锁 0.6
+    （k2.6 服务端锁值，传别的 400；框架温度旋钮在此无意义）"""
+    payload = _kimi_payload(think=False)
+    assert payload["reasoning_effort"] == "none"
+    assert payload["temperature"] == 0.6
+
+
+def test_kimi_payload_thinking_locks_temperature():
+    """think=True 走模型内置推理：温度锁 1，不带 reasoning_effort"""
+    payload = _kimi_payload(think=True)
+    assert payload["temperature"] == 1.0
+    assert "reasoning_effort" not in payload
 
 
 def _llama_payload(think: bool) -> dict:

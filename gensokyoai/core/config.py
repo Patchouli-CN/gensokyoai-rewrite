@@ -2,8 +2,12 @@
 
 模型配置**复用 `schemas.model_schema.ModelConfig`**（单一来源），
 本模块只负责把它组合进顶层配置并解析 YAML。
+
+YAML 文本在解析前过一次 `os.path.expandvars`：`token: "${MOONSHOT_API_KEY}"`
+这类写法从环境变量取值，密钥不进仓库（未定义/畸形的 `$` 片段原样保留）。
 """
 
+import os
 from pathlib import Path
 
 import msgspec
@@ -237,7 +241,7 @@ def load_config(path: str | Path) -> GensokyoConfig:
         FileNotFoundError: 配置文件不存在
         msgspec.ValidationError: 配置字段类型不符
     """
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(os.path.expandvars(Path(path).read_text(encoding="utf-8"))) or {}
     return msgspec.convert(data, GensokyoConfig, strict=False)
 
 

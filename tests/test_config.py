@@ -47,7 +47,8 @@ def test_mismatched_key_silently_ignored(tmp_path):
 def test_project_settings_file_key_matches():
     """仓库里的 settings.yaml 用的是 default_model:（键名匹配，配置真的生效）"""
     config = load_config("config/settings.yaml")
-    assert config.default_model.model_name == "qwen"
+    assert config.default_model.provider == "kimi"
+    assert config.default_model.model_name == "kimi-k2.6"
     assert config.default_model.context_window == 32768
 
 
