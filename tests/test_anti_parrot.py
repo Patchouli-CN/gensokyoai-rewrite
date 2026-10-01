@@ -190,3 +190,50 @@ def test_apply_injection_floor_chinese_patterns():
         assert world._apply_injection_floor(snap, BrainThinkEffort.NONE) == BrainThinkEffort.MID, (
             text
         )
+
+
+# ---------- 隔轮复读窗口 ----------
+
+
+def test_avoid_hint_mentions_recent_replies_window():
+    """窗口模式点名最近两条回复（隔轮复读也能点到名）"""
+    hint = avoid_hint(
+        "",
+        [],
+        ["第一句开头。第一句结尾。", "第二句开头。第二句结尾。", "第三句开头。第三句结尾。"],
+    )
+    assert "第二句开头" in hint and "第三句开头" in hint
+    assert "第一句开头" not in hint, "最多展示最近两条，防提示膨胀"
+    assert "不要重复" in hint
+
+
+async def test_guard_parrot_catches_skip_turn_repeat():
+    """隔一轮原句复读（A→B→A）也能照出来：比对基准是窗口不是相邻轮"""
+    backend = _StubBackend(["换个完全不一样的说法哦。"])
+    world = _make_world(backend)
+    reply_a = "……喜欢？那种东西，早就被纯化掉了。"
+    world._recent_replies.append(reply_a)
+    world._last_reply = "……不必。你并无亏欠，只是问错了对象。"  # 相邻轮是另一条
+    kept = await world._guard_parrot(reply_a)
+    assert len(backend.calls) == 1, "隔轮复读应触发重写"
+    assert kept == "换个完全不一样的说法哦。"
+
+
+async def test_guard_parrot_passes_when_different_from_window():
+    """与窗口内各轮都不相似 -> 不重写"""
+    backend = _StubBackend(["不应被用到"])
+    world = _make_world(backend)
+    world._recent_replies.extend(["苹果好吃。", "今天天气不错。"])
+    world._last_reply = "今天天气不错。"
+    kept = await world._guard_parrot("月之都的闹剧何时休。")
+    assert kept == "月之都的闹剧何时休。"
+    assert backend.calls == []
+
+
+def test_note_reply_style_fills_window():
+    """回复落进近期窗口（供后续轮次比对）"""
+    world = _make_world(_StubBackend([]))
+    world._note_reply_style("第一句。")
+    world._note_reply_style("第二句。")
+    assert list(world._recent_replies) == ["第一句。", "第二句。"]
+    assert world._recent_replies.maxlen == 3

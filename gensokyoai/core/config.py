@@ -102,6 +102,9 @@ class StyleSettings(msgspec.Struct, frozen=True):
     similarity_retry: float = 0.75
     """ 相邻轮回复相似度达到该值触发一次防复读重写；0 = 关闭。
         阈值参考：实录中骨架复用 88%、正常 callback 复用 <40% """
+    reply_window: int = 3
+    """ 复读判定的回看窗口（最近几轮自己的回复）。实录照出相邻轮判定的破绽：
+        隔一轮原句复读（A→B→A）会漏网，窗口内任一轮超阈值即触发 """
 
 
 class OOCJudgeSettings(msgspec.Struct, frozen=True):

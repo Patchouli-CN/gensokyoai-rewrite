@@ -33,7 +33,6 @@ from ..core.responder.anti_parrot import (
     PARROT_REASON,
     avoid_hint,
     ending_key,
-    should_retry,
     should_strip_ending,
     similarity,
     strip_ending,
@@ -324,6 +323,8 @@ class TouhouWorld:
         """ 文风防复读配置 """
         self._last_reply = ""
         """ 上一轮回复原文（防复读提示/相似度检测的比对基准） """
+        self._recent_replies: deque[str] = deque(maxlen=self._style.reply_window)
+        """ 近期回复原文窗口（隔轮复读判定用，见 StyleSettings.reply_window） """
         self._recent_endings: deque[str] = deque(maxlen=self._style.ending_window)
         """ 近期收尾指纹窗口（ported qqbot「不复读结尾」规则） """
         self._shutdown_drain_timeout = shutdown_drain_timeout
@@ -967,13 +968,14 @@ class TouhouWorld:
         Returns:
             str: 提示文本；上一轮无发言且无重复收尾时为空串（不注入）
         """
-        return avoid_hint(self._last_reply, self._recent_endings)
+        return avoid_hint(self._last_reply, self._recent_endings, list(self._recent_replies))
 
     async def _guard_parrot(self, reply: str) -> str:
-        """相邻轮相似度过阈值 -> 一次防复读纠偏重写（缓冲路径）。
+        """近期窗口内相似度过阈值 -> 一次防复读纠偏重写（缓冲路径）。
 
         流式路径文本已在投递中、无从改起，只做事前提示（见 _parrot_avoid_hint）；
-        这里兜底覆盖缓冲投递（CLI / 非流式口层）。
+        这里兜底覆盖缓冲投递（CLI / 非流式口层）。比对基准是近期回复窗口
+        （reply_window），不只是相邻轮——隔一轮原句复读（A→B→A）也能照出来。
 
         Args:
             reply: 本轮新生成的回复
@@ -981,16 +983,23 @@ class TouhouWorld:
         Returns:
             str: 守门后的回复（重写更优返回新文本，否则原样）
         """
-        if not should_retry(reply, self._last_reply, self._style.similarity_retry):
+        if self._style.similarity_retry <= 0:
             return reply
-        ratio = similarity(reply, self._last_reply)
-        self._logger.warning(f"防复读守门: 与上轮相似度 {ratio:.0%} 超阈值，发起一次重写")
+        candidates = [r for r in self._recent_replies if r]
+        if self._last_reply and self._last_reply not in candidates:
+            candidates.append(self._last_reply)
+        if not candidates:
+            return reply
+        ratio, baseline = max((similarity(reply, r), r) for r in candidates)
+        if ratio < self._style.similarity_retry:
+            return reply
+        self._logger.warning(f"防复读守门: 与近轮相似度 {ratio:.0%} 超阈值，发起一次重写")
         try:
             rewritten = await self.responder.correct(reply, PARROT_REASON)
         except Exception:
             self._logger.exception("防复读重写失败，保留原句")
             return reply
-        if rewritten and similarity(rewritten, self._last_reply) < ratio:
+        if rewritten and similarity(rewritten, baseline) < ratio:
             return rewritten
         self._logger.info("防复读重写后仍高于原相似度，保留原句")
         return reply
@@ -1011,6 +1020,7 @@ class TouhouWorld:
         """更新防复读状态：比对基准 + 收尾指纹窗口（记原始收尾——倾向追踪，
         模型想用什么梗是它的本能，剥不剥是我们的事）。"""
         self._last_reply = reply
+        self._recent_replies.append(reply)
         if self._style.dedup_endings:
             self._recent_endings.append(ending_key(reply))
 

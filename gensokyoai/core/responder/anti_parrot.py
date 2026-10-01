@@ -90,24 +90,30 @@ def similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
-def avoid_hint(prev_reply: str, recent_endings: Iterable[str]) -> str:
+def avoid_hint(
+    prev_reply: str, recent_endings: Iterable[str], prev_replies: Sequence[str] = ()
+) -> str:
     """生成「自我克制」提示文本（responder.user 的 avoid 段）。
 
     Args:
-        prev_reply: 上一轮回复（提示避开它的开头/结尾/结构）
+        prev_reply: 上一轮回复（prev_replies 为空时的回落，兼容旧调用）
         recent_endings: 近期收尾指纹窗口（出现 ≥2 次的点名别再用）
+        prev_replies: 最近几轮回复窗口（隔轮复读也能点名到；最多展示最近两条，
+            防提示膨胀）
 
     Returns:
         str: 提示文本；无需克制时返回空串（不注入）
     """
+    shown = [r.strip() for r in prev_replies if r and r.strip()]
+    if not shown and prev_reply and prev_reply.strip():
+        shown = [prev_reply.strip()]
     parts: list[str] = []
-    if prev_reply and prev_reply.strip():
-        head = prev_reply.strip()[:20]
-        tail = prev_reply.strip()[-16:]
-        parts.append(
-            f"你刚才说过：「{head}……{tail}」。"
-            f"这句不要重复同样的开头、结尾和整体结构，换一种切入方式和收尾方式。"
-        )
+    for reply in shown[-2:]:
+        head = reply[:20]
+        tail = reply[-16:]
+        parts.append(f"你刚才说过：「{head}……{tail}」。")
+    if shown:
+        parts.append("以上都不要重复同样的开头、结尾和整体结构，换一种切入方式和收尾方式。")
     counts = Counter(k for k in recent_endings if k)
     repeats = [k for k, count in counts.items() if count >= 2 and len(k) >= 2]
     if repeats:

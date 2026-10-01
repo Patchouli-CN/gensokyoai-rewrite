@@ -114,6 +114,7 @@ style:
   dedup_endings: true
   ending_window: 6
   similarity_retry: 0.75
+  reply_window: 3        # 复读判定回看几轮自己的回复（隔一轮原句复读也能照出来）
 
 # 记忆语义检索（embedding）：开启后长期记忆按余弦相似度检索（向量单独存
 # vectors.msgpack，不进 long_memory.json）；关闭退回子串匹配。
