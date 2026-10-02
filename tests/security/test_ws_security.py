@@ -103,3 +103,160 @@ class _FakeWorld:
 class _NullSink:
     async def deliver(self, frame: dict) -> None:
         pass
+
+
+# ---------- 公网攻击面加固：role 信任边界 / 长度上限 / 限流键 / 拒裸奔 ----------
+
+import asyncio
+
+from aiohttp.test_utils import TestClient, TestServer
+
+from gensokyoai.backends.ws_server import build_app
+from gensokyoai.backends.ws_server import server as server_module
+from gensokyoai.backends.ws_server.commands import WsCommandState, build_executor
+from gensokyoai.backends.ws_server.server import _MAX_TEXT_LEN, _is_loopback, main
+from gensokyoai.core.config import GensokyoConfig
+from gensokyoai.core.resource import IngressLimiter
+from gensokyoai.schemas.model_schema import CompletionResult
+
+
+class _EchoBackend:
+    async def chat(self, messages, **kw):
+        return CompletionResult(content="回复")
+
+    def normalize_tool_calls(self, result, parsed_content=None):
+        return result
+
+
+def _build(tmp_path, limiter=None):
+    sessions = SessionManager()
+    sessions.set_default_backend(_EchoBackend())
+    hub = ChannelHub(
+        sessions=sessions,
+        character=_char(),
+        storage_dir=tmp_path,
+        idle_ttl=0.0,
+        world_kwargs={"ooc_audit": False, "stall_probability": 0.0},
+    )
+    executor = build_executor(
+        WsCommandState(sessions=sessions, hub=hub, config=GensokyoConfig(), version="0.0.19")
+    )
+    return hub, build_app(hub=hub, limiter=limiter, executor=executor)
+
+
+async def _collect(ws, seconds=0.4) -> list[dict]:
+    frames: list[dict] = []
+    try:
+        while True:
+            frames.append(await asyncio.wait_for(ws.receive_json(), timeout=seconds))
+    except TimeoutError:
+        pass
+    return frames
+
+
+def test_is_loopback():
+    """回环判定：role 信任边界的基石（IPv4/IPv6/主机名/非公网/垃圾输入）"""
+    assert _is_loopback("127.0.0.1")
+    assert _is_loopback("127.0.0.2")
+    assert _is_loopback("::1")
+    assert _is_loopback("localhost")
+    assert not _is_loopback("8.8.8.8")
+    assert not _is_loopback("10.0.0.1"), "内网但非回环：经反代时不该信"
+    assert not _is_loopback(None)
+    assert not _is_loopback("垃圾")
+
+
+async def test_role_ignored_from_public_peer(tmp_path, monkeypatch):
+    """公网客户端自报 role 一律作废（/status 需要 USER，拿不到就是 VISITOR）"""
+    monkeypatch.setattr(server_module, "_is_loopback", lambda remote: False)
+    hub, app = _build(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1?user=甲&role=owner")
+        await ws.send_str("/status")
+        frames = await _collect(ws)
+        assert not any("已运行" in f.get("text", "") for f in frames), frames
+        # 信封逐条覆盖同样不认
+        await ws.send_str('{"text": "/status", "role": "member"}')
+        frames = await _collect(ws)
+        assert not any("已运行" in f.get("text", "") for f in frames), frames
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+async def test_role_honored_from_loopback(tmp_path, monkeypatch):
+    """回环连接（本机插件）的 role 自报照常生效——信任链没修断"""
+    monkeypatch.setattr(server_module, "_is_loopback", lambda remote: True)
+    hub, app = _build(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1?user=甲&role=member")
+        await ws.send_str("/status")
+        frames = await _collect(ws)
+        assert any("已运行" in f.get("text", "") for f in frames), frames
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+async def test_oversize_message_rejected_at_gate(tmp_path):
+    """超长消息入口截断（token 放大器）：>上限回 notice 不进会话；=上限放行"""
+    hub, app = _build(tmp_path)
+    submits: list[dict] = []
+    original_submit = hub.submit
+
+    def _spy(channel_id, **kwargs):
+        submits.append(kwargs)
+        original_submit(channel_id, **kwargs)
+
+    hub.submit = _spy  # type: ignore[method-assign]
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1?user=甲")
+        await ws.send_str("长" * (_MAX_TEXT_LEN + 1))
+        frames = await _collect(ws)
+        assert any("太长" in f.get("text", "") for f in frames), frames
+        assert submits == [], "超长消息不应进会话"
+
+        await ws.send_str("短" * _MAX_TEXT_LEN)
+        frames = await _collect(ws, seconds=3.0)
+        assert not any("太长" in f.get("text", "") for f in frames), frames
+        assert len(submits) == 1, "上限内消息应正常进会话"
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+async def test_limiter_keys_on_ip_not_nickname(tmp_path):
+    """限流键是来源 IP：换昵称不开新桶（同 IP 的第二个「用户」照样被限）"""
+    hub, app = _build(tmp_path, limiter=IngressLimiter(rate=0.001, burst=1))
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws1 = await client.ws_connect("/ws/g1?user=小明")
+        await ws1.send_str("第一条")  # 耗尽本 IP 唯一的令牌
+        await asyncio.sleep(0.05)
+
+        ws2 = await client.ws_connect("/ws/g1?user=大红")  # 换昵称不换 IP
+        await ws2.send_str("换个名字继续刷")
+        frames = await _collect(ws2, seconds=3.0)
+        assert any(f.get("type") == "notice" for f in frames), frames
+        await ws1.close()
+        await ws2.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+def test_main_refuses_public_bind_without_token(capsys):
+    """非回环监听 + 无 token：拒绝启动（不再是警告放行）"""
+    rc = main(["--host", "0.0.0.0", "--port", "0"])
+    assert rc == 2
+    assert "--token" in capsys.readouterr().err

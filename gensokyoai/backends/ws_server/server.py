@@ -21,6 +21,8 @@
 import argparse
 import asyncio
 import contextlib
+import hmac
+import ipaddress
 import json
 import sys
 
@@ -49,10 +51,31 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _MAX_USER_LEN = 32
 """ 自报昵称的长度上限（日志/限流键卫生） """
 
+_MAX_TEXT_LEN = 2000
+""" 单条消息长度上限（字符）：超长消息会原样进裁判/brain/responder/蒸馏
+四道提示词，是 token 放大器；公网部署必须在入口截断 """
+
+_LOOPBACK_IPS = frozenset({"127.0.0.1", "::1"})
+
 
 def _check_token(query_token: str | None, expected: str | None) -> bool:
-    """接入令牌校验：未配置（expected=None）时放行；配置了必须精确匹配。"""
-    return expected is None or (query_token is not None and query_token == expected)
+    """接入令牌校验：未配置（expected=None）时放行；配置了必须精确匹配
+    （常量时间比较，防计时侧信道）。"""
+    if expected is None:
+        return True
+    if query_token is None:
+        return False
+    return hmac.compare_digest(query_token.encode(), expected.encode())
+
+
+def _is_loopback(remote: str | None) -> bool:
+    """来源地址是否回环（role 自报只信回环连接——本机插件可信，公网客户端不可信）。"""
+    if remote is None:
+        return False
+    try:
+        return ipaddress.ip_address(remote).is_loopback
+    except ValueError:
+        return remote in _LOOPBACK_IPS or remote == "localhost"
 
 
 class WsSink:
@@ -129,6 +152,10 @@ def build_app(
 
         # 私聊必直通；群场景里客户端可用 ?direct=1 在连接级标记「直接针对角色」
         conn_direct = scene_type == "private_chat" or request.query.get("direct") == "1"
+        # role 自报只信回环连接：本机插件（nb2 桥接等）可信，公网客户端一律 VISITOR
+        trusted_peer = _is_loopback(request.remote)
+        # 限流键用来源 IP 而不是自报昵称——昵称换个值就是新桶，限速形同虚设
+        peer_key = request.remote or user
         try:
             async for msg in ws:
                 if msg.type is not WSMsgType.TEXT:
@@ -139,7 +166,7 @@ def build_app(
                 # 每条消息的默认值取连接级属性，JSON 信封可逐条覆盖
                 msg_user = user
                 msg_direct = conn_direct
-                msg_role = request.query.get("role")
+                msg_role = request.query.get("role") if trusted_peer else None
                 text = raw
                 if raw.startswith("{"):
                     with contextlib.suppress(ValueError, AttributeError):
@@ -152,9 +179,17 @@ def build_app(
                                     or user
                                 )
                             msg_direct = conn_direct or envelope.get("direct") is True
-                            if isinstance(envelope.get("role"), str):
+                            if trusted_peer and isinstance(envelope.get("role"), str):
                                 msg_role = envelope["role"]
                 if not text:
+                    continue
+                if len(text) > _MAX_TEXT_LEN:
+                    await ws.send_json(
+                        {
+                            "type": "notice",
+                            "text": f"太长了……{_MAX_TEXT_LEN} 字以内再说一遍？",
+                        }
+                    )
                     continue
                 # 斜杠指令：走 command 子系统本地处理，不进会话、不吃限流、不调模型；
                 # 未知指令/权限不足对用户静默（不暴露指令面）
@@ -172,7 +207,7 @@ def build_app(
                     await executor.execute(text, ctx)
                     continue
                 if limiter is not None:
-                    wait = limiter.check(msg_user)
+                    wait = limiter.check(peer_key)
                     if wait > 0:
                         await ws.send_json(
                             {
@@ -370,10 +405,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     logger.info(f"启动 WS 服务: ws://{args.host}:{args.port}/ws/{{channel}}")
     if args.host not in _LOOPBACK_HOSTS and not args.token:
-        logger.warning(
-            f"⚠ 正在监听非回环地址 {args.host} 且未设置 --token："
-            "网络上任何人都能连上来消耗你的模型资源！要么加 --token，要么绑回 127.0.0.1"
+        print(
+            f"启动失败: 正在监听非回环地址 {args.host} 但未设置 --token——"
+            "网络上任何人都能连上来消耗你的模型资源。要么加 --token，要么绑回 127.0.0.1",
+            file=sys.stderr,
         )
+        return 2
     try:
         asyncio.run(
             run_server(

@@ -8,8 +8,9 @@
 | /status | /状态 | USER | 版本/uptime/频道/门控/记忆向量化/费用与 token 统计 |
 | /quota | /额度 | USER | 引擎侧计费统计 + Moonshot 账户余额（若配置了 Moonshot 端点） |
 
-权限来自客户端自报的 role（逐条信封 > 连接 query > 默认 VISITOR）——
-信任边界只覆盖只读指令；部署在非回环时必须配 --token。
+权限来自客户端自报的 role（逐条信封 > 连接 query > 默认 VISITOR），但
+**只信回环连接**（server.py 分流层把关）：本机插件可信，公网客户端一律
+VISITOR。非回环监听必须配 --token（不配拒启动）。
 """
 
 import time
