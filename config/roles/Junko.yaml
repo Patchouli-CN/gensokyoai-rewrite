@@ -61,13 +61,17 @@ expression_base: 0.45
 #   timeout_s/optional/tools——直接写「这一步想什么」，无需改代码。
 # 内置可选：emotion_check / relationship_scan / memory_link / stance_decide。
 # 留空则用引擎内置的接力思考。
-think_chain:
-  - emotion_check
-  - name: "grudge_radar"               # 只属于纯狐的思考：话题是否触碰嫦娥/月之都
-    instructions: "判断当前话题与「嫦娥 / 月之都 / 月之民 / 纯化」的关联：若触碰恨意，语气该如何冷下来；若无关，则以达观平静的姿态应对。一句话给出定调。"
-  - relationship_scan
-  - memory_link
-  - stance_decide
+# 当前：留空走接力思考——本地 35B 跑固定 5 步链会塌缩成同义反复（每步结论
+# 雷同，high 档白烧 ~60s）；接力让模型自己决定想几轮，简单话题一轮就收。
+# 旧定制链（云端大模型时再换回来）：
+# think_chain:
+#   - emotion_check
+#   - name: "grudge_radar"               # 只属于纯狐的思考：话题是否触碰嫦娥/月之都
+#     instructions: "判断当前话题与「嫦娥 / 月之都 / 月之民 / 纯化」的关联：若触碰恨意，语气该如何冷下来；若无关，则以达观平静的姿态应对。一句话给出定调。"
+#   - relationship_scan
+#   - memory_link
+#   - stance_decide
+think_chain: []
 
 example_dialogue:
   - user: "你是谁？"

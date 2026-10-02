@@ -45,13 +45,21 @@ def test_mismatched_key_silently_ignored(tmp_path):
 
 
 def test_project_settings_file_key_matches():
-    """仓库里的 settings.yaml 用的是 default_model:（键名匹配，配置真的生效）"""
+    """仓库里的 settings.yaml 用的是 default_model:（键名匹配，配置真的生效）
+
+    只校验「YAML 键 → 配置字段」的映射不漂移（防静默忽略），不断言具体
+    部署值——provider/model 随部署切换（云端 kimi / 本地 llama_cpp）。
+    """
+    import yaml
+
+    with open("config/settings.yaml", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
     config = load_config("config/settings.yaml")
-    assert config.default_model.provider == "kimi"
-    assert config.default_model.model_name == "kimi-k2.6"
-    assert config.default_model.context_window == 32768
-    assert config.ws.merge_window == 1.5
-    assert config.ws.stall_probability == 0.0
+    assert config.default_model.provider == raw["default_model"]["provider"]
+    assert config.default_model.model_name == raw["default_model"]["model_name"]
+    assert config.default_model.context_window == raw["default_model"]["context_window"]
+    assert config.ws.merge_window == raw["ws"]["merge_window"]
+    assert config.ws.stall_probability == raw["ws"]["stall_probability"]
 
 
 def test_session_factory_applies_context_window():

@@ -3,66 +3,46 @@
 # 注意：键名必须与 GensokyoConfig 的字段名一致（default_model / brain / responder /
 # ooc / memorizer / resource / gate / ooc_judge / style）。此前这里写的是 `model:`，
 # 与字段名 `default_model` 不匹配，msgspec 会静默忽略未知键 —— 等于什么都没配。
-# 主模型：Kimi（Moonshot 云端，OpenAI 兼容端点）。
-# token 走环境变量（load_config 会 expandvars），密钥不进仓库：
-#   setx MOONSHOT_API_KEY "sk-..."（或写进启动脚本）
-# 价格覆盖（元/百万 token）：缓存命中按命中价，缓存创建按全价——
-# 沿老项目调研的 k2.5 档位，k2.6 若有新价以 platform.moonshot.cn/docs/pricing 为准。
+# 主模型：本地 llama-server（Qwen3.6-35B-A3B，由用户自己的 start.cmd 启动在
+# 8080，框架只连不拉——启动前务必确认服务已在跑，避免重复拉实例 OOM）。
 default_model:
-  provider: "kimi"                 # Kimi 专用（k2.6 温度锁值/推理模式映射，见 models/kimi.py）
-  base_url: "https://api.moonshot.cn/v1"
-  token: "${MOONSHOT_API_KEY}"
-  model_name: "kimi-k2.6"
+  provider: "llama_cpp"
+  base_url: "http://127.0.0.1:8080/v1"
+  model_name: "qwen"
   think: false
   streaming: true
-  context_window: 32768           # 会话 token 预算（k2.6 窗口 256k，预算收窄控成本）
+  context_window: 32768           # 与 llama-server -c 32768 对齐
   tool_timeout: 10.0
   tool_max_result_chars: 2000
-  price:
-    currency: "CNY"
-    tiers:
-      - price_in: 4.0
-        price_out: 21.0
-        price_cached_in: 0.7
-        price_cache_write: 4.0
 
 brain:
-  provider: "kimi"
-  base_url: "https://api.moonshot.cn/v1"
-  token: "${MOONSHOT_API_KEY}"
-  model_name: "kimi-k2.6"
+  provider: "llama_cpp"
+  base_url: "http://127.0.0.1:8080/v1"
+  model_name: "qwen"
   think: false
-  price:
-    currency: "CNY"
-    tiers:
-      - price_in: 4.0
-        price_out: 21.0
-        price_cached_in: 0.7
-        price_cache_write: 4.0
 
 responder:
-  provider: "kimi"
-  base_url: "https://api.moonshot.cn/v1"
-  token: "${MOONSHOT_API_KEY}"
-  model_name: "kimi-k2.6"
-  think: false                  # 实测思考模式单条回复 78s（reasoning 烧 token 还拖队列），
-                                # 群聊节奏等不起；非思考 0.6/0.95 的味儿不够再调提示词，不动采样
-  price:
-    currency: "CNY"
-    tiers:
-      - price_in: 4.0
-        price_out: 21.0
-        price_cached_in: 0.7
-        price_cache_write: 4.0
+  provider: "llama_cpp"
+  base_url: "http://127.0.0.1:8080/v1"
+  model_name: "qwen"
+  think: false
 
-# 本地 llama-server 配置（切回本地时把上面三段换回来）：
-# default_model:
-#   provider: "llama_cpp"
-#   base_url: "http://127.0.0.1:8080/v1"
-#   model_name: "qwen"
+# Kimi（Moonshot 云端）配置（切回云端时把上面三段换回这个）：
+# default_model / brain / responder 同构：
+#   provider: "kimi"
+#   base_url: "https://api.moonshot.cn/v1"
+#   token: "${MOONSHOT_API_KEY}"
+#   model_name: "kimi-k2.6"
 #   think: false
-#   streaming: true
-#   context_window: 32768
+#   streaming: true               # default_model 段加
+#   context_window: 32768         # default_model 段加（预算收窄控成本）
+#   price:
+#     currency: "CNY"
+#     tiers:
+#       - price_in: 4.0
+#         price_out: 21.0
+#         price_cached_in: 0.7
+#         price_cache_write: 4.0
 
 # 资源闸门：保护本地单模型（串行稀缺资源）
 resource:

@@ -110,3 +110,61 @@ async def test_stop_discards_pending_batch():
     perceiver.request_stop()
     assert await perceiver.next_snapshot() is None
     assert perceiver.queue.empty()
+
+
+# ---------- 忙时攒批：嵌套拍平 + drain ----------
+
+
+def test_merge_flattens_nested_batches():
+    """已合并过的批次快照再合并：按 event_queue 展开，不出现套娃前缀"""
+    batch1 = merge_snapshots(
+        [_snap("甲", "在吗", direct=True, ts=1.0), _snap("乙", "也在", ts=2.0)]
+    )
+    batch2 = merge_snapshots([_snap("丙", "围观", ts=3.0), _snap("甲", "人呢", ts=4.0)])
+    merged = merge_snapshots([batch1, batch2])
+    assert merged.content == "甲: 在吗\n乙: 也在\n丙: 围观\n甲: 人呢"
+    assert merged.participants == ["甲", "乙", "丙"]
+    assert merged.is_direct is True
+    assert len(merged.event_queue) == 4
+
+
+def test_merge_nested_same_sender_joins_lines():
+    """嵌套批里只有一个人：行拼接不带前缀（「话没说完」跨批）"""
+    batch1 = merge_snapshots([_snap("甲", "等下", ts=1.0), _snap("甲", "我草", ts=2.0)])
+    merged = merge_snapshots([batch1, _snap("甲", "看到了吗", ts=3.0)])
+    assert merged.sender == "甲"
+    assert merged.content == "等下\n我草\n看到了吗"
+
+
+async def test_drain_empty_by_default():
+    perceiver = QueuePerceiver()
+    assert perceiver.drain() == []
+    perceiver.request_stop()
+
+
+async def test_drain_returns_backlog_in_order():
+    """回合间隙一次性排空：按到达序返回，队列清空"""
+    perceiver = QueuePerceiver()
+    perceiver.push(_snap("甲", "一", ts=1.0))
+    perceiver.push(_snap("乙", "二", ts=2.0))
+    perceiver.push(_snap("甲", "三", ts=3.0))
+    backlog = perceiver.drain()
+    assert [s.content for s in backlog] == ["一", "二", "三"]
+    assert perceiver.queue.empty()
+    # 排空后合并语义照常
+    merged = merge_snapshots(backlog)
+    assert merged.content == "甲: 一\n乙: 二\n甲: 三"
+    perceiver.request_stop()
+
+
+async def test_drain_flushes_pending_window_batch():
+    """合并窗口未落盘的批次也能被 drain 冲刷出来，且窗口定时器被取消"""
+    perceiver = QueuePerceiver(merge_window=60.0)  # 窗口远大于测试时长
+    perceiver.push(_snap("甲", "窗口里一", ts=1.0))
+    perceiver.push(_snap("乙", "窗口里二", ts=2.0))
+    backlog = perceiver.drain()
+    assert [s.content for s in backlog] == ["窗口里一", "窗口里二"]
+    assert perceiver.queue.empty()
+    # 定时器已取消：之后不会再来一条重复的合并快照
+    assert perceiver._flush_handle is None
+    perceiver.request_stop()

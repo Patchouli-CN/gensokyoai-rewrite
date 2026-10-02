@@ -18,6 +18,14 @@ class Perceiver(ABC):
         """取下一条场景快照；None 表示暂无事件，调用方可稍后重试"""
         ...
 
+    def drain(self) -> list[SceneSnapshot]:
+        """非阻塞排空积压输入（默认无积压语义，返回空列表）。
+
+        缓冲型感知器（如 QueuePerceiver）覆盖此方法，供 world 在回合间隙
+        把积压一次性取走合并处理；流式/直连型感知器无需理会。
+        """
+        return []
+
     async def close(self) -> None:
         """释放平台连接（默认无操作，子类按需覆盖）"""
         self._logger.debug("close() 默认无操作")

@@ -30,18 +30,27 @@ def merge_snapshots(snaps: Sequence[SceneSnapshot]) -> SceneSnapshot:
     - is_direct 取或（任何一条针对角色，整批都算）
     - participants 为去重后的发送者列表；每条原始消息进 event_queue 留痕
     - context_snippet 取最后一条的（最新鲜）；timestamp 取最后一条的
+    - **嵌套拍平**：输入里混着已合并过的批次快照时（忙时攒批会二次合并），
+      按 event_queue 展开回原始消息，避免「发送者: 发送者: 内容」套娃前缀
     """
     if len(snaps) == 1:
         return snaps[0]
 
-    senders = [s.sender for s in snaps]
+    flat: list[tuple[str, str, float]] = []
+    for s in snaps:
+        if len(s.event_queue) > 1:
+            flat.extend((e.sender, e.content, s.timestamp) for e in s.event_queue if e.content)
+        elif s.content:
+            flat.append((s.sender, s.content, s.timestamp))
+
+    senders = [sender for sender, _, _ in flat]
     unique = list(dict.fromkeys(senders))
     primary = next((s.sender for s in reversed(snaps) if s.is_direct), senders[-1])
     if len(unique) == 1:
-        content = "\n".join(s.content for s in snaps if s.content)
+        content = "\n".join(c for _, c, _ in flat)
         sender = unique[0]
     else:
-        content = "\n".join(f"{s.sender}: {s.content}" for s in snaps if s.content)
+        content = "\n".join(f"{sender}: {c}" for sender, c, _ in flat)
         sender = primary
 
     return SceneSnapshot(
@@ -52,8 +61,8 @@ def merge_snapshots(snaps: Sequence[SceneSnapshot]) -> SceneSnapshot:
         context_snippet=snaps[-1].context_snippet,
         participants=unique,
         event_queue=[
-            SceneEvent(kind="message", sender=s.sender, content=s.content, timestamp=s.timestamp)
-            for s in snaps
+            SceneEvent(kind="message", sender=sender, content=c, timestamp=ts)
+            for sender, c, ts in flat
         ],
         timestamp=snaps[-1].timestamp,
     )
@@ -119,6 +128,27 @@ class QueuePerceiver(Perceiver):
         if len(batch) > 1:
             self._logger.info(f"合并窗口聚合 {len(batch)} 条消息: {merged.participants}")
         self._put(merged)
+
+    def drain(self) -> list[SceneSnapshot]:
+        """非阻塞排空积压：取空队列 + 冲刷合并窗口里未落的批次，按时间序返回。
+
+        供 world 在回合间隙做「忙时攒批」：回合期间到达的输入一次性取走、
+        合并处理，而不是逐条各开一回合（整批进决策，一次裁决一条回复）。
+        返回空列表表示没有积压，调用方零开销。
+        """
+        drained: list[SceneSnapshot] = []
+        while True:
+            try:
+                drained.append(self.queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        if self._pending:
+            drained.extend(self._pending)
+            self._pending = []
+        return drained
 
     def request_stop(self) -> None:
         """请求停止：唤醒阻塞中的 `next_snapshot`，丢弃未合并的批次。"""

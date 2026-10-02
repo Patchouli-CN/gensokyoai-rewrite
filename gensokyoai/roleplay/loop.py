@@ -42,6 +42,7 @@ from ..core.session_manager import SessionManager
 from ..mouth.base import Mouth
 from ..mouth.console import ConsoleMouth
 from ..satori.perceiver import Perceiver
+from ..satori.queue import merge_snapshots
 from ..schemas.brain_schema import BrainConclusion, BrainThinkEffort
 from ..schemas.event_schema import BaseEvent, EventTopic, TurnEndPayload
 from ..schemas.memory_schema import MemoryItem, MemoryType
@@ -479,6 +480,13 @@ class TouhouWorld:
                 # 退出信号检查
                 if snapshot.content.lower() in EXIT_WORDS:
                     break
+
+                # 忙时攒批：回合期间积压的输入一次性合并进本回合——多人同时 @ /
+                # 复读队形只开一回合、过一次门控、回一条（场景无关的合流语义；
+                # 无积压时 drain 返回空，零开销）。getattr 兜底：鸭式自定义眼睛
+                # 不强制实现 drain
+                if backlog := getattr(self.eye, "drain", lambda: [])():
+                    snapshot = merge_snapshots([snapshot, *backlog])
 
                 turn += 1
                 t_start = time.monotonic()
