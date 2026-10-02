@@ -16,6 +16,7 @@ import yaml
 from ..schemas.model_schema import ModelConfig
 
 __all__ = [
+    "EnergySettings",
     "GensokyoConfig",
     "KnowledgeSite",
     "ModelConfig",
@@ -85,6 +86,40 @@ class GateSettings(msgspec.Struct, frozen=True):
     """ local 裁判的采样温度（低温求稳） """
     presence_window_s: float = 300.0
     """ 活跃度统计窗口秒数（对齐 qqbot 的 5 分钟） """
+
+
+class EnergySettings(msgspec.Struct, frozen=True):
+    """精力模型配置（HumanLikeSystem 阶段二，见 core/brain/energy.py）
+
+    精力值（0~1）由三个因子连乘：存在感惩罚（说多了会累）、冷场退避
+    （连续不接话越来越懒）、生物钟（深夜困倦）。它调制群聊模糊带的发言
+    阈值（精力低 -> 更难接话）与回复长度（精力低 -> 提示 Responder 简短）。
+
+    行为变更：代码默认 `enabled=False`；`config/settings.yaml` 显式打开。
+    """
+
+    enabled: bool = False
+    """ 是否启用精力模型（直连信号：私聊/被 @ 不受影响） """
+    presence_free_ratio: float = 0.25
+    """ 窗口内自己发言占比的免罚线，超过才开始扣精力 """
+    presence_penalty: float = 0.5
+    """ 存在感拉满（占比 100%）时最多扣多少精力 """
+    skip_decay: float = 0.85
+    """ 冷场退避衰减率：连续「本可接却没接」每回合精力乘这个 """
+    skip_streak_cap: int = 8
+    """ 冷场连胜上限（防衰减到无限小） """
+    night_start: int = 1
+    """ 深夜时段起始小时（本地时间，可跨午夜；与 night_end 相等则关生物钟） """
+    night_end: int = 7
+    """ 深夜时段结束小时（左闭右开） """
+    night_factor: float = 0.7
+    """ 深夜精力乘数（1.0 关闭生物钟影响） """
+    threshold_span: float = 0.2
+    """ 精力归零时发言阈值最多抬高这么多（精力只抬不压） """
+    threshold_cap: float = 0.95
+    """ 调制后阈值封顶 """
+    brief_below: float = 0.4
+    """ 精力低于该值时给 Responder 注入「回复简短」状态提示 """
 
 
 class StyleSettings(msgspec.Struct, frozen=True):
@@ -235,6 +270,9 @@ class GensokyoConfig(msgspec.Struct, frozen=True):
 
     gate: GateSettings = GateSettings()
     """ 发言门控配置 """
+
+    energy: EnergySettings = EnergySettings()
+    """ 精力模型配置 """
 
     ooc_judge: OOCJudgeSettings = OOCJudgeSettings()
     """ System-1 出戏审查配置 """

@@ -7,6 +7,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from ..core.brain.energy import EnergyModel
 from ..core.brain.engine import BrainEngine, build_tool_directive, route
 from ..core.brain.gate import (
     GateDecision,
@@ -19,7 +20,13 @@ from ..core.brain.ooc_detector import OOCDetector
 from ..core.brain.ooc_judge import audit_with_judge
 from ..core.brain.pipeline import ThinkPipeline
 from ..core.clock import BiologicalClock
-from ..core.config import GateSettings, OOCJudgeSettings, SearchSettings, StyleSettings
+from ..core.config import (
+    EnergySettings,
+    GateSettings,
+    OOCJudgeSettings,
+    SearchSettings,
+    StyleSettings,
+)
 from ..core.event_bus import EventBus
 from ..core.health import HealthMonitor
 from ..core.lifecycle import LifecycleManager
@@ -186,6 +193,7 @@ class TouhouWorld:
         ooc_judge: Judge | None = None,
         ooc_judge_settings: OOCJudgeSettings | None = None,
         style: StyleSettings | None = None,
+        energy: EnergySettings | None = None,
         search: SearchSettings | None = None,
         trace_steps: bool = True,
         tool_timeout: float = 10.0,
@@ -218,6 +226,7 @@ class TouhouWorld:
             ooc_judge: 出戏审查裁判（System-1 多问概率；None 回退旧单点 audit）
             ooc_judge_settings: System-1 出戏审查配置（阈值/预算；None = 默认）
             style: 文风防复读配置（None = StyleSettings() 默认）
+            energy: 精力模型配置（None = EnergySettings() 默认；enabled=False 不跟踪精力）
             search: 联网工具配置（可信知识站表 -> 脑内工具指令；None = 无指令）
             session_id: 会话标识，记忆与会话快照按它隔离（多群/多用户各自一个 id）
             storage_dir: 持久化根目录
@@ -299,6 +308,12 @@ class TouhouWorld:
         self._judge = judge
         self._presence = PresenceTracker(window_s=self._gate.presence_window_s)
         """ 活跃度统计：喂给裁判的 bot_activity（防刷屏靠裁判自觉，不设硬冷却） """
+        self._energy_cfg = energy or EnergySettings()
+        self._energy = (
+            EnergyModel(self._energy_cfg, self._presence) if self._energy_cfg.enabled else None
+        )
+        """ 精力模型（HumanLikeSystem 阶段二）：与门控共用 PresenceTracker，
+        调制群聊模糊带阈值与回复长度；None = 不跟踪（旧行为） """
 
         # --- 主动发言 / 蒸馏旋钮 ---
         self._distill_every = distill_every
@@ -625,6 +640,8 @@ class TouhouWorld:
 
         decision = await self._gate_decide(snapshot, turn)
         if self._gate.enabled and not decision.reply:
+            if self._energy is not None:
+                self._energy.note_skip(decision.source)
             self._remember_user(snapshot)
             await self.health.record_metric("gate.skip", 1.0, unit="次")
             return False, None
@@ -636,6 +653,12 @@ class TouhouWorld:
         """只做 decide + 日志（无副作用；跳过记账由 _system1_turn 按门控开关决定）。"""
         recent = await self.memory.recent(5)
         recent_texts = [m.content for m in reversed(recent)]
+        threshold = self._gate.group_threshold
+        energy_text = ""
+        if self._energy is not None:
+            # 精力调制：说多了/冷场久/深夜 -> 群聊模糊带阈值抬高（只抬不压）
+            threshold = self._energy.modulate_threshold(threshold)
+            energy_text = f" {self._energy.describe()}"
         decision = await decide(
             snapshot=snapshot,
             bot_name=self.character.name,
@@ -643,7 +666,7 @@ class TouhouWorld:
             recent=recent_texts,
             presence=self._presence.stats(),
             judge=self._judge,
-            group_threshold=self._gate.group_threshold,
+            group_threshold=threshold,
             search_threshold=self._gate.search_threshold,
             route_by_model=self._gate.route_by_model,
         )
@@ -656,7 +679,7 @@ class TouhouWorld:
         deep = f" deep={decision.effort:.2f}" if decision.effort is not None else ""
         self._logger.info(
             f"[gate] 回合{turn} {'REPLY' if decision.reply else 'skip'} "
-            f"({decision.source}: {decision.reason}){scores}{deep} :: "
+            f"({decision.source}: {decision.reason}){scores}{deep}{energy_text} :: "
             f"{snapshot.sender}: {snapshot.content[:60]}"
         )
         return decision
@@ -833,15 +856,21 @@ class TouhouWorld:
         """
         # 防复读预防性提示：两条路径都生效（流式已投递无从改起，只能事前防）
         avoid = self._parrot_avoid_hint()
+        # 精力状态提示：低精力时让 Responder 长话短说（空串不注入）
+        state_hint = self._energy.verbosity_hint() if self._energy is not None else ""
         # blocking 闸门开启时**放弃流式**：回复必须先完整生成、过 System-1 出戏审查
         # 才放行——逐字蹦的手感换「说出口的话都过了审」（本地模型每回合多一次
         # 审查调用；侧链模式则两不误，默认）
         if self.mouth.supports_streaming and not self._ooc_blocking:
-            reply = await self._deliver_stream(snapshot, conclusion, memories, avoid=avoid)
+            reply = await self._deliver_stream(
+                snapshot, conclusion, memories, avoid=avoid, state_hint=state_hint
+            )
             await self._note_suspicious(reply)
             self._note_reply_style(reply)
             return reply
-        reply = await self.responder.respond(conclusion, snapshot, memories, avoid)
+        reply = await self.responder.respond(
+            conclusion, snapshot, memories, avoid, state_hint=state_hint
+        )
         if self._ooc_blocking:
             reply = await self._guard_ooc_judge(snapshot, reply)
         if ooc_guard:
@@ -851,10 +880,14 @@ class TouhouWorld:
         final = self._dedup_ending(reply)
         await self.mouth.send(self.character.name, strip_control_chars(final))
         self._presence.record(from_bot=True)
+        if self._energy is not None:
+            self._energy.note_reply()
         self._note_reply_style(reply)
         return final
 
-    async def _deliver_stream(self, snapshot, conclusion, memories, avoid: str = "") -> str:
+    async def _deliver_stream(
+        self, snapshot, conclusion, memories, avoid: str = "", state_hint: str = ""
+    ) -> str:
         """流式投递最终回复：responder.respond_stream → mouth.begin/delta/end。
 
         逐块把回复文本送到可显示的平台（口层流式），并返回完整回复文本
@@ -865,6 +898,7 @@ class TouhouWorld:
             conclusion: Brain 结论
             memories: 检索到的记忆
             avoid: 防复读提示（生成前注入；空串不注入）
+            state_hint: 精力/状态提示（生成前注入；空串不注入）
 
         Returns:
             str: 完整回复文本（含情绪润色尾缀）
@@ -872,7 +906,9 @@ class TouhouWorld:
         await self.mouth.begin(self.character.name)
         parts: list[str] = []
         try:
-            async for delta in self.responder.respond_stream(conclusion, snapshot, memories, avoid):
+            async for delta in self.responder.respond_stream(
+                conclusion, snapshot, memories, avoid, state_hint=state_hint
+            ):
                 parts.append(delta)
                 if delta:
                     await self.mouth.delta(strip_control_chars(delta))
@@ -882,6 +918,8 @@ class TouhouWorld:
             await self.mouth.end()
         reply = "".join(parts)
         self._presence.record(from_bot=True)
+        if self._energy is not None:
+            self._energy.note_reply()
         self._logger.info(f"流式投递完成: {len(reply)}字")
         return reply
 

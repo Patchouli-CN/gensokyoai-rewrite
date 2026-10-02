@@ -69,6 +69,24 @@ gate:
   route_by_model: true    # 档位由裁判的 needs_deep 说了算（规则路由做兜底）
   deep_cuts: [0.3, 0.6, 0.85]   # 进 MID / HIGH / MAX 的切点
 
+# 精力模型（HumanLikeSystem 阶段二，core/brain/energy.py）：
+# 精力值 = 生物钟 × 存在感惩罚 × 冷场退避（0~1），调制群聊模糊带的接话门槛
+# （精力低 -> 阈值抬高、更难得接话）与回复长度（精力低 -> 提示 Responder 简短）。
+# 私聊 / 被 @ 的直连信号不受影响。冷场退避只计裁判/兜底的主动跳过，
+# 「哈哈」这类反射弧跳过不消耗精力。
+energy:
+  enabled: true
+  presence_free_ratio: 0.25   # 5 分钟窗口内自己发言占比的免罚线
+  presence_penalty: 0.5       # 占比拉满时最多扣一半精力
+  skip_decay: 0.85            # 连续不接话每回合精力 ×0.85（一开口复位）
+  skip_streak_cap: 8
+  night_start: 1              # 深夜 1:00~7:00 精力 ×0.7（本地时间）
+  night_end: 7
+  night_factor: 0.7
+  threshold_span: 0.2         # 精力归零时阈值最多抬 0.2（0.8 -> 0.95 封顶）
+  threshold_cap: 0.95
+  brief_below: 0.4            # 精力低于此值提示 Responder 长话短说
+
 # System-1 出戏审查（core/brain/ooc_judge.py）：一次裁判调用五问概率 +
 # 应用层接受规则。state 带诱发消息（旧 audit 看不到，冷面接梗会被误判）；
 # side_chain=异步记账不阻塞（默认）；blocking=最终缓冲区审查通过才放行。

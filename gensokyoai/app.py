@@ -145,6 +145,7 @@ def build_world(
         ooc_judge=ooc_judge,
         ooc_judge_settings=config.ooc_judge,
         style=config.style,
+        energy=config.energy,
         search=config.search,
         embedder=embedder,
         memory_min_score=config.embedding.min_score,

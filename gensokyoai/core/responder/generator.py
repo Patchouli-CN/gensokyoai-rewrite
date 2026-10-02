@@ -39,6 +39,7 @@ class Responder:
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
         avoid: str = "",
+        state_hint: str = "",
     ) -> str:
         """在有状态会话中生成最终回复。
 
@@ -47,6 +48,7 @@ class Responder:
             snapshot: 场景快照
             memories: 检索到的记忆
             avoid: 防复读提示（自我克制清单；空串不注入）
+            state_hint: 精力/状态提示（如低精力时长话短说；空串不注入）
         """
         started = time.monotonic()
         self._logger.info(
@@ -82,6 +84,7 @@ class Responder:
             memory=memory_text,
             avoid=avoid,
             reasoning=conclusion.reasoning or "",
+            state=state_hint,
         )
         result = await self._sessions.call(
             self._OWNER,
@@ -114,6 +117,7 @@ class Responder:
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
         avoid: str = "",
+        state_hint: str = "",
     ):
         """流式生成最终回复：逐块 yield 文本 delta（供 mouth.begin/delta/end 投递）。
 
@@ -125,6 +129,7 @@ class Responder:
             snapshot: 场景快照
             memories: 检索到的记忆
             avoid: 防复读提示（自我克制清单；空串不注入）
+            state_hint: 精力/状态提示（如低精力时长话短说；空串不注入）
 
         Yields:
             str: 文本增量
@@ -158,6 +163,7 @@ class Responder:
             memory=memory_text,
             avoid=avoid,
             reasoning=conclusion.reasoning or "",
+            state=state_hint,
         )
 
         parts: list[str] = []

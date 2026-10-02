@@ -331,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         "ooc_judge": ooc_judge,
         "ooc_judge_settings": config.ooc_judge,
         "style": config.style,
+        "energy": config.energy,
         "search": config.search,
         "embedder": build_embedder(config.embedding),
         "memory_min_score": config.embedding.min_score,
