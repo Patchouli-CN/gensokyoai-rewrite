@@ -81,6 +81,7 @@ class Responder:
             draft_hint=draft_hint,
             memory=memory_text,
             avoid=avoid,
+            reasoning=conclusion.reasoning or "",
         )
         result = await self._sessions.call(
             self._OWNER,
@@ -156,6 +157,7 @@ class Responder:
             draft_hint=draft_hint,
             memory=memory_text,
             avoid=avoid,
+            reasoning=conclusion.reasoning or "",
         )
 
         parts: list[str] = []
