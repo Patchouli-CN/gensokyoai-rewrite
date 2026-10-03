@@ -1,0 +1,18 @@
+# Dependabot：依赖版本盯梢（CVE 修复/新版本自动开 PR，纯规则机器人零 AI）
+# pip 盯 requirements.txt + pyproject.toml；github-actions 盯 workflow 里的
+# actions/* 版本（checkout/setup-python 这类手动升级的苦力活以后归它）
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
