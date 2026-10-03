@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gensokyoai.backends.ws_server import build_app
 from gensokyoai.backends.ws_server.commands import WsCommandState, build_executor, role_level
 from gensokyoai.command import PermissionLevel
-from gensokyoai.core.config import GensokyoConfig
+from gensokyoai.core.config import GensokyoConfig, WorldSettings
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.roleplay.character import Character, CharacterCard
 from gensokyoai.roleplay.hub import ChannelHub
@@ -30,7 +30,7 @@ def _build(tmp_path):
         character=Character(CharacterCard(name="纯狐", system_prompt="神灵")),
         storage_dir=tmp_path,
         idle_ttl=0.0,
-        world_kwargs={"ooc_audit": False, "stall_probability": 0.0},
+        world_settings=WorldSettings(ooc_audit=False, stall_probability=0.0),
     )
     executor = build_executor(
         WsCommandState(sessions=sessions, hub=hub, config=GensokyoConfig(), version="0.0.19")

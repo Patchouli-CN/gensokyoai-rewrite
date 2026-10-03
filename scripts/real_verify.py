@@ -37,7 +37,7 @@ from gensokyoai.app import (  # noqa: E402
     resolve_resource,
 )
 from gensokyoai.core.brain.judge import build_judge  # noqa: E402
-from gensokyoai.core.config import load_config  # noqa: E402
+from gensokyoai.core.config import WorldSettings, load_config  # noqa: E402
 from gensokyoai.mouth.broadcast import BroadcastMouth  # noqa: E402
 from gensokyoai.roleplay.loop import TouhouWorld  # noqa: E402
 from gensokyoai.satori.queue import QueuePerceiver  # noqa: E402
@@ -154,12 +154,14 @@ async def run(args: argparse.Namespace) -> int:
         gate=config.gate,
         storage_dir=storage,
         session_id=args.session,
-        trace_steps=True,
-        **(
+        settings=WorldSettings(
+            trace_steps=True,
             # 仅验证路径用：临时放宽主动发言阈值（默认 180s/0.35 在短会话里几乎不可能触发）
-            {"initiative_interval": 5.0, "idle_threshold": 12.0, "urge_threshold": 0.15}
-            if args.initiative
-            else {}
+            **(
+                {"initiative_interval": 5.0, "idle_threshold": 12.0, "urge_threshold": 0.15}
+                if args.initiative
+                else {}
+            ),
         ),
     )
     await world.lifecycle.startup()

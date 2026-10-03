@@ -31,7 +31,7 @@ from aiohttp import WSMsgType, web
 from ...app import DEFAULT_CONFIG, build_session_and_character, resolve_resource
 from ...command import CommandContext, CommandExecutor
 from ...core.brain.judge import build_judge, build_ooc_judge
-from ...core.config import load_config
+from ...core.config import WorldSettings, load_config
 from ...core.memorizer.embedder import build_embedder
 from ...core.resource import IngressLimiter
 from ...roleplay.hub import ChannelHub, ChannelLimitError
@@ -376,15 +376,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.stall_probability is not None
         else config.ws.stall_probability
     )
-    if stall is not None:
-        world_kwargs["stall_probability"] = stall
     initiative = (
         args.initiative_interval
         if args.initiative_interval is not None
         else config.ws.initiative_interval
     )
+    # 行为旋钮收编成 WorldSettings（未覆盖的字段走默认值）
+    overrides: dict = {}
+    if stall is not None:
+        overrides["stall_probability"] = stall
     if initiative is not None:
-        world_kwargs["initiative_interval"] = initiative
+        overrides["initiative_interval"] = initiative
     hub = ChannelHub(
         sessions=sessions,
         character=character,
@@ -393,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             args.merge_window if args.merge_window is not None else config.ws.merge_window
         ),
         world_kwargs=world_kwargs,
+        world_settings=WorldSettings(**overrides),
     )
     try:
         from importlib.metadata import version as _pkg_version

@@ -5,6 +5,7 @@ import asyncio
 from aiohttp.test_utils import TestClient, TestServer
 
 from gensokyoai.backends.ws_server import WsSink, build_app
+from gensokyoai.core.config import WorldSettings
 from gensokyoai.core.resource import IngressLimiter
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.roleplay.character import Character, CharacterCard
@@ -56,12 +57,12 @@ def _build(tmp_path, limiter=None) -> tuple[ChannelHub, object]:
         ),
         storage_dir=tmp_path,
         idle_ttl=0.0,
-        world_kwargs={
-            "ooc_audit": False,
-            "ooc_retry": False,
-            "stall_probability": 0.0,
-            "initiative_interval": 9999.0,
-        },
+        world_settings=WorldSettings(
+            ooc_audit=False,
+            ooc_retry=False,
+            stall_probability=0.0,
+            initiative_interval=9999.0,
+        ),
     )
     return hub, build_app(hub=hub, limiter=limiter)
 

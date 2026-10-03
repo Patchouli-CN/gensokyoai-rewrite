@@ -2,6 +2,7 @@
 
 import asyncio
 
+from gensokyoai.core.config import WorldSettings
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.mouth.broadcast import BroadcastMouth
 from gensokyoai.roleplay.character import Character, CharacterCard
@@ -252,12 +253,12 @@ async def test_hub_default_world_end_to_end(tmp_path):
         character=_char(),
         storage_dir=tmp_path,
         idle_ttl=0.0,
-        world_kwargs={
-            "ooc_audit": False,
-            "ooc_retry": False,
-            "stall_probability": 0.0,
-            "initiative_interval": 9999.0,
-        },
+        world_settings=WorldSettings(
+            ooc_audit=False,
+            ooc_retry=False,
+            stall_probability=0.0,
+            initiative_interval=9999.0,
+        ),
     )
     sink = _Sink()
     hub.attach("room", sink)

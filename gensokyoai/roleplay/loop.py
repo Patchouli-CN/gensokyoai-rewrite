@@ -16,6 +16,7 @@ from ..core.config import (
     OOCJudgeSettings,
     SearchSettings,
     StyleSettings,
+    WorldSettings,
 )
 from ..core.event_bus import EventBus
 from ..core.health import HealthMonitor
@@ -73,30 +74,17 @@ class TouhouWorld:
         judge: Judge | None = None,
         gate: GateSettings | None = None,
         *,
-        distill_every: int = 10,
-        distill_batch: int = 8,
-        initiative_interval: float = 30.0,
-        idle_threshold: float = 180.0,
-        urge_threshold: float = 0.35,
-        stall_probability: float = 0.6,
-        stall_cooldown_turns: int = 3,
-        stall_min_interval: float = 180.0,
-        ooc_retry: bool = True,
-        ooc_audit: bool = True,
+        settings: WorldSettings | None = None,
         ooc_judge: Judge | None = None,
         ooc_judge_settings: OOCJudgeSettings | None = None,
         style: StyleSettings | None = None,
         energy: EnergySettings | None = None,
         search: SearchSettings | None = None,
-        trace_steps: bool = True,
-        tool_timeout: float = 10.0,
-        tool_max_result_chars: int = 2000,
         session_id: str = "default",
         storage_dir: str | Path = "data",
         persistence=None,
         embedder: Embedder | None = None,
         memory_min_score: float = 0.0,
-        shutdown_drain_timeout: float = 2.0,
     ) -> None:
         """
         Args:
@@ -126,8 +114,10 @@ class TouhouWorld:
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
             embedder: 记忆向量化器（None = 长期记忆检索退回子串匹配）
             memory_min_score: 语义检索相似度下限（0 = 不过滤；config.embedding.min_score 传入）
-            shutdown_drain_timeout: 关闭时等待后台侧链收尾的秒数，超时则取消
+            settings: 世界行为旋钮（WorldSettings：蒸馏节奏 / 主动发言 / 过渡语 /
+                OOC / 工具 / 关闭；None = 全默认）
         """
+        s = settings or WorldSettings()
         self._logger = LoggerManager.get_logger("WORLD")
         self.eye = eye
         self.character = character
@@ -184,8 +174,8 @@ class TouhouWorld:
             persona=character.prompt,
             ooc=self.ooc,
             tools=all_tools,
-            tool_timeout=tool_timeout,
-            tool_max_result_chars=tool_max_result_chars,
+            tool_timeout=s.tool_timeout,
+            tool_max_result_chars=s.tool_max_result_chars,
             pipeline=self._build_think_pipeline(),
             persona_brief=self._persona_brief,
             tool_directive=build_tool_directive((search or SearchSettings()).knowledge_sites),
@@ -216,9 +206,9 @@ class TouhouWorld:
         """ System-1 发言门控（该不该接话 + 该想多深；纯判决见 core/brain/gate.py）"""
 
         # --- 蒸馏 / 主动发言旋钮 ---
-        self._distill_every = distill_every
-        self._distill_batch = distill_batch
-        self._initiative_interval = initiative_interval
+        self._distill_every = s.distill_every
+        self._distill_batch = s.distill_batch
+        self._initiative_interval = s.initiative_interval
 
         self._ooc_guard = OOCGuard(
             self.ooc,
@@ -230,8 +220,8 @@ class TouhouWorld:
             self._effort,
             ooc_judge,
             ooc_judge_settings or OOCJudgeSettings(),
-            retry=ooc_retry,
-            audit=ooc_audit,
+            retry=s.ooc_retry,
+            audit=s.ooc_audit,
             generation=lambda: self._runtime.generation,
         )
         """ 出戏守门：硬规则 / blocking 审查 / 后置深审 / 闭环干预（见 components/ooc_guard.py）"""
@@ -249,9 +239,9 @@ class TouhouWorld:
             self.responder,
             self.mouth,
             character.name,
-            probability=stall_probability,
-            cooldown_turns=stall_cooldown_turns,
-            min_interval=stall_min_interval,
+            probability=s.stall_probability,
+            cooldown_turns=s.stall_cooldown_turns,
+            min_interval=s.stall_min_interval,
         )
         """ 深思考过渡语（延迟掩盖 + 三重门控；见 components/stall.py）"""
         self._delivery = DeliveryService(
@@ -270,8 +260,8 @@ class TouhouWorld:
             self.bus,
             self._runtime,
             self._delivery,
-            urge_threshold=urge_threshold,
-            idle_threshold=idle_threshold,
+            urge_threshold=s.urge_threshold,
+            idle_threshold=s.idle_threshold,
             is_stopping=lambda: getattr(self.eye, "_stop_requested", False),
         )
         """ 主动发言节拍（冷场时角色自己冒泡；见 components/initiative_speaker.py）"""
@@ -280,7 +270,7 @@ class TouhouWorld:
         self.clock = BiologicalClock()
         self.clock.every("initiative", self._initiative_interval, self._initiative.tick)
 
-        self._shutdown_drain_timeout = shutdown_drain_timeout
+        self._shutdown_drain_timeout = s.shutdown_drain_timeout
         """ 关闭时等后台侧链收尾的秒数 """
 
         # 注册记忆写入侧链
@@ -304,7 +294,7 @@ class TouhouWorld:
         )
         """ 会话持久化器（启动 restore / 事件驱动保存 / 关闭 flush）"""
 
-        self.trace = ReasoningTrace(storage_dir, session_id, enabled=trace_steps)
+        self.trace = ReasoningTrace(storage_dir, session_id, enabled=s.trace_steps)
         """ 思考轨迹留档（每回合一行 JSONL，含逐轮 ReasoningStep）"""
 
         # 注册默认生命周期回调

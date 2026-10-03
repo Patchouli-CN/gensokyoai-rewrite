@@ -2,6 +2,7 @@
 
 import asyncio
 
+from gensokyoai.core.config import WorldSettings
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.roleplay.character import Character, CharacterCard
 from gensokyoai.roleplay.loop import TouhouWorld
@@ -78,11 +79,13 @@ def _make_world(storage_dir, lines: list[str], **kwargs) -> TouhouWorld:
         sessions=sessions,
         storage_dir=storage_dir,
         session_id="e2e",
-        stall_probability=0.0,
-        ooc_retry=False,
-        ooc_audit=False,
-        distill_every=1000,  # 关掉蒸馏避免干扰断言
-        **kwargs,
+        settings=WorldSettings(
+            stall_probability=0.0,
+            ooc_retry=False,
+            ooc_audit=False,
+            distill_every=1000,  # 关掉蒸馏避免干扰断言
+            **kwargs,
+        ),
     )
 
 

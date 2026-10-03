@@ -9,6 +9,13 @@
 ## [Unreleased]
 
 ### 变更
+  - **世界行为旋钮收敛为 `WorldSettings` 结构体（`core/config.py`）**：
+    `TouhouWorld` 构造器从 28 参降到 18 参——14 个裸旋钮（蒸馏节奏 / 主动
+    发言 / 过渡语 / OOC / 工具 / 关闭）收编成一个 msgspec 结构体，
+    `ChannelHub` 新增 `world_settings` 参数整体透传，ws_server 的
+    CLI/配置覆盖改为构造 `WorldSettings`（未覆盖字段走默认值，默认值与旧
+    签名逐一对齐）。协作者（裁判 / 口层 / 已成结构体的配置）仍是构造器
+    参数——旋钮归旋钮，实例归实例。
   - **主循环拆分：`TouhouWorld` 从 1279 行降到约 480 行，职责簇各归其位**：
     `roleplay/components/` 新增八个有状态组件——DeliveryService（表达+投递
     管线，主循环与主动发言共用）、OOCGuard（硬规则守门 / blocking 审查 /

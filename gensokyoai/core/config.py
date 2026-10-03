@@ -250,6 +250,48 @@ class WsServerSettings(msgspec.Struct, frozen=True):
     """ 主动发言评估周期秒数；None = 世界默认值 30。调巨大即关闭沉默碎碎念 """
 
 
+class WorldSettings(msgspec.Struct, frozen=True):
+    """世界的行为旋钮（蒸馏节奏 / 主动发言 / 过渡语 / OOC / 工具 / 关闭）。
+
+    这些旋钮此前是 `TouhouWorld.__init__` 的 14 个裸关键字参数——构造器
+    28 参，调用方（app.py / ChannelHub / ws_server / 测试）靠 dict 盲传、
+    拼错键名要等到运行期才炸。收敛成一个结构体：单一来源、类型化、可整体
+    透传（hub 的 `world_settings` 参数）。
+
+    协作者（裁判 / 口层 / 配置结构体）**不在此列**——它们是注入的实例或
+    已成结构体的配置，继续走构造器参数。
+    """
+
+    distill_every: int = 10
+    """ 每 N 个回合触发一次记忆蒸馏 """
+    distill_batch: int = 8
+    """ 单次蒸馏压缩的记忆条数 """
+    initiative_interval: float = 30.0
+    """ 主动发言评估周期（秒）"""
+    idle_threshold: float = 180.0
+    """ 触发主动发言评估的最小空闲（秒）"""
+    urge_threshold: float = 0.35
+    """ 对话欲阈值，达到才开口 """
+    stall_probability: float = 0.6
+    """ 深思考前垫过渡语的概率（0 关闭该行为）"""
+    stall_cooldown_turns: int = 3
+    """ 两次过渡语之间的最小回合间隔 """
+    stall_min_interval: float = 180.0
+    """ 两次过渡语之间的最小时间间隔（秒）"""
+    ooc_retry: bool = True
+    """ 最终回复命中 OOC 规则时是否花一次纠偏重生成 """
+    ooc_audit: bool = True
+    """ 是否在回复发出后跑异步 OOC 审查（不阻塞热路径）"""
+    trace_steps: bool = True
+    """ 思考轨迹留档开关 """
+    tool_timeout: float = 10.0
+    """ 单次工具执行超时（秒）"""
+    tool_max_result_chars: int = 2000
+    """ 工具结果最大字符数 """
+    shutdown_drain_timeout: float = 2.0
+    """ 关闭时等待后台侧链收尾的秒数，超时则取消 """
+
+
 class GensokyoConfig(msgspec.Struct, frozen=True):
     """顶层配置"""
 

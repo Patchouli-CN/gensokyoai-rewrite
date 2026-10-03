@@ -115,7 +115,7 @@ from gensokyoai.backends.ws_server import build_app
 from gensokyoai.backends.ws_server import server as server_module
 from gensokyoai.backends.ws_server.commands import WsCommandState, build_executor
 from gensokyoai.backends.ws_server.server import _MAX_TEXT_LEN, _is_loopback, main
-from gensokyoai.core.config import GensokyoConfig
+from gensokyoai.core.config import GensokyoConfig, WorldSettings
 from gensokyoai.core.resource import IngressLimiter
 from gensokyoai.schemas.model_schema import CompletionResult
 
@@ -136,7 +136,7 @@ def _build(tmp_path, limiter=None):
         character=_char(),
         storage_dir=tmp_path,
         idle_ttl=0.0,
-        world_kwargs={"ooc_audit": False, "stall_probability": 0.0},
+        world_settings=WorldSettings(ooc_audit=False, stall_probability=0.0),
     )
     executor = build_executor(
         WsCommandState(sessions=sessions, hub=hub, config=GensokyoConfig(), version="0.0.19")

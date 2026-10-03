@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..core.config import WorldSettings
 from ..core.resource import tenant_scope
 from ..core.session_manager import SessionManager
 from ..mouth.broadcast import BroadcastMouth, DeliverSink
@@ -70,6 +71,7 @@ class ChannelHub:
         idle_ttl: float = 600.0,
         stop_timeout: float = _DEFAULT_STOP_TIMEOUT,
         world_kwargs: dict | None = None,
+        world_settings: WorldSettings | None = None,
         clock=time.monotonic,
         max_channels: int = _DEFAULT_MAX_CHANNELS,
         merge_window: float = 0.0,
@@ -83,7 +85,8 @@ class ChannelHub:
             storage_dir: 默认工厂使用的持久化根目录
             idle_ttl: 无订阅者后回收世界的空闲秒数
             stop_timeout: 回收时等世界优雅关闭的秒数
-            world_kwargs: 透传给默认工厂的 TouhouWorld 额外参数（如 OOC / 过渡语旋钮）
+            world_kwargs: 透传给默认工厂的 TouhouWorld 额外参数（协作者：裁判 / 配置）
+            world_settings: 世界行为旋钮（WorldSettings；None = 全默认）
             clock: 时钟函数（可注入以便测试）
             max_channels: 同时存活频道数上限，满了再建新频道抛 `ChannelLimitError`
             merge_window: 输入合并窗口秒数（透传 QueuePerceiver；>0 时窗内消息
@@ -96,6 +99,7 @@ class ChannelHub:
         self._idle_ttl = idle_ttl
         self._stop_timeout = stop_timeout
         self._world_kwargs = dict(world_kwargs or {})
+        self._world_settings = world_settings
         self._clock = clock
         self._max_channels = max_channels
         self._merge_window = merge_window
@@ -113,6 +117,7 @@ class ChannelHub:
             character=self._character,
             session_id=channel_id,
             storage_dir=self._storage_dir,
+            settings=self._world_settings,
             **self._world_kwargs,
         )
 
