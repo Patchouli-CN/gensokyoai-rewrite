@@ -255,12 +255,12 @@ async def test_world_judge_skip_feeds_energy(tmp_path):
         storage_dir=tmp_path,
     )
     world._presence.record(from_bot=False)
-    ok, _ = await world._system1_turn(_group_snapshot("今天天气不错"), 1)
+    ok, _, _ = await world._system1_turn(_group_snapshot("今天天气不错"), 1)
     assert ok is False
     assert world._energy.skip_streak == 1
 
     # 反射弧跳过（收尾语）：不进裁判、不计冷场
-    ok, _ = await world._system1_turn(_group_snapshot("哈哈哈哈"), 2)
+    ok, _, _ = await world._system1_turn(_group_snapshot("哈哈哈哈"), 2)
     assert ok is False
     assert world._energy.skip_streak == 1
 

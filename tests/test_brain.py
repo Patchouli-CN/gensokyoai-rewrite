@@ -305,3 +305,67 @@ async def test_think_pipeline_draft_ooc_filtered():
     conclusion = await engine.think(_snapshot("讲个故事"), [], BrainThinkEffort.LOW)
     assert conclusion.ooc_flag is True
     assert conclusion.draft is None
+
+
+async def test_force_tools_nudges_tool_less_finish():
+    """确定性问题查证兜底：首轮没碰工具就想收尾 -> 强制追加一轮查证"""
+    sm = SessionManager()
+    backend = FakeBackend("")
+    sm.set_default_backend(backend)
+    scripted = [
+        CompletionResult(content=_think_json(need_continue=False)),  # 想直接收尾
+        CompletionResult(content=_think_json(action_hint="查证后回答", need_continue=False)),
+    ]
+
+    async def scripted_chat(messages, **kw):
+        backend.calls.append(list(messages))
+        return scripted[len(backend.calls) - 1]
+
+    backend.chat = scripted_chat
+    engine = BrainEngine(sm)
+
+    conclusion = await engine.think(
+        _snapshot("现在几点了？"), [], BrainThinkEffort.LOW, force_tools=True
+    )
+
+    assert len(backend.calls) == 2, "应被强制续一轮查证"
+    assert any("调用工具" in m.content for m in backend.calls[1]), "第二轮应带查证提示"
+    assert conclusion.draft == "查证后回答"
+
+
+async def test_no_force_tools_allows_direct_finish():
+    """不带 force_tools：首轮收尾即收束（旧行为不变）"""
+    sm = SessionManager()
+    backend = FakeBackend(_think_json(need_continue=False))
+    sm.set_default_backend(backend)
+    engine = BrainEngine(sm)
+
+    await engine.think(_snapshot("现在几点了？"), [], BrainThinkEffort.LOW)
+
+    assert len(backend.calls) == 1, "不兜底：一轮收束"
+
+
+async def test_force_tools_nudge_fires_once_when_model_continues_anyway():
+    """模型自己想续轮：兜底提示照发但不额外加轮（与模型节奏合一）"""
+    sm = SessionManager()
+    backend = FakeBackend("")
+    sm.set_default_backend(backend)
+    scripted = [
+        CompletionResult(content=_think_json(need_continue=True)),
+        CompletionResult(content=_think_json(action_hint="收尾", need_continue=False)),
+    ]
+
+    async def scripted_chat(messages, **kw):
+        backend.calls.append(list(messages))
+        return scripted[len(backend.calls) - 1]
+
+    backend.chat = scripted_chat
+    engine = BrainEngine(sm)
+
+    conclusion = await engine.think(
+        _snapshot("最近有什么新闻？"), [], BrainThinkEffort.LOW, force_tools=True
+    )
+
+    assert len(backend.calls) == 2, "与模型自续节奏合一，不多加轮"
+    assert any("调用工具" in m.content for m in backend.calls[1])
+    assert conclusion.draft == "收尾"

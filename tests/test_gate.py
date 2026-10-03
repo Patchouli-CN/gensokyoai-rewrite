@@ -522,7 +522,7 @@ async def test_world_gate_skips_and_still_stores_user_message(tmp_path):
     )
 
     world._presence.record(from_bot=False)
-    ok, judged = await world._system1_turn(_group_snapshot("今天天气不错"), 1)
+    ok, judged, _ = await world._system1_turn(_group_snapshot("今天天气不错"), 1)
 
     assert ok is False
     assert judged is None
@@ -543,7 +543,7 @@ async def test_world_gate_passes_through(tmp_path):
         storage_dir=tmp_path,
     )
 
-    ok, judged = await world._system1_turn(_group_snapshot("幽幽子来看新泳装"), 2)
+    ok, judged, _ = await world._system1_turn(_group_snapshot("幽幽子来看新泳装"), 2)
 
     assert ok is True
     assert judge.state is not None
@@ -565,7 +565,7 @@ async def test_world_model_routing_maps_deep_score_to_tier(tmp_path):
         storage_dir=tmp_path,
     )
 
-    ok, judged = await world._system1_turn(_group_snapshot("你还记得西行妖的约定吗"), 3)
+    ok, judged, _ = await world._system1_turn(_group_snapshot("你还记得西行妖的约定吗"), 3)
 
     assert ok is True
     assert judged is BrainThinkEffort.MAX
@@ -581,7 +581,7 @@ async def test_world_routing_works_when_gate_disabled(tmp_path):
         storage_dir=tmp_path,
     )
 
-    ok, judged = await world._system1_turn(_group_snapshot("随便聊聊"), 4)
+    ok, judged, _ = await world._system1_turn(_group_snapshot("随便聊聊"), 4)
 
     assert ok is True, "门控关闭 = 不拦截发言（旧行为）"
     assert judged is BrainThinkEffort.MID
@@ -598,7 +598,7 @@ async def test_world_without_judge_never_asks(tmp_path):
         storage_dir=tmp_path,
     )
 
-    ok, judged = await world._system1_turn(_group_snapshot("今天天气不错"), 5)
+    ok, judged, _ = await world._system1_turn(_group_snapshot("今天天气不错"), 5)
 
     assert ok is True and judged is None
 
@@ -608,3 +608,35 @@ async def test_world_gate_disabled_by_default(tmp_path):
     world = _make_world(_StubBackend([]), storage_dir=tmp_path)
     assert world._gate.enabled is False
     assert world._judge is None
+
+
+async def test_world_search_flag_flows_from_judge(tmp_path):
+    """裁判 needs_search 超线 -> _system1_turn 带出查证标记（脑内强制先查证再演）"""
+    judge = _FakeJudge({"should_reply": 0.9, "needs_search": 0.9})
+    world = _make_world(
+        _StubBackend([]),
+        judge=judge,
+        gate=GateSettings(enabled=True),
+        storage_dir=tmp_path,
+    )
+
+    ok, _, force = await world._system1_turn(_group_snapshot("今天有什么新闻"), 6)
+
+    assert ok is True
+    assert force is True, "needs_search 0.9 > 阈值 0.1，应带查证标记"
+
+
+async def test_world_search_flag_stays_calm_for_banter(tmp_path):
+    """闲聊 needs_search 低分 -> 不带查证标记（发散问题不绑工具）"""
+    judge = _FakeJudge({"should_reply": 0.9, "needs_search": 0.0})
+    world = _make_world(
+        _StubBackend([]),
+        judge=judge,
+        gate=GateSettings(enabled=True),
+        storage_dir=tmp_path,
+    )
+
+    ok, _, force = await world._system1_turn(_group_snapshot("今天天气真好"), 7)
+
+    assert ok is True
+    assert force is False

@@ -105,8 +105,19 @@ class BrainEngine:
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
         effort: BrainThinkEffort = BrainThinkEffort.NONE,
+        *,
+        force_tools: bool = False,
     ) -> BrainConclusion:
-        """执行推理（NONE 快速路径 / 按档位裁深的思考链 / 接力思考），产出结构化结论。"""
+        """执行推理（NONE 快速路径 / 按档位裁深的思考链 / 接力思考），产出结构化结论。
+
+        Args:
+            snapshot: 场景快照
+            memories: 检索到的记忆
+            effort: 推理档位
+            force_tools: 确定性问题查证兜底（门控 needs_search 接线）：接力思考
+                首轮若未调用工具就想收尾，强制追加一轮查证。仅接力路径生效
+                （卡片思考链有自己的节奏，快速路径无工具可调）
+        """
         started = time.monotonic()
         self._logger.info(
             f"思考开始: 档位={effort.value} 输入={snapshot.sender}: {snapshot.content!r} "
@@ -119,7 +130,9 @@ class BrainEngine:
             if self._pipeline is not None:
                 conclusion = await self._run_pipeline(snapshot, memories, effort)
             else:
-                conclusion = await self._relay_think(snapshot, memories, effort)
+                conclusion = await self._relay_think(
+                    snapshot, memories, effort, force_tools=force_tools
+                )
             # OOC 预筛两条路共用：初稿命中规则则丢弃，降级 pass_through
             if (
                 conclusion.draft
@@ -173,8 +186,14 @@ class BrainEngine:
         snapshot: SceneSnapshot,
         memories: list[MemoryItem],
         effort: BrainThinkEffort,
+        *,
+        force_tools: bool = False,
     ) -> BrainConclusion:
-        """接力思考主循环：每轮询问模型是否需要继续。"""
+        """接力思考主循环：每轮询问模型是否需要继续。
+
+        force_tools 时首轮没碰工具就想收尾会被强制续一轮（查证兜底，仅一次）——
+        治「事实问句被人设闪避」：发散性与确定性分流，确定性问题先拿真值再演。
+        """
         max_rounds = self._get_max_rounds(effort)
         memory_text = "\n".join(f"- [{m.topic}] {m.content}" for m in memories) or "（无相关记忆）"
         context_text = "\n".join(snapshot.context_snippet[-5:]) or "（无上下文）"
@@ -214,6 +233,9 @@ class BrainEngine:
         """ 每轮思考的快照（ReasoningStep）：轨迹留档与事后复盘的原始素材 """
         tool_result_cache = ""
         tool_used = False
+        nudge_cache = ""
+        fact_nudge_pending = force_tools
+        """ 查证兜底只发一次：首轮没碰工具就想收尾时强制续轮查证 """
 
         while True:
             current_round += 1
@@ -244,6 +266,11 @@ class BrainEngine:
                     )
                 )
                 tool_result_cache = ""
+
+            # 查证兜底提示（首轮没碰工具就想收尾时，由循环层注入）
+            if nudge_cache:
+                messages.append(Message(role="user", content=nudge_cache))
+                nudge_cache = ""
 
             try:
                 result = await self._sessions.call(
@@ -337,6 +364,21 @@ class BrainEngine:
             if tool_used and not need_continue and current_round < max_rounds:
                 self._logger.info("工具结果尚未消化，强制追加一轮思考")
                 need_continue = True
+
+            # 查证兜底：确定性问题没碰工具就想收尾 -> 强制续一轮查证（仅一次；
+            # 轮数不够时放过，按现有结论收尾——兜底不该把回合拖死）
+            if fact_nudge_pending and not tool_used:
+                fact_nudge_pending = False
+                if current_round < max_rounds:
+                    if not need_continue:
+                        self._logger.info("确定性问题未调用工具，强制追加查证轮")
+                    need_continue = True
+                    nudge_cache = (
+                        "这个问题依赖真实、可查证的事实。请先调用工具获取新鲜答案，"
+                        "再基于工具结果给出最终结论；不要凭印象或人设猜测事实。"
+                    )
+                else:
+                    self._logger.warning("确定性问题未调用工具，但轮数已用尽，按现有结论收尾")
 
             if not need_continue:
                 break

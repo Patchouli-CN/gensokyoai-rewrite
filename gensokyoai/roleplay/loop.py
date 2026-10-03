@@ -435,7 +435,7 @@ class TouhouWorld:
                 self._presence.record(from_bot=False)
                 with self._runtime.begin_busy():
                     # 2. System-1 层：一次裁判调用回答「该不该发言」+「该想多深」
-                    proceed, judged = await self._system1_turn(snapshot, turn)
+                    proceed, judged, force_tools = await self._system1_turn(snapshot, turn)
                     if not proceed:
                         continue
 
@@ -445,7 +445,9 @@ class TouhouWorld:
                     effort = self._effort.floor(judged if judged is not None else route(snapshot))
                     effort = self._effort.floor_for_injection(snapshot, effort)
                     await self._stall.maybe_stall(snapshot, effort, turn)
-                    conclusion = await self.brain.think(snapshot, memories, effort)
+                    conclusion = await self.brain.think(
+                        snapshot, memories, effort, force_tools=force_tools
+                    )
 
                     # 4. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
                     reply = await self._delivery.deliver(snapshot, conclusion, memories)
@@ -539,7 +541,7 @@ class TouhouWorld:
 
     async def _system1_turn(
         self, snapshot: SceneSnapshot, turn: int
-    ) -> tuple[bool, BrainThinkEffort | None]:
+    ) -> tuple[bool, BrainThinkEffort | None, bool]:
         """System-1 回合决策：一次裁判调用回答「该不该发言」与「该想多深」。
 
         门控开启且裁判说「不接」时：只把用户消息写进记忆（不回复≠没听过），
@@ -550,10 +552,11 @@ class TouhouWorld:
             turn: 当前回合号（仅日志用）
 
         Returns:
-            tuple: (要不要发言；裁判建议的推理档位或 None——None 表示回落规则 route())
+            tuple: (要不要发言；裁判建议的推理档位或 None——None 表示回落规则 route()；
+                是否确定性问题——裁判 needs_search 超线，脑内接力思考强制先查证再演)
         """
         if not self._gate_ctl.should_consult():
-            return True, None
+            return True, None, False
 
         decision = await self._gate_ctl.decide(snapshot, turn)
         if self._gate.enabled and not decision.reply:
@@ -561,10 +564,14 @@ class TouhouWorld:
                 self._energy.note_skip(decision.source)
             self._remember_user(snapshot)
             await self.health.record_metric("gate.skip", 1.0, unit="次")
-            return False, None
+            return False, None, False
         if self._gate.route_by_model and decision.effort is not None:
-            return True, tier_from_deep_score(decision.effort, self._gate.deep_cuts)
-        return True, None
+            return (
+                True,
+                tier_from_deep_score(decision.effort, self._gate.deep_cuts),
+                decision.search,
+            )
+        return True, None, decision.search
 
     def _remember_user(self, snapshot: SceneSnapshot) -> None:
         """门控跳过时只把用户这句话写进记忆（不回复≠没听过，保证连续性）。"""
