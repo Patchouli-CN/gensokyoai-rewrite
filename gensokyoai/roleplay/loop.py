@@ -61,6 +61,7 @@ from ..utils.text import strip_control_chars
 from .character import Character
 from .initiative import describe_silence, evaluate_initiative
 from .persistence import CharacterStateCodec, SessionPersister
+from .runtime import RuntimeState
 from .trace import ReasoningTrace
 
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
@@ -346,14 +347,10 @@ class TouhouWorld:
         self._shutdown_drain_timeout = shutdown_drain_timeout
         """ 关闭时等后台侧链收尾的秒数 """
 
-        # --- 运行时状态 ---
-        self._generation = 0
-        """ 代际令牌：后台任务（蒸馏/主动发言）持任务发起时的代际，
-        回写前校验，防止关闭/重置后的迟到写入污染新会话 """
-        self._last_activity = time.monotonic()
+        # --- 运行时状态：跨回合共享字段收编进 RuntimeState（见 roleplay/runtime.py）---
+        self._runtime = RuntimeState()
+
         self._distill_counter = 0
-        self._busy = False
-        """ 主链路生成中标志：避免主动发言与用户回复并发抢同一个 responder 会话 """
         self._stall_last_turn = -(10**9)
         """ 上次垫过渡语的回合号（冷却门控用）"""
         self._stall_last_time = float("-inf")
@@ -385,6 +382,15 @@ class TouhouWorld:
 
         self.restored = False
         """ 启动时是否成功恢复了历史会话 """
+
+    @property
+    def busy(self) -> bool:
+        """主链路是否正在生成（供外部观察，如真机验证脚本探活）。
+
+        Returns:
+            bool: True 表示主循环正在本回合内生成
+        """
+        return self._runtime.busy
 
     def _register_default_lifecycle(self) -> None:
         """注册默认的生命周期回调"""
@@ -505,10 +511,9 @@ class TouhouWorld:
 
                 turn += 1
                 t_start = time.monotonic()
-                self._last_activity = time.monotonic()
+                self._runtime.note_activity()
                 self._presence.record(from_bot=False)
-                self._busy = True
-                try:
+                with self._runtime.begin_busy():
                     # 2. System-1 层：一次裁判调用回答「该不该发言」+「该想多深」
                     proceed, judged = await self._system1_turn(snapshot, turn)
                     if not proceed:
@@ -526,8 +531,6 @@ class TouhouWorld:
 
                     # 4. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
                     reply = await self._express(snapshot, conclusion, memories)
-                finally:
-                    self._busy = False
 
                 # 5. 记录（投递已在 _express 内完成）
                 self._remember_turn(snapshot, reply)
@@ -575,7 +578,7 @@ class TouhouWorld:
             self._logger.info("收到 Ctrl+C，开始优雅关闭...")
         finally:
             # 代际 +1：在途后台任务的回写全部作废
-            self._generation += 1
+            self._runtime.bump_generation()
             await self.clock.stop()
             # 侧链收尾：先给一小段自然完成的机会（本回合的记忆写入应落盘），
             # 超时则取消 —— 不能让慢蒸馏把关闭流程拖住
@@ -1138,7 +1141,7 @@ class TouhouWorld:
         judge = self._ooc_judge
         if judge is None:
             return
-        gen = self._generation
+        gen = self._runtime.generation
         try:
             recent = await self.memory.recent(5)
             check = await audit_with_judge(
@@ -1153,7 +1156,7 @@ class TouhouWorld:
         except Exception:
             self._logger.exception("System-1 出戏审查失败（不影响主链路）")
             return
-        if gen != self._generation:
+        if gen != self._runtime.generation:
             return
         if check.decision == "revise":
             self._logger.warning(
@@ -1165,10 +1168,10 @@ class TouhouWorld:
 
     async def _audit_reply_legacy(self, reply: str) -> None:
         """旧单点 OOC 深审（无 System-1 裁判时的降级路径；只看人设+回复，无诱发消息）。"""
-        gen = self._generation
+        gen = self._runtime.generation
         try:
             verdict = await self.ooc.audit(reply, self.character.prompt)
-            if gen != self._generation:
+            if gen != self._runtime.generation:
                 return
             audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
             hits = int(self.character.status.extra.get("ooc_hits", 0)) + (
@@ -1189,13 +1192,13 @@ class TouhouWorld:
         摘要 importance=0.7，入库即自动落长期记忆；代际令牌校验防止
         关闭后的迟到写入。
         """
-        gen = self._generation
+        gen = self._runtime.generation
         try:
             old = self.memory.oldest(self._distill_batch)
             if not old:
                 return
             summary = await self.compressor.compress(old)
-            if not summary or gen != self._generation:
+            if not summary or gen != self._runtime.generation:
                 return
             item = MemoryItem(
                 topic="对话摘要",
@@ -1214,9 +1217,9 @@ class TouhouWorld:
 
         零思考 token：不经过 Brain，直接用规则结论驱动 Responder。
         """
-        if self._busy or self._stopping():
+        if self._runtime.busy or self._stopping():
             return
-        idle = time.monotonic() - self._last_activity
+        idle = self._runtime.idle_for()
         if idle < self._idle_threshold:
             return
 
@@ -1231,7 +1234,7 @@ class TouhouWorld:
 
     async def _try_speak(self, idle: float) -> None:
         """评估对话欲并尝试主动开口"""
-        gen = self._generation
+        gen = self._runtime.generation
         recent = await self.memory.recent(6)
         recent_texts = [m.content for m in reversed(recent)]
         urge = evaluate_initiative(
@@ -1244,12 +1247,11 @@ class TouhouWorld:
         self.character.status.update(motivation=round(urge, 2))
         if urge < self._urge_threshold:
             return
-        if self._busy or gen != self._generation:
+        if self._runtime.busy or gen != self._runtime.generation:
             return
 
         self._logger.info(f"主动发言触发: 对话欲={urge:.2f} 空闲={idle:.0f}s")
-        self._busy = True
-        try:
+        with self._runtime.begin_busy():
             snapshot = SceneSnapshot(
                 scene_type="group_chat",
                 sender="环境",
@@ -1265,8 +1267,6 @@ class TouhouWorld:
             )
             # 与主循环同一套投递：口层支持流式则逐块显示，否则缓冲投递（主动发言不做 OOC 守门）
             reply = await self._express(snapshot, conclusion, recent, ooc_guard=False)
-        finally:
-            self._busy = False
 
         char_mem = MemoryItem(
             topic="对话",
@@ -1276,4 +1276,4 @@ class TouhouWorld:
         await self.bus.publish(
             EventBus.new(EventTopic.MEMORY_WRITE, source="initiative", payload=char_mem)
         )
-        self._last_activity = time.monotonic()
+        self._runtime.note_activity()

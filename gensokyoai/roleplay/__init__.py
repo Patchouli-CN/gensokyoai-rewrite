@@ -2,9 +2,11 @@
 
 from .character import CharacterCard, load_character
 from .loop import TouhouWorld
+from .runtime import RuntimeState
 
 __all__ = [
     "CharacterCard",
-    "load_character",
+    "RuntimeState",
     "TouhouWorld",
+    "load_character",
 ]

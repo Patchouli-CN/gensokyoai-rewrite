@@ -206,7 +206,7 @@ async def test_audit_reply_generation_guard():
     world = _make_world(_StubBackend([]))
 
     async def _audit(reply: str, persona: str) -> OOCVerdict:
-        world._generation += 1  # 模拟审计期间主循环已关闭重置
+        world._runtime.generation += 1  # 模拟审计期间主循环已关闭重置
         return OOCVerdict(is_ooc=True, confidence=0.9, reason="出戏了")
 
     world.ooc = types.SimpleNamespace(audit=_audit)
