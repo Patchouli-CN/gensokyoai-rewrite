@@ -1,0 +1,9 @@
+"""世界职责组件 —— 从主循环（roleplay/loop.py）拆出的有状态协作者。
+
+每个组件收编主循环里的一个职责簇：独占自己的状态、可独立构造与测试，
+由 TouhouWorld 在装配层注入协作者（responder / memory / health ...）。
+"""
+
+from .parrot import ParrotGuard
+
+__all__ = ["ParrotGuard"]

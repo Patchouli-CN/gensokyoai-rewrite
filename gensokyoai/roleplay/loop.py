@@ -4,7 +4,6 @@ import asyncio
 import random
 import re
 import time
-from collections import deque
 from pathlib import Path
 
 from ..core.brain.energy import EnergyModel
@@ -36,14 +35,6 @@ from ..core.memorizer.knowledge import KnowledgeCache
 from ..core.memorizer.manager import MemoryManager
 from ..core.persistence import JsonFilePersistence, PersistenceBackend
 from ..core.registry import ToolRegistry
-from ..core.responder.anti_parrot import (
-    PARROT_REASON,
-    avoid_hint,
-    ending_key,
-    should_strip_ending,
-    similarity,
-    strip_ending,
-)
 from ..core.responder.generator import Responder
 from ..core.session_manager import SessionManager
 from ..mouth.base import Mouth
@@ -59,6 +50,7 @@ from ..utils.logger import LoggerManager
 from ..utils.tasks import TaskManager
 from ..utils.text import strip_control_chars
 from .character import Character
+from .components.parrot import ParrotGuard
 from .initiative import describe_silence, evaluate_initiative
 from .persistence import CharacterStateCodec, SessionPersister
 from .runtime import RuntimeState
@@ -338,12 +330,8 @@ class TouhouWorld:
         self._ooc_judge_cfg = ooc_judge_settings or OOCJudgeSettings()
         self._style = style or StyleSettings()
         """ 文风防复读配置 """
-        self._last_reply = ""
-        """ 上一轮回复原文（防复读提示/相似度检测的比对基准） """
-        self._recent_replies: deque[str] = deque(maxlen=self._style.reply_window)
-        """ 近期回复原文窗口（隔轮复读判定用，见 StyleSettings.reply_window） """
-        self._recent_endings: deque[str] = deque(maxlen=self._style.ending_window)
-        """ 近期收尾指纹窗口（ported qqbot「不复读结尾」规则） """
+        self._parrot = ParrotGuard(self._style, self.responder)
+        """ 防复读守门（文风窗口状态的安家）"""
         self._shutdown_drain_timeout = shutdown_drain_timeout
         """ 关闭时等后台侧链收尾的秒数 """
 
@@ -858,7 +846,7 @@ class TouhouWorld:
             str: 完整回复文本（供记忆落盘 / 后置审查）
         """
         # 防复读预防性提示：两条路径都生效（流式已投递无从改起，只能事前防）
-        avoid = self._parrot_avoid_hint()
+        avoid = self._parrot.avoid_hint()
         # 精力状态提示：低精力时让 Responder 长话短说（空串不注入）
         state_hint = self._energy.verbosity_hint() if self._energy is not None else ""
         # blocking 闸门开启时**放弃流式**：回复必须先完整生成、过 System-1 出戏审查
@@ -869,7 +857,7 @@ class TouhouWorld:
                 snapshot, conclusion, memories, avoid=avoid, state_hint=state_hint
             )
             await self._note_suspicious(reply)
-            self._note_reply_style(reply)
+            self._parrot.note_reply(reply)
             return reply
         reply = await self.responder.respond(
             conclusion, snapshot, memories, avoid, state_hint=state_hint
@@ -878,14 +866,14 @@ class TouhouWorld:
             reply = await self._guard_ooc_judge(snapshot, reply)
         if ooc_guard:
             reply = await self._guard_ooc(reply)
-            reply = await self._guard_parrot(reply)
+            reply = await self._parrot.guard(reply)
         await self._note_suspicious(reply)
-        final = self._dedup_ending(reply)
+        final = self._parrot.dedup_ending(reply)
         await self.mouth.send(self.character.name, strip_control_chars(final))
         self._presence.record(from_bot=True)
         if self._energy is not None:
             self._energy.note_reply()
-        self._note_reply_style(reply)
+        self._parrot.note_reply(reply)
         return final
 
     async def _deliver_stream(
@@ -1011,67 +999,6 @@ class TouhouWorld:
             # 审查恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
             self._effort_floor = None
             self._logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
-
-    def _parrot_avoid_hint(self) -> str:
-        """防复读预防性提示（responder.user 的 [自我克制] 段）。
-        Returns:
-            str: 提示文本；上一轮无发言且无重复收尾时为空串（不注入）
-        """
-        return avoid_hint(self._last_reply, self._recent_endings, list(self._recent_replies))
-
-    async def _guard_parrot(self, reply: str) -> str:
-        """近期窗口内相似度过阈值 -> 一次防复读纠偏重写（缓冲路径）。
-
-        流式路径文本已在投递中、无从改起，只做事前提示（见 _parrot_avoid_hint）；
-        这里兜底覆盖缓冲投递（CLI / 非流式口层）。比对基准是近期回复窗口
-        （reply_window），不只是相邻轮——隔一轮原句复读（A→B→A）也能照出来。
-
-        Args:
-            reply: 本轮新生成的回复
-
-        Returns:
-            str: 守门后的回复（重写更优返回新文本，否则原样）
-        """
-        if self._style.similarity_retry <= 0:
-            return reply
-        candidates = [r for r in self._recent_replies if r]
-        if self._last_reply and self._last_reply not in candidates:
-            candidates.append(self._last_reply)
-        if not candidates:
-            return reply
-        ratio, baseline = max((similarity(reply, r), r) for r in candidates)
-        if ratio < self._style.similarity_retry:
-            return reply
-        self._logger.warning(f"防复读守门: 与近轮相似度 {ratio:.0%} 超阈值，发起一次重写")
-        try:
-            rewritten = await self.responder.correct(reply, PARROT_REASON)
-        except Exception:
-            self._logger.exception("防复读重写失败，保留原句")
-            return reply
-        if rewritten and similarity(rewritten, baseline) < ratio:
-            return rewritten
-        self._logger.info("防复读重写后仍高于原相似度，保留原句")
-        return reply
-
-    def _dedup_ending(self, reply: str) -> str:
-        """收尾去重（ported qqbot「不复读结尾」规则）：同一收尾在近期窗口
-        已出现 ≥2 次就剥掉它。确定性规则，零 token；一句话的回复不剥。"""
-        if not self._style.dedup_endings:
-            return reply
-        if should_strip_ending(reply, list(self._recent_endings)):
-            stripped = strip_ending(reply)
-            if stripped:
-                self._logger.info(f"收尾去重: 剥掉反复使用的收尾 {ending_key(reply)!r}")
-                return stripped
-        return reply
-
-    def _note_reply_style(self, reply: str) -> None:
-        """更新防复读状态：比对基准 + 收尾指纹窗口（记原始收尾——倾向追踪，
-        模型想用什么梗是它的本能，剥不剥是我们的事）。"""
-        self._last_reply = reply
-        self._recent_replies.append(reply)
-        if self._style.dedup_endings:
-            self._recent_endings.append(ending_key(reply))
 
     async def _note_suspicious(self, reply: str) -> None:
         """零成本启发式：纯数字/符号超短回复 = 疑似被用户消息里夹带的指令带跑
