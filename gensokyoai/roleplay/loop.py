@@ -1,7 +1,6 @@
 """角色扮演主循环"""
 
 import asyncio
-import re
 import time
 from pathlib import Path
 
@@ -9,7 +8,6 @@ from ..core.brain.energy import EnergyModel
 from ..core.brain.engine import BrainEngine, build_tool_directive, route
 from ..core.brain.gate import Judge, PresenceTracker, tier_from_deep_score
 from ..core.brain.ooc_detector import OOCDetector
-from ..core.brain.ooc_judge import audit_with_judge
 from ..core.brain.pipeline import ThinkPipeline
 from ..core.clock import BiologicalClock
 from ..core.config import (
@@ -46,6 +44,7 @@ from .character import Character
 from .components.effort import EffortGovernor
 from .components.gate_ctl import System1Gate
 from .components.health_report import HealthReporter
+from .components.ooc_guard import OOCGuard
 from .components.parrot import ParrotGuard
 from .components.stall import StallSpeaker
 from .initiative import describe_silence, evaluate_initiative
@@ -54,10 +53,6 @@ from .runtime import RuntimeState
 from .trace import ReasoningTrace
 
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
-
-_SUSPICIOUS_BARE = re.compile(r"^[0-9+\-*/().=\s]+$")
-""" 纯数字/符号短回复：疑似被用户消息夹带的指令带跑（也可能是冷面接梗——
-    只标记不阻断，定夺交给带上下文的 System-1 出戏审查）"""
 
 
 class _WorldRuntimeCodec:
@@ -219,9 +214,6 @@ class TouhouWorld:
         self._health_report = HealthReporter(sessions, self.memory, self.health)
         """ 回合健康指标喂食（token/费用差值快照的安家；见 components/health_report.py）"""
 
-        # --- 健康干预：把「监控」接成「动作」（装配层注册，core/health 不反向依赖）---
-        self.health.register_intervention("session.context_usage", self._on_context_pressure)
-        self.health.register_intervention("ooc.rate", self._on_ooc_spike)
         self._effort = EffortGovernor()
         """ 推理档位治理：注入识别 / OOC 干预的抬升与自愈（见 components/effort.py）"""
 
@@ -283,12 +275,27 @@ class TouhouWorld:
         self.clock = BiologicalClock()
         self.clock.every("initiative", self._initiative_interval, self._maybe_initiative)
 
-        # --- OOC 旋钮 ---
-        self._ooc_retry = ooc_retry
-        self._ooc_audit = ooc_audit
-        self._ooc_judge = ooc_judge
-        """ System-1 出戏审查裁判（与门控共用 Judge 协议；None = 回退旧单点 audit） """
-        self._ooc_judge_cfg = ooc_judge_settings or OOCJudgeSettings()
+        self._ooc_guard = OOCGuard(
+            self.ooc,
+            self.responder,
+            self.memory,
+            self.health,
+            character,
+            self._persona_brief,
+            self._effort,
+            ooc_judge,
+            ooc_judge_settings or OOCJudgeSettings(),
+            retry=ooc_retry,
+            audit=ooc_audit,
+            generation=lambda: self._runtime.generation,
+        )
+        """ 出戏守门：硬规则 / blocking 审查 / 后置深审 / 闭环干预（见 components/ooc_guard.py）"""
+
+        # --- 健康干预：把「监控」接成「动作」（装配层注册，core/health 不反向依赖）---
+        # ooc.rate 的干预住在 OOCGuard 里（on_spike），组件造好后才能注册
+        self.health.register_intervention("session.context_usage", self._on_context_pressure)
+        self.health.register_intervention("ooc.rate", self._ooc_guard.on_spike)
+
         self._style = style or StyleSettings()
         """ 文风防复读配置 """
         self._parrot = ParrotGuard(self._style, self.responder)
@@ -491,10 +498,10 @@ class TouhouWorld:
                     await self.trace.record(
                         turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
                     )
-                if self._ooc_audit and not self._ooc_blocking:
+                if self._ooc_guard.audit_enabled and not self._ooc_guard.blocking:
                     # 传 snapshot：System-1 审查需要诱发消息当上下文（旧 audit 只用 reply）。
                     # blocking 模式已在 _express 里审过并记账，侧链不重复跑
-                    self._tasks.spawn(self._audit_reply(snapshot, reply), name="ooc-audit")
+                    self._tasks.spawn(self._ooc_guard.audit(snapshot, reply), name="ooc-audit")
 
                 # 6. 角色状态跟踪 + 健康喂食
                 if conclusion.emotion:
@@ -625,12 +632,6 @@ class TouhouWorld:
         self._logger.warning(f"上下文占用过高（{value:.0%}），触发记忆蒸馏")
         await self._distill()
 
-    async def _on_ooc_spike(self, alert) -> None:
-        """干预：出戏率飙升 → 抬高档位下限（文档 §3.5「自动调参」）。"""
-        value = alert.metric.value if alert.metric else 0.0
-        self._logger.warning(f"出戏率偏高（{value:.2f}），推理档位下限抬到 HIGH")
-        self._effort.raise_floor(BrainThinkEffort.HIGH)
-
     async def _express(self, snapshot, conclusion, memories, *, ooc_guard: bool = True) -> str:
         """表达 + 投递的统一入口：口层支持流式则逐块显示，否则缓冲投递。
 
@@ -654,22 +655,22 @@ class TouhouWorld:
         # blocking 闸门开启时**放弃流式**：回复必须先完整生成、过 System-1 出戏审查
         # 才放行——逐字蹦的手感换「说出口的话都过了审」（本地模型每回合多一次
         # 审查调用；侧链模式则两不误，默认）
-        if self.mouth.supports_streaming and not self._ooc_blocking:
+        if self.mouth.supports_streaming and not self._ooc_guard.blocking:
             reply = await self._deliver_stream(
                 snapshot, conclusion, memories, avoid=avoid, state_hint=state_hint
             )
-            await self._note_suspicious(reply)
+            await self._ooc_guard.note_suspicious(reply)
             self._parrot.note_reply(reply)
             return reply
         reply = await self.responder.respond(
             conclusion, snapshot, memories, avoid, state_hint=state_hint
         )
-        if self._ooc_blocking:
-            reply = await self._guard_ooc_judge(snapshot, reply)
+        if self._ooc_guard.blocking:
+            reply = await self._ooc_guard.guard_blocking(snapshot, reply)
         if ooc_guard:
-            reply = await self._guard_ooc(reply)
+            reply = await self._ooc_guard.guard_rules(reply)
             reply = await self._parrot.guard(reply)
-        await self._note_suspicious(reply)
+        await self._ooc_guard.note_suspicious(reply)
         final = self._parrot.dedup_ending(reply)
         await self.mouth.send(self.character.name, strip_control_chars(final))
         self._presence.record(from_bot=True)
@@ -715,203 +716,6 @@ class TouhouWorld:
             self._energy.note_reply()
         self._logger.info(f"流式投递完成: {len(reply)}字")
         return reply
-
-    @property
-    def _ooc_blocking(self) -> bool:
-        """blocking 闸门是否生效（最终缓冲区审查通过才放行）。
-
-        生效条件三合一：配置了裁判 + System-1 审查 enabled + mode=blocking。
-        生效时 `_express` 放弃流式（先完整生成、审过再发）。
-        """
-        return (
-            self._ooc_judge is not None
-            and self._ooc_judge_cfg.enabled
-            and self._ooc_judge_cfg.mode == "blocking"
-        )
-
-    async def _guard_ooc_judge(self, snapshot: SceneSnapshot, reply: str) -> str:
-        """blocking 闸门：进最终缓冲区的回复先过 System-1 出戏审查，通过才放行。
-
-        判定 revise（双高/unsafe/implausible 低线）时花一次纠偏重写；
-        纠偏后仍命中硬规则则保留原句 + 告警（不死循环）。
-        flag（模糊带）与原句都直接放行——黄色预警不该有阻断权。
-
-        Args:
-            snapshot: 场景快照（诱发消息进审查 state）
-            reply: 待放行的回复
-
-        Returns:
-            str: 审查（+可能纠偏）后的回复
-        """
-        if not self._ooc_blocking:
-            return reply
-        judge = self._ooc_judge
-        assert judge is not None  # _ooc_blocking 已保证非空（mypy 收窄）
-        try:
-            recent = await self.memory.recent(5)
-            check = await audit_with_judge(
-                judge,
-                persona=self._persona_brief,
-                new_message=snapshot.content,
-                reply=reply,
-                recent=[m.content for m in reversed(recent)],
-                bot_name=self.character.name,
-                settings=self._ooc_judge_cfg,
-            )
-        except Exception:
-            # 审查自身故障 = 放行（防御不是裁判，不能让一次故障吞掉回合）
-            self._logger.exception("blocking 出戏审查失败，放行")
-            return reply
-        if check.decision != "revise":
-            if check.decision == "flag":
-                self._logger.info(f"blocking 出戏审查 flag（放行）: {check.reason}")
-            await self._record_ooc_check(check)
-            return reply
-        self._logger.warning(
-            f"blocking 出戏审查 revise，发起一次纠偏: {check.reason} | {check.answers}"
-        )
-        try:
-            corrected = await self.responder.correct(reply, f"出戏原因: {check.reason}")
-        except Exception:
-            self._logger.exception("blocking 纠偏重生成失败，保留原句")
-            await self._record_ooc_check(check)
-            return reply
-        if not corrected or self.ooc.pre_filter(corrected).is_ooc:
-            self._logger.error("纠偏后仍不可用，原样放行")
-            await self._record_ooc_check(check)
-            return reply
-        self._logger.info(f"blocking 纠偏完成: {corrected[:60]!r}")
-        await self._record_ooc_check(check)
-        return corrected
-
-    async def _record_ooc_check(self, check) -> None:
-        """System-1 审查结论记账（blocking 与侧链共用）：ooc_hits/ooc_flags/ooc.rate +
-        档位下限自愈。revise 计入 hits（出戏率），flag 只计 flags 不进率——
-        模糊带的判定不该把出戏率推高触发误干预。"""
-        audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
-        hits = int(self.character.status.extra.get("ooc_hits", 0)) + (
-            1 if check.decision == "revise" else 0
-        )
-        flags = int(self.character.status.extra.get("ooc_flags", 0)) + (
-            1 if check.decision == "flag" else 0
-        )
-        self.character.status.update(ooc_audited=audited, ooc_hits=hits, ooc_flags=flags)
-        await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
-        if check.decision != "revise":
-            # 审查恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
-            self._effort.recover()
-
-    async def _note_suspicious(self, reply: str) -> None:
-        """零成本启发式：纯数字/符号超短回复 = 疑似被用户消息里夹带的指令带跑
-        （20 轮实录的 OOC 注入就是回了个「4」）。
-
-        **只标记不阻断**：这也可能是合法的冷面接梗，自动纠偏会误杀——
-        定夺交给带上下文的 System-1 出戏审查（blocking 模式下才可能在出口拦下）。
-        """
-        core = reply.strip()
-        if not core or len(core) > 10 or not _SUSPICIOUS_BARE.match(core):
-            return
-        flags = int(self.character.status.extra.get("ooc_suspicious", 0)) + 1
-        self.character.status.update(ooc_suspicious=flags)
-        await self.health.record_metric("ooc.suspicious", 1.0, unit="次")
-        self._logger.warning(f"疑似被注入带跑的短回复（已标记，待 System-1 审查定夺）: {reply!r}")
-
-    async def _guard_ooc(self, reply: str) -> str:
-        """最终回复的 OOC 规则守门：零成本快筛，命中才花一次纠偏重生成。
-
-        Args:
-            reply: Responder 生成的最终回复
-
-        Returns:
-            str: 守门后的回复（纠偏成功返回新文本，否则原样）
-        """
-        if not (self._ooc_retry and reply):
-            return reply
-        hit = self.ooc.pre_filter(reply)
-        if not hit.is_ooc:
-            return reply
-        self._logger.warning(f"最终回复命中 OOC 规则（{hit.reason}），发起一次纠偏")
-        try:
-            corrected = await self.responder.correct(reply, hit.reason)
-        except Exception:
-            self._logger.exception("OOC 纠偏重生成失败，原样输出")
-            return reply
-        if corrected and not self.ooc.pre_filter(corrected).is_ooc:
-            flags = int(self.character.status.extra.get("ooc_flags", 0)) + 1
-            self.character.status.update(ooc_flags=flags)
-            return corrected
-        self._logger.error(f"纠偏后仍命中 OOC，原样输出: {corrected[:60]!r}")
-        return reply
-
-    async def _audit_reply(self, snapshot: SceneSnapshot, reply: str) -> None:
-        """后置出戏审查（异步侧链，不阻塞回复）。
-
-        两条路径：
-        - **System-1 多问**（`ooc_judge` 可用且 enabled）：多问概率 + 接受规则，
-          state 带**诱发消息**——「服从了指令的形式」与「丢了角色的魂」
-          分开打分，冷面接梗不再被一刀切判死（20 轮真机实录照出的旧盲区）；
-        - 旧单点 audit（无裁判时的降级）：JSON 布尔判定，只看人设+回复。
-
-        两条路径都**不撤回已发出的文本**（流式已投递，撤不回），只回写角色
-        状态与健康指标（`ooc.rate` 超阈值时 HealthMonitor 自动抬高推理档位）。
-
-        Args:
-            snapshot: 本回合场景快照（取诱发消息进审查 state）
-            reply: 已发出的最终回复
-        """
-        if self._ooc_judge is not None and self._ooc_judge_cfg.enabled:
-            await self._audit_reply_judge(snapshot, reply)
-            return
-        await self._audit_reply_legacy(reply)
-
-    async def _audit_reply_judge(self, snapshot: SceneSnapshot, reply: str) -> None:
-        """System-1 出戏审查侧链：多问概率 -> 三档结论 -> 记账/干预。"""
-        judge = self._ooc_judge
-        if judge is None:
-            return
-        gen = self._runtime.generation
-        try:
-            recent = await self.memory.recent(5)
-            check = await audit_with_judge(
-                judge,
-                persona=self._persona_brief,
-                new_message=snapshot.content,
-                reply=reply,
-                recent=[m.content for m in reversed(recent)],
-                bot_name=self.character.name,
-                settings=self._ooc_judge_cfg,
-            )
-        except Exception:
-            self._logger.exception("System-1 出戏审查失败（不影响主链路）")
-            return
-        if gen != self._runtime.generation:
-            return
-        if check.decision == "revise":
-            self._logger.warning(
-                f"System-1 出戏审查 revise（已记账，文本不撤回）: {check.reason} | {check.answers}"
-            )
-        elif check.decision == "flag":
-            self._logger.info(f"System-1 出戏审查 flag: {check.reason} | {check.answers}")
-        await self._record_ooc_check(check)
-
-    async def _audit_reply_legacy(self, reply: str) -> None:
-        """旧单点 OOC 深审（无 System-1 裁判时的降级路径；只看人设+回复，无诱发消息）。"""
-        gen = self._runtime.generation
-        try:
-            verdict = await self.ooc.audit(reply, self.character.prompt)
-            if gen != self._runtime.generation:
-                return
-            audited = int(self.character.status.extra.get("ooc_audited", 0)) + 1
-            hits = int(self.character.status.extra.get("ooc_hits", 0)) + (
-                1 if verdict.is_ooc else 0
-            )
-            self.character.status.update(ooc_audited=audited, ooc_hits=hits)
-            await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
-            if not verdict.is_ooc:
-                # 审计恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
-                self._effort.recover()
-        except Exception:
-            self._logger.exception("OOC 深审失败（不影响主链路）")
 
     async def _distill(self) -> None:
         """记忆蒸馏：把最早一批工作记忆压缩成摘要条目，然后遗忘原文。

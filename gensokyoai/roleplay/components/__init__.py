@@ -7,12 +7,14 @@
 from .effort import EffortGovernor
 from .gate_ctl import System1Gate
 from .health_report import HealthReporter
+from .ooc_guard import OOCGuard
 from .parrot import ParrotGuard
 from .stall import StallSpeaker
 
 __all__ = [
     "EffortGovernor",
     "HealthReporter",
+    "OOCGuard",
     "ParrotGuard",
     "StallSpeaker",
     "System1Gate",

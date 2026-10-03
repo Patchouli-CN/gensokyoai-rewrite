@@ -375,7 +375,7 @@ def test_build_ooc_judge_none_when_gate_judge_none():
 )
 def test_suspicious_bare_pattern(raw, expected):
     """纯数字/符号短回复识别（疑似被注入带跑；长数字串不治）"""
-    from gensokyoai.roleplay.loop import _SUSPICIOUS_BARE
+    from gensokyoai.roleplay.components.ooc_guard import _SUSPICIOUS_BARE
 
     core = raw.strip()
     matched = bool(_SUSPICIOUS_BARE.match(core)) and len(core) <= 10

@@ -1,11 +1,8 @@
 """文风防复读单元测试 —— 收尾指纹 / 剥结尾 / 相似度 / 预防提示的纯函数部分。
 
-有状态的守门行为见 test_parrot.py（ParrotGuard 组件）；末尾的世界方法测试
-（_note_suspicious）随 OOCGuard 拆分迁移，暂留。
+有状态的守门行为见 test_parrot.py（ParrotGuard 组件）；疑似注入短回复的
+标记测试已随 OOCGuard 拆分迁至 test_ooc_guard.py。
 """
-
-import types
-from pathlib import Path
 
 from gensokyoai.core.responder.anti_parrot import (
     avoid_hint,
@@ -15,38 +12,6 @@ from gensokyoai.core.responder.anti_parrot import (
     similarity,
     strip_ending,
 )
-from gensokyoai.core.session_manager import SessionManager
-from gensokyoai.roleplay.character import Character, CharacterCard
-from gensokyoai.roleplay.loop import TouhouWorld
-from gensokyoai.schemas.model_schema import CompletionResult
-
-_TMP_DIR = Path(__file__).resolve().parent / "temp" / "anti-parrot"
-
-
-class _StubBackend:
-    """按脚本回话的假后端，记录调用参数"""
-
-    def __init__(self, replies: list[str]) -> None:
-        self.replies = list(replies)
-        self.calls: list[dict] = []
-
-    async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
-        self.calls.append({"messages": list(messages)})
-        content = self.replies.pop(0) if self.replies else ""
-        return CompletionResult(content=content, finish_reason="stop")
-
-    def normalize_tool_calls(self, result, parsed_content=None):
-        return result
-
-
-def _make_world(backend: _StubBackend, **kwargs) -> TouhouWorld:
-    sessions = SessionManager()
-    sessions.set_default_backend(backend)
-    character = Character(CharacterCard(name="幽幽子", system_prompt="白玉楼的主人是也"))
-    eye = types.SimpleNamespace(_stop_requested=True)
-    kwargs.setdefault("storage_dir", _TMP_DIR)
-    return TouhouWorld(eye=eye, character=character, sessions=sessions, **kwargs)
-
 
 # ---------- 纯函数 ----------
 
@@ -109,21 +74,3 @@ def test_avoid_hint_mentions_recent_replies_window():
     assert "第二句开头" in hint and "第三句开头" in hint
     assert "第一句开头" not in hint, "最多展示最近两条，防提示膨胀"
     assert "不要重复" in hint
-
-
-# ---------- 世界方法（随组件拆分迁移，暂留） ----------
-
-
-async def test_note_suspicious_flags_pure_number():
-    world = _make_world(_StubBackend([]))
-    await world._note_suspicious("4")
-    assert world.character.status.extra["ooc_suspicious"] == 1
-    await world._note_suspicious("2+2=4")
-    assert world.character.status.extra["ooc_suspicious"] == 2
-
-
-async def test_note_suspicious_ignores_normal_reply():
-    world = _make_world(_StubBackend([]))
-    await world._note_suspicious("啊啦～你好呀")
-    await world._note_suspicious("答案是四个团子哦")
-    assert "ooc_suspicious" not in world.character.status.extra
