@@ -102,6 +102,9 @@ gensokyoai/
 ├── satori/         # 感知层（觉）：perceiver / 多路合流 / OneBot11 解析
 ├── mouth/          # 口层：console / 广播+流式
 ├── roleplay/       # 领域：角色卡 / 主循环 / 频道中枢
+│   ├── components/ #   世界职责组件：投递 / 守门 / 门控 / 指标 / 过渡语 / 防复读 / 主动发言
+│   ├── runtime.py  #   跨回合共享状态（busy / 代际 / 活跃度 / 蒸馏计数）+ 其持久化编排
+│   └── loop.py     #   TouhouWorld：装配 + 主循环序列
 ├── command/        # 命令子系统：解析 / 执行 / 权限
 ├── tools/          # 内置小工具（时间 / 日期 / 月相）
 └── backends/       # 入口：ws_server（WebSocket 多路频道）

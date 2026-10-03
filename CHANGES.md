@@ -9,6 +9,20 @@
 ## [Unreleased]
 
 ### 变更
+  - **主循环拆分：`TouhouWorld` 从 1279 行降到约 480 行，职责簇各归其位**：
+    `roleplay/components/` 新增八个有状态组件——DeliveryService（表达+投递
+    管线，主循环与主动发言共用）、OOCGuard（硬规则守门 / blocking 审查 /
+    后置深审 / 出戏率闭环干预）、System1Gate（门控装配：精力调制 / 裁判
+    state / 日志）、HealthReporter（回合指标喂食）、StallSpeaker（过渡语
+    门控与投递）、ParrotGuard（防复读窗口）、EffortGovernor（推理档位下限
+    状态机：路由 / 注入识别 / OOC 干预 / 自愈）、InitiativeSpeaker（主动
+    发言节拍）。跨回合共享字段（busy / 代际 / 活跃度 / 蒸馏计数）收编
+    `roleplay/runtime.py` 的 `RuntimeState`；`WorldRuntimeCodec` 随迁并改为
+    向组件编排 dump/load——不再伸手摸世界私有字段，codec 协议的抽象债还清。
+    对外行为零变化（28 参构造器签名不动，每一步独立 commit、全程测试兜底）；
+    测试按组件重组，`test_stall_and_ooc.py` 拆分完毕删除，新增 test_parrot /
+    test_stall / test_effort / test_health_report / test_ooc_guard /
+    test_delivery / test_initiative_speaker。
   - **模块 docstring 去工单化**：main / app / gate / ooc_judge / pipeline /
     toolkit / health.monitor / anti_parrot / initiative / clock 十个模块的
     文档字符串从「原来怎样 → 为什么改」的工单叙事改成「是什么 + 关键约束」

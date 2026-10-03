@@ -49,61 +49,10 @@ from .components.ooc_guard import OOCGuard
 from .components.parrot import ParrotGuard
 from .components.stall import StallSpeaker
 from .persistence import CharacterStateCodec, SessionPersister
-from .runtime import RuntimeState
+from .runtime import RuntimeState, WorldRuntimeCodec
 from .trace import ReasoningTrace
 
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
-
-
-class _WorldRuntimeCodec:
-    """世界**跨回合**运行时状态的持久化编解码。
-
-    这类状态不随回合清空，重启后归零会造成可感知的行为断层：
-
-    - `effort_floor`：OOC 干预抬高的推理档位下限，丢了就退回默认路由
-    - `stall_last_turn`：上次垫过渡语的回合号（回合号本身可续计，故可持久化）
-    - `distill_counter`：距下次记忆蒸馏的回合计数
-
-    **不持久化 `stall_last_time`**：它取 `time.monotonic()`，跨进程没有意义。
-    恢复时直接置为「现在」，等价于重启后重新计时最小间隔 —— 比存一个
-    会误导的数值正确。
-    """
-
-    key = "world_runtime"
-
-    def __init__(self, world: TouhouWorld) -> None:
-        """初始化。
-
-        Args:
-            world: 宿主世界（读写的都是其跨回合私有状态）
-        """
-        self._world = world
-
-    def dump(self) -> dict:
-        """导出跨回合运行时状态。
-
-        Returns:
-            dict: 档位下限（无则 None）+ 过渡语回合号 + 蒸馏计数
-        """
-        return {
-            "effort_floor": self._world._effort.dump(),
-            "stall_last_turn": self._world._stall.dump(),
-            "distill_counter": self._world._distill_counter,
-        }
-
-    def load(self, data) -> None:
-        """恢复跨回合运行时状态（字段缺失或非法时保持默认）。
-
-        Args:
-            data: dump() 产出的字典；None 时跳过
-        """
-        if not isinstance(data, dict):
-            return
-        self._world._effort.load(data.get("effort_floor"))
-        self._world._stall.load(data.get("stall_last_turn"))
-        counter = data.get("distill_counter")
-        if isinstance(counter, int):
-            self._world._distill_counter = counter
 
 
 class TouhouWorld:
@@ -269,7 +218,6 @@ class TouhouWorld:
         # --- 蒸馏 / 主动发言旋钮 ---
         self._distill_every = distill_every
         self._distill_batch = distill_batch
-        self._distill_counter = 0
         self._initiative_interval = initiative_interval
 
         self._ooc_guard = OOCGuard(
@@ -349,7 +297,10 @@ class TouhouWorld:
             sessions,
             self.bus,
             character_name=character.name,
-            codecs=[CharacterStateCodec(character), _WorldRuntimeCodec(self)],
+            codecs=[
+                CharacterStateCodec(character),
+                WorldRuntimeCodec(self._runtime, self._effort, self._stall),
+            ],
         )
         """ 会话持久化器（启动 restore / 事件驱动保存 / 关闭 flush）"""
 
@@ -527,9 +478,9 @@ class TouhouWorld:
                 turn_cost = await self._health_report.record(effort, t_start)
 
                 # 7. 记忆蒸馏（后台侧链，不阻塞回合）
-                self._distill_counter += 1
-                if self._distill_counter >= self._distill_every:
-                    self._distill_counter = 0
+                self._runtime.distill_counter += 1
+                if self._runtime.distill_counter >= self._distill_every:
+                    self._runtime.distill_counter = 0
                     self._tasks.spawn(self._distill(), name="distill")
 
                 latency = time.monotonic() - t_start
