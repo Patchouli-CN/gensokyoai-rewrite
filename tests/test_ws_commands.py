@@ -125,7 +125,7 @@ async def test_quota_shows_engine_costs(tmp_path):
         ws = await client.ws_connect("/ws/g1?user=甲&role=member")
         await ws.send_str("/额度")
         frames = await _collect(ws)
-        assert any("计费" in f.get("text", "") for f in frames), frames
+        assert any("费用信息" in f.get("text", "") for f in frames), frames
         await ws.close()
     finally:
         await client.close()
@@ -171,3 +171,60 @@ async def test_normal_chat_unaffected_by_executor(tmp_path):
     finally:
         await client.close()
         await hub.shutdown()
+
+
+async def test_quota_reports_module_breakdown(tmp_path):
+    """/quota：分模块消耗（含裁判这类无状态 owner）+ 合计 + 账户兜底行"""
+    hub, app = _build(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1?user=甲&role=owner")
+        # 先聊一句让 responder/brain 产生真实记账
+        await ws.send_str("你好")
+        await _collect(ws, seconds=3.0)
+
+        await ws.send_str("/quota")
+        frames = await _collect(ws)
+        text = next((f.get("text", "") for f in frames if "费用信息" in f.get("text", "")), "")
+        assert "费用信息" in text
+        assert "模块消耗" in text
+        assert "表达(" in text or "大脑(" in text, text
+        assert "合计:" in text and "缓存命中" in text
+        assert "账户：" in text
+        assert "暂无账户信息" in text, "本地假后端应落账户兜底行"
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+async def test_quota_shows_rate_limit_windows(tmp_path, monkeypatch):
+    """/quota：供应商自报的滚动窗口额度出现在账户区"""
+    from gensokyoai.utils.ratelimit import RATE_LIMITS
+
+    RATE_LIMITS.reset()
+    hub, app = _build(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1?user=甲&role=member")
+        RATE_LIMITS.note(
+            "https://api.anthropic.com/v1",
+            {
+                "anthropic-ratelimit-requests-limit": "100",
+                "anthropic-ratelimit-requests-remaining": "63",
+                "anthropic-ratelimit-requests-reset": "2030-01-01T23:40:00Z",
+            },
+        )
+        await ws.send_str("/quota")
+        frames = await _collect(ws)
+        text = next((f.get("text", "") for f in frames if "费用信息" in f.get("text", "")), "")
+        assert "api.anthropic.com" in text
+        assert "requests 剩余 63%" in text
+        assert "重置" in text
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+        RATE_LIMITS.reset()

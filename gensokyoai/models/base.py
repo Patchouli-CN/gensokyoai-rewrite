@@ -19,6 +19,7 @@ from ..schemas.model_schema import (
     Usage,
 )
 from ..utils.logger import LoggerManager
+from ..utils.ratelimit import RATE_LIMITS
 from .pricing import price_for
 
 _MAX_TOOL_ROUNDS = 8
@@ -357,6 +358,7 @@ class OpenAICompatProvider(ModelProvider):
                     f"流式请求失败: url={url} status={resp.status} 响应体={body[:300]!r}"
                 )
             resp.raise_for_status()
+            self._note_rate_limits(resp.headers)
             async for raw in resp.content:
                 if not raw:
                     continue
@@ -389,7 +391,16 @@ class OpenAICompatProvider(ModelProvider):
                     f"耗时={time.monotonic() - started:.2f}s 响应体={body[:300]!r}"
                 )
             resp.raise_for_status()
+            self._note_rate_limits(resp.headers)
             return await resp.json()
+
+    def _note_rate_limits(self, headers) -> None:
+        """把响应头里的限流窗口信息喂给进程级注册表（/quota 的「剩余额度」数据源）。
+
+        纯观测管道：供应商不带这些头就静默跳过，不参与任何决策。
+        """
+        if self._conf is not None:
+            RATE_LIMITS.note(self._conf.base_url, headers)
 
     async def _execute_tools(
         self,

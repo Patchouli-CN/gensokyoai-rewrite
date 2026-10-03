@@ -106,6 +106,14 @@ class SessionManager:
         """某 owner 的累计费用（币种 -> 金额；未计价模型为空 dict）。"""
         return dict(self._costs.get(owner, {}))
 
+    def usage_breakdown(self) -> dict[str, Usage]:
+        """全部 owner 的分模块累计用量（含只走无状态调用的 owner，如 gate.think）。
+
+        Returns:
+            dict: owner -> 累计用量（副本，供 /quota 这类报表逐模块展开）
+        """
+        return dict(self._usage)
+
     def total_cost(self) -> dict[str, float]:
         """全部 owner 的累计费用（币种 -> 金额；混合币种分开累计不混算）。"""
         totals: dict[str, float] = {}

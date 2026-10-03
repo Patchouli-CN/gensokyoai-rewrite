@@ -51,14 +51,16 @@ def test_think_chain_roundtrip(tmp_path):
     assert chain[1]["optional"] is False
 
 
-def test_default_card_has_example_think_chain():
-    """仓库默认角色卡带一条示例思考链（含内联自定义步骤样板）"""
+def test_default_card_think_chain_deployment_tuned():
+    """仓库幽幽子卡：本地部署走接力思考（think_chain 留空），
+    示例定制链以注释形式保留在卡里（云端时再换回，别弄丢样板）"""
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    character = load_character(root / "config" / "roles" / "SaigyoujiYuyuko.yaml")
-    assert character.card.think_chain[0] == "emotion_check"
-    assert character.card.think_chain[1]["name"] == "food_radar"
+    card_path = root / "config" / "roles" / "SaigyoujiYuyuko.yaml"
+    character = load_character(card_path)
+    assert character.card.think_chain == []
+    assert "food_radar" in card_path.read_text(encoding="utf-8"), "注释里的示例链要留住"
 
 
 def test_parse_message_onebot11():

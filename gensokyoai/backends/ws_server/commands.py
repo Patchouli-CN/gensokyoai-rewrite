@@ -6,7 +6,7 @@
 |---|---|---|---|
 | /help | /帮助 | VISITOR | 按调用者权限列出可用指令 |
 | /status | /状态 | USER | 版本/uptime/频道/门控/记忆向量化/费用与 token 统计 |
-| /quota | /额度 | USER | 引擎侧计费统计 + Moonshot 账户余额（若配置了 Moonshot 端点） |
+| /quota | /额度 | USER | 分模块消耗报表 + 账户余额（Moonshot）/ 滚动窗口额度（供应商响应头自报） |
 
 权限来自客户端自报的 role（逐条信封 > 连接 query > 默认 VISITOR），但
 **只信回环连接**（server.py 分流层把关）：本机插件可信，公网客户端一律
@@ -28,6 +28,7 @@ from ...command.decorators import CommandRegistry
 from ...core.config import GensokyoConfig
 from ...core.session_manager import SessionManager
 from ...roleplay.hub import ChannelHub
+from ...utils.ratelimit import RATE_LIMITS
 
 WS_COMMANDS = CommandRegistry()
 """ ws_server 本地注册表（与将来其他后端的同名指令互不覆盖） """
@@ -116,42 +117,123 @@ async def cmd_status(ctx) -> CommandResult:
 @command(
     name="quota",
     aliases=["额度"],
-    description="查询费用统计与 Provider 账户额度",
+    description="查询费用统计与账户额度（分模块消耗 + 余额/窗口额度）",
     permission=PermissionLevel.USER,
     registry=WS_COMMANDS,
 )
 async def cmd_quota(ctx) -> CommandResult:
     state: WsCommandState = ctx.metadata["state"]
-    usage = state.sessions.total_usage()
-    costs = state.sessions.total_cost()
-    lines = ["本会话引擎计费："]
-    if costs:
-        for currency, amount in costs.items():
-            lines.append(f"  {currency}: {amount:.4f}")
-    else:
-        lines.append("  （暂无计费记录）")
+    sessions = state.sessions
+    config = state.config
+
+    lines = ["费用信息（自引擎启动以来）："]
+
+    # --- 模块消耗：按 owner 展开（裁判这类纯无状态调用也在账上）---
+    breakdown = sessions.usage_breakdown()
+    if breakdown:
+        lines.append("  模块消耗：")
+        ordered = [o for o in _OWNER_ORDER if o in breakdown]
+        ordered += sorted(o for o in breakdown if o not in _OWNER_ORDER)
+        for owner in ordered:
+            usage = breakdown[owner]
+            label = _OWNER_LABELS.get(owner, owner)
+            model = _owner_model_name(config, owner)
+            cost_text = _cost_inline(sessions.cost_by_owner(owner))
+            lines.append(
+                f"  - {label}({model}): "
+                f"输入 {_fmt_tokens(usage.prompt_tokens)} / 输出 {_fmt_tokens(usage.completion_tokens)} tok"
+                f"{cost_text}"
+            )
+    usage = sessions.total_usage()
+    total_cost = _cost_inline(sessions.total_cost(), prefix="；费用: ", suffix="")
     lines.append(
-        f"  token: 输入 {usage.prompt_tokens} / 输出 {usage.completion_tokens} / 缓存命中 {usage.cached_tokens}"
+        f"  合计: 输入 {_fmt_tokens(usage.prompt_tokens)} / 输出 {_fmt_tokens(usage.completion_tokens)}"
+        f" / 缓存命中 {_fmt_tokens(usage.cached_tokens)} tok{total_cost}"
     )
-    balance = await _moonshot_balance(state.config)
-    if balance:
-        lines.append(balance)
+
+    # --- 账户：预付费余额（Moonshot）+ 滚动窗口额度（响应头自报）---
+    lines.append("  账户：")
+    account_lines = await _account_lines(config)
+    snapshot = RATE_LIMITS.snapshot()
+    for base_url, entry in snapshot.items():
+        host = base_url.split("//")[-1].split("/")[0]
+        for dim, window in entry.windows.items():
+            ratio = window.remaining_ratio
+            pct = f"{ratio:.0%}" if ratio is not None else f"{window.remaining}"
+            reset = (
+                time.strftime("（%H:%M 重置）", time.localtime(window.reset_at))
+                if window.reset_at
+                else ""
+            )
+            account_lines.append(f"  - {host}: {dim} 剩余 {pct}{reset}")
+    if account_lines:
+        lines.extend(account_lines)
+    else:
+        lines.append("  - （本地模型或未上报额度，暂无账户信息）")
+
     await ctx.metadata["send"]("\n".join(lines))
     return CommandResult.success("quota")
 
 
-async def _moonshot_balance(config: GensokyoConfig) -> str | None:
-    """配置了 Moonshot 端点时查账户余额；查询失败/未配置返回 None（不阻塞指令）。"""
-    conf = next(
-        (
-            c
-            for c in (config.default_model, config.brain, config.responder)
-            if c.token and "moonshot" in c.base_url
-        ),
-        None,
-    )
-    if conf is None:
-        return None
+_OWNER_LABELS = {
+    "brain.think": "大脑",
+    "responder": "表达",
+    "gate.think": "裁判",
+    "brain.ooc": "出戏审查",
+    "memorizer.compress": "记忆蒸馏",
+}
+""" owner -> 报表里的中文名 """
+
+_OWNER_ORDER = ["brain.think", "responder", "gate.think", "brain.ooc", "memorizer.compress"]
+""" 报表展示顺序（未收录的 owner 按字典序排在后面） """
+
+
+def _owner_model_name(config: GensokyoConfig, owner: str) -> str:
+    """owner -> 它吃的模型配置名（对齐 session_factory 的路由约定）。"""
+    conf = {
+        "brain.think": config.brain,
+        "responder": config.responder,
+        "brain.ooc": config.ooc or config.brain,
+        "memorizer.compress": config.memorizer or config.brain,
+    }.get(owner, config.default_model)
+    return conf.model_name
+
+
+def _fmt_tokens(n: int) -> str:
+    """token 数缩写：>=1000 用 k 表示（18.2k），以下原样。"""
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def _cost_inline(costs: dict[str, float], *, prefix: str = " · ", suffix: str = "") -> str:
+    """费用 dict -> 行内文本；为空（本地/未计价）给空串。"""
+    if not costs:
+        return ""
+    text = " / ".join(f"{amount:.4f} {currency}" for currency, amount in costs.items())
+    return f"{prefix}{text}{suffix}"
+
+
+async def _account_lines(config: GensokyoConfig) -> list[str]:
+    """预付费账户余额行（当前支持 Moonshot /users/me/balance；失败/未配置静默跳过）。"""
+    seen: set[tuple[str, str]] = set()
+    confs = [config.default_model, config.brain, config.responder]
+    if config.ooc is not None:
+        confs.append(config.ooc)
+    if config.memorizer is not None:
+        confs.append(config.memorizer)
+    lines: list[str] = []
+    for conf in confs:
+        key = (conf.base_url, conf.token)
+        if not conf.token or "moonshot" not in conf.base_url or key in seen:
+            continue
+        seen.add(key)
+        balance = await _moonshot_balance(conf)
+        if balance:
+            lines.append(f"  - Moonshot({conf.model_name}): {balance}")
+    return lines
+
+
+async def _moonshot_balance(conf) -> str | None:
+    """查 Moonshot 账户余额；查询失败返回 None（不阻塞指令）。"""
     try:
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as http:
@@ -163,7 +245,7 @@ async def _moonshot_balance(config: GensokyoConfig) -> str | None:
                 return None
             data = (await resp.json()).get("data", {})
         return (
-            f"Moonshot 账户余额: ¥{data.get('available_balance', 0):.2f}"
+            f"余额 ¥{data.get('available_balance', 0):.2f}"
             f"（现金 ¥{data.get('cash_balance', 0):.2f} / 代金券 ¥{data.get('voucher_balance', 0):.2f}）"
         )
     except Exception:
