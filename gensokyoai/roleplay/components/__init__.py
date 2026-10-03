@@ -8,6 +8,7 @@ from .delivery import DeliveryService
 from .effort import EffortGovernor
 from .gate_ctl import System1Gate
 from .health_report import HealthReporter
+from .initiative_speaker import InitiativeSpeaker
 from .ooc_guard import OOCGuard
 from .parrot import ParrotGuard
 from .stall import StallSpeaker
@@ -16,6 +17,7 @@ __all__ = [
     "DeliveryService",
     "EffortGovernor",
     "HealthReporter",
+    "InitiativeSpeaker",
     "OOCGuard",
     "ParrotGuard",
     "StallSpeaker",

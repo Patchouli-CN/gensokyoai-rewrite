@@ -32,7 +32,7 @@ from ..mouth.base import Mouth
 from ..mouth.console import ConsoleMouth
 from ..satori.perceiver import Perceiver
 from ..satori.queue import merge_snapshots
-from ..schemas.brain_schema import BrainConclusion, BrainThinkEffort
+from ..schemas.brain_schema import BrainThinkEffort
 from ..schemas.event_schema import BaseEvent, EventTopic, TurnEndPayload
 from ..schemas.memory_schema import MemoryItem, MemoryType
 from ..schemas.model_schema import ToolSpec
@@ -44,10 +44,10 @@ from .components.delivery import DeliveryService
 from .components.effort import EffortGovernor
 from .components.gate_ctl import System1Gate
 from .components.health_report import HealthReporter
+from .components.initiative_speaker import InitiativeSpeaker
 from .components.ooc_guard import OOCGuard
 from .components.parrot import ParrotGuard
 from .components.stall import StallSpeaker
-from .initiative import describe_silence, evaluate_initiative
 from .persistence import CharacterStateCodec, SessionPersister
 from .runtime import RuntimeState
 from .trace import ReasoningTrace
@@ -195,6 +195,8 @@ class TouhouWorld:
         """ 后台侧链（记忆投递 / 蒸馏 / OOC 审计）的任务管理器：
         `asyncio` 只对任务持弱引用，不登记就可能执行途中被 GC 回收；
         关闭时也靠它统一取消并等在途任务收尾 """
+        self._runtime = RuntimeState()
+        """ 跨回合运行时状态（busy / generation / last_activity；组件与主循环注入同一实例）"""
         self.memory = MemoryManager(
             storage_dir=storage_dir,
             session_id=session_id,
@@ -264,16 +266,11 @@ class TouhouWorld:
         )
         """ System-1 发言门控（该不该接话 + 该想多深；纯判决见 core/brain/gate.py）"""
 
-        # --- 主动发言 / 蒸馏旋钮 ---
+        # --- 蒸馏 / 主动发言旋钮 ---
         self._distill_every = distill_every
         self._distill_batch = distill_batch
+        self._distill_counter = 0
         self._initiative_interval = initiative_interval
-        self._idle_threshold = idle_threshold
-        self._urge_threshold = urge_threshold
-
-        # --- 生物钟：定时任务调度（首个住户 = 主动发言节拍）---
-        self.clock = BiologicalClock()
-        self.clock.every("initiative", self._initiative_interval, self._maybe_initiative)
 
         self._ooc_guard = OOCGuard(
             self.ooc,
@@ -319,13 +316,24 @@ class TouhouWorld:
             self._ooc_guard,
         )
         """ 表达 + 投递管线（主循环与主动发言共用的「说话」通道；见 components/delivery.py）"""
+        self._initiative = InitiativeSpeaker(
+            character,
+            self.memory,
+            self.bus,
+            self._runtime,
+            self._delivery,
+            urge_threshold=urge_threshold,
+            idle_threshold=idle_threshold,
+            is_stopping=lambda: getattr(self.eye, "_stop_requested", False),
+        )
+        """ 主动发言节拍（冷场时角色自己冒泡；见 components/initiative_speaker.py）"""
+
+        # --- 生物钟：定时任务调度（首个住户 = 主动发言节拍）---
+        self.clock = BiologicalClock()
+        self.clock.every("initiative", self._initiative_interval, self._initiative.tick)
+
         self._shutdown_drain_timeout = shutdown_drain_timeout
         """ 关闭时等后台侧链收尾的秒数 """
-
-        # --- 运行时状态：跨回合共享字段收编进 RuntimeState（见 roleplay/runtime.py）---
-        self._runtime = RuntimeState()
-
-        self._distill_counter = 0
 
         # 注册记忆写入侧链
         self.bus.subscribe(EventTopic.MEMORY_WRITE, self._handle_memory_write)
@@ -667,69 +675,3 @@ class TouhouWorld:
             self._logger.info(f"记忆蒸馏: {removed} 条 -> 摘要 {len(summary)} 字")
         except Exception:
             self._logger.exception("记忆蒸馏失败（不影响主链路）")
-
-    async def _maybe_initiative(self) -> None:
-        """主动发言节拍（生物钟住户）：空闲超阈值时评估四维对话欲，达标即开口。
-
-        零思考 token：不经过 Brain，直接用规则结论驱动 Responder。
-        """
-        if self._runtime.busy or self._stopping():
-            return
-        idle = self._runtime.idle_for()
-        if idle < self._idle_threshold:
-            return
-
-        try:
-            await self._try_speak(idle)
-        except Exception:
-            self._logger.exception("主动发言评估失败")
-
-    def _stopping(self) -> bool:
-        """是否处于关闭流程"""
-        return getattr(self.eye, "_stop_requested", False)
-
-    async def _try_speak(self, idle: float) -> None:
-        """评估对话欲并尝试主动开口"""
-        gen = self._runtime.generation
-        recent = await self.memory.recent(6)
-        recent_texts = [m.content for m in reversed(recent)]
-        urge = evaluate_initiative(
-            recent_texts,
-            character_name=self.character.name,
-            weights=self.character.card.motivation_weights,
-            idle_seconds=idle,
-            expression_base=self.character.card.expression_base,
-        )
-        self.character.status.update(motivation=round(urge, 2))
-        if urge < self._urge_threshold:
-            return
-        if self._runtime.busy or gen != self._runtime.generation:
-            return
-
-        self._logger.info(f"主动发言触发: 对话欲={urge:.2f} 空闲={idle:.0f}s")
-        with self._runtime.begin_busy():
-            snapshot = SceneSnapshot(
-                scene_type="group_chat",
-                sender="环境",
-                content=describe_silence(recent_texts, idle_seconds=idle),
-                is_direct=False,
-                context_snippet=[m.content for m in reversed(recent)][-5:],
-                timestamp=time.time(),
-            )
-            conclusion = BrainConclusion(
-                verdict="pass_through",
-                intent="主动发起话题",
-                emotion=self.character.status.emotion,
-            )
-            # 与主循环同一套投递：口层支持流式则逐块显示，否则缓冲投递（主动发言不做 OOC 守门）
-            reply = await self._delivery.deliver(snapshot, conclusion, recent, ooc_guard=False)
-
-        char_mem = MemoryItem(
-            topic="对话",
-            content=f"{self.character.name}: {reply}",
-            memory_type=MemoryType.DIALOGUE,
-        )
-        await self.bus.publish(
-            EventBus.new(EventTopic.MEMORY_WRITE, source="initiative", payload=char_mem)
-        )
-        self._runtime.note_activity()
