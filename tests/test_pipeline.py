@@ -606,7 +606,7 @@ def _make_world(tmp_path, think_chain: list[str | dict]) -> TouhouWorld:
         CharacterCard(name="幽幽子", system_prompt="白玉楼的主人", think_chain=think_chain)
     )
     return TouhouWorld(
-        eye=types.SimpleNamespace(_stop_requested=True),
+        eye=types.SimpleNamespace(stopping=True, drain=lambda: []),
         character=character,
         sessions=sessions,
         storage_dir=tmp_path,
@@ -657,7 +657,7 @@ async def test_world_persona_brief_for_thinking(tmp_path):
         CharacterCard(name="幽幽子", system_prompt="设定" * 500, think_chain=["emotion_check"])
     )
     world = TouhouWorld(
-        eye=types.SimpleNamespace(_stop_requested=True),
+        eye=types.SimpleNamespace(stopping=True, drain=lambda: []),
         character=character,
         sessions=sessions,
         storage_dir=tmp_path,

@@ -262,7 +262,7 @@ class TouhouWorld:
             self._delivery,
             urge_threshold=s.urge_threshold,
             idle_threshold=s.idle_threshold,
-            is_stopping=lambda: getattr(self.eye, "_stop_requested", False),
+            is_stopping=lambda: self.eye.stopping,
         )
         """ 主动发言节拍（冷场时角色自己冒泡；见 components/initiative_speaker.py）"""
 
@@ -406,7 +406,7 @@ class TouhouWorld:
         try:
             while True:
                 # 检查是否收到停止请求
-                if getattr(self.eye, "_stop_requested", False):
+                if self.eye.stopping:
                     self._logger.info("感知器已停止，主循环退出")
                     break
 
@@ -414,7 +414,7 @@ class TouhouWorld:
                 snapshot = await self.eye.next_snapshot()
                 if snapshot is None:
                     # 如果是因为停止请求返回 None，直接退出
-                    if getattr(self.eye, "_stop_requested", False):
+                    if self.eye.stopping:
                         break
                     continue
 
@@ -424,9 +424,9 @@ class TouhouWorld:
 
                 # 忙时攒批：回合期间积压的输入一次性合并进本回合——多人同时 @ /
                 # 复读队形只开一回合、过一次门控、回一条（场景无关的合流语义；
-                # 无积压时 drain 返回空，零开销）。getattr 兜底：鸭式自定义眼睛
-                # 不强制实现 drain
-                if backlog := getattr(self.eye, "drain", lambda: [])():
+                # 无积压时 drain 返回空，零开销）
+                backlog = self.eye.drain()
+                if backlog:
                     snapshot = merge_snapshots([snapshot, *backlog])
 
                 turn += 1

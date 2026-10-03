@@ -113,10 +113,13 @@ async def test_respond_stream_halfcut_continues():
 class _IdleEye:
     """不产出任何输入、可停止的假感知器"""
 
-    _stop_requested = False
+    stopping = False
 
     async def next_snapshot(self):
         return None
 
     async def close(self):
         pass
+
+    def drain(self):
+        return []

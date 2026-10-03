@@ -68,11 +68,11 @@ def _group_snapshot(text: str, sender: str = "群友") -> SceneSnapshot:
 
 
 def _make_world(backend: _StubBackend, **kwargs) -> TouhouWorld:
-    """组一个最小可测的 TouhouWorld（eye 只需要带 _stop_requested 属性）"""
+    """组一个最小可测的 TouhouWorld（鸭子眼睛：stopping + drain 两件套）"""
     sessions = SessionManager()
     sessions.set_default_backend(backend)
     character = Character(CharacterCard(name="幽幽子", system_prompt="白玉楼的主人是也"))
-    eye = types.SimpleNamespace(_stop_requested=True)
+    eye = types.SimpleNamespace(stopping=True, drain=lambda: [])
     return TouhouWorld(eye=eye, character=character, sessions=sessions, **kwargs)
 
 

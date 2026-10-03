@@ -33,3 +33,16 @@ class Perceiver(ABC):
     def request_stop(self) -> None:
         """请求停止读取（由生命周期管理器或信号处理器调用）"""
         self._stop_requested = True
+
+    @property
+    def stopping(self) -> bool:
+        """是否已请求停止（`request_stop` 的读侧）。
+
+        主循环与外部据此优雅退出。读侧公开是刻意的：调用方（主循环 /
+        频道中枢）不该隔着一层 `getattr` 摸感知器的私有字段——那既绕过类型
+        检查，也让「停止」这个协议只剩写侧没有读侧。
+
+        Returns:
+            bool: True 表示已请求停止
+        """
+        return self._stop_requested

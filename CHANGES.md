@@ -16,6 +16,15 @@
     CLI/配置覆盖改为构造 `WorldSettings`（未覆盖字段走默认值，默认值与旧
     签名逐一对齐）。协作者（裁判 / 口层 / 已成结构体的配置）仍是构造器
     参数——旋钮归旋钮，实例归实例。
+  - **`Perceiver` 补公开读侧 `stopping`，主循环清除 getattr 翻墙**：`stopping`
+    此前只有写侧（`request_stop()`），主循环读停止状态只能
+    `getattr(self.eye, "_stop_requested", False)`——跨对象摸私有字段、绕过
+    类型检查，防的还是不存在的敌人（`eye: Perceiver` 声明的协议里
+    `drain()` 与停止读侧本就该有）。现在 `self.eye.stopping` /
+    `self.eye.drain()` 直调，loop.py 零 getattr；类**内部**自用 `_stop_requested`
+    不变（私有状态的正确用法）。测试鸭子眼睛同步改为提供公开两件套
+    （`stopping` + `drain`）。顺带溶解了忙时攒批 walrus 的 mypy
+    `[var-annotated]`（直调 `drain()` 天生带返回类型）——mypy 门禁零错误。
   - **主循环拆分：`TouhouWorld` 从 1279 行降到约 480 行，职责簇各归其位**：
     `roleplay/components/` 新增八个有状态组件——DeliveryService（表达+投递
     管线，主循环与主动发言共用）、OOCGuard（硬规则守门 / blocking 审查 /

@@ -16,12 +16,12 @@ class _ScriptedEye:
 
     def __init__(self, lines: list[str]) -> None:
         self._lines = list(lines)
-        self._stop_requested = False
+        self.stopping = False
         self.greeted = False
 
     async def next_snapshot(self) -> SceneSnapshot | None:
         if not self._lines:
-            self._stop_requested = True
+            self.stopping = True
             return None
         text = self._lines.pop(0)
         return SceneSnapshot(
@@ -33,6 +33,9 @@ class _ScriptedEye:
 
     async def close(self) -> None:
         pass
+
+    def drain(self) -> list[SceneSnapshot]:
+        return []
 
 
 class _EchoBackend:
