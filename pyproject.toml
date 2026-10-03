@@ -87,15 +87,16 @@ target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "S"]
 ignore = [
     "E501",   # 行宽交给 formatter
     "E731",   # 允许 lambda 赋值（少量场景更清晰）
     "ASYNC109",  # TaskManager 的 stop/drain 是关停宽限 API，不是单 await 超时
+    "S101",   # 本仓库用 assert 表达「上面已校验」的不变量（带注释），非输入校验
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["E402"]
+"tests/*" = ["E402", "S101"]  # 测试的 assert 是惯用法
 "scripts/*" = ["E402"]  # 仓库根 sys.path 引导必须走在 import 之前
 
 [tool.ruff.format]

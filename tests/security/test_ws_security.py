@@ -257,6 +257,6 @@ async def test_limiter_keys_on_ip_not_nickname(tmp_path):
 
 def test_main_refuses_public_bind_without_token(capsys):
     """非回环监听 + 无 token：拒绝启动（不再是警告放行）"""
-    rc = main(["--host", "0.0.0.0", "--port", "0"])
+    rc = main(["--host", "0.0.0.0", "--port", "0"])  # noqa: S104 —— 测的就是它拒绑公网
     assert rc == 2
     assert "--token" in capsys.readouterr().err

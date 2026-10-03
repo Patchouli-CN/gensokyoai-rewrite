@@ -32,7 +32,7 @@ _SLEEP = "!sleep"
 
 _CONCLUSION_DRAFT = '{"verdict": "draft", "intent": "调侃", "emotion": "愉悦", "draft": "啊啦～", "confidence": 0.8}'
 _CONCLUSION_PASS = (
-    '{"verdict": "pass_through", "intent": "倾听", "emotion": "平静", "confidence": 0.4}'
+    '{"verdict": "pass_through", "intent": "倾听", "emotion": "平静", "confidence": 0.4}'  # noqa: S105 —— pass_through 结论夹具，不是密码
 )
 
 

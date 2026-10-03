@@ -75,7 +75,8 @@ class StallSpeaker:
             return False
         if time.monotonic() - self._last_time < self._min_interval:
             return False
-        return random.random() < self._probability
+        # 行为抖动采样，非安全用途——保留 S311 对将来加密误用的拦截
+        return random.random() < self._probability  # noqa: S311
 
     async def maybe_stall(
         self, snapshot: SceneSnapshot, effort: BrainThinkEffort, turn: int
