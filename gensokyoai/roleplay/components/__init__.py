@@ -5,8 +5,15 @@
 """
 
 from .effort import EffortGovernor
+from .gate_ctl import System1Gate
 from .health_report import HealthReporter
 from .parrot import ParrotGuard
 from .stall import StallSpeaker
 
-__all__ = ["EffortGovernor", "HealthReporter", "ParrotGuard", "StallSpeaker"]
+__all__ = [
+    "EffortGovernor",
+    "HealthReporter",
+    "ParrotGuard",
+    "StallSpeaker",
+    "System1Gate",
+]

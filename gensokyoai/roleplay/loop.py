@@ -7,13 +7,7 @@ from pathlib import Path
 
 from ..core.brain.energy import EnergyModel
 from ..core.brain.engine import BrainEngine, build_tool_directive, route
-from ..core.brain.gate import (
-    GateDecision,
-    Judge,
-    PresenceTracker,
-    decide,
-    tier_from_deep_score,
-)
+from ..core.brain.gate import Judge, PresenceTracker, tier_from_deep_score
 from ..core.brain.ooc_detector import OOCDetector
 from ..core.brain.ooc_judge import audit_with_judge
 from ..core.brain.pipeline import ThinkPipeline
@@ -50,6 +44,7 @@ from ..utils.tasks import TaskManager
 from ..utils.text import strip_control_chars
 from .character import Character
 from .components.effort import EffortGovernor
+from .components.gate_ctl import System1Gate
 from .components.health_report import HealthReporter
 from .components.parrot import ParrotGuard
 from .components.stall import StallSpeaker
@@ -266,6 +261,16 @@ class TouhouWorld:
         )
         """ 精力模型（HumanLikeSystem 阶段二）：与门控共用 PresenceTracker，
         调制群聊模糊带阈值与回复长度；None = 不跟踪（旧行为） """
+        self._gate_ctl = System1Gate(
+            self._gate,
+            self._judge,
+            self._presence,
+            self._energy,
+            self._persona_brief,
+            character.name,
+            self.memory,
+        )
+        """ System-1 发言门控（该不该接话 + 该想多深；纯判决见 core/brain/gate.py）"""
 
         # --- 主动发言 / 蒸馏旋钮 ---
         self._distill_every = distill_every
@@ -566,10 +571,6 @@ class TouhouWorld:
                 name="memory-write",
             )
 
-    def _consult_judge(self) -> bool:
-        """有裁判、且（开了门控 或 开了模型路由）时才问裁判。"""
-        return self._judge is not None and (self._gate.enabled or self._gate.route_by_model)
-
     async def _system1_turn(
         self, snapshot: SceneSnapshot, turn: int
     ) -> tuple[bool, BrainThinkEffort | None]:
@@ -585,10 +586,10 @@ class TouhouWorld:
         Returns:
             tuple: (要不要发言；裁判建议的推理档位或 None——None 表示回落规则 route())
         """
-        if not self._consult_judge():
+        if not self._gate_ctl.should_consult():
             return True, None
 
-        decision = await self._gate_decide(snapshot, turn)
+        decision = await self._gate_ctl.decide(snapshot, turn)
         if self._gate.enabled and not decision.reply:
             if self._energy is not None:
                 self._energy.note_skip(decision.source)
@@ -598,41 +599,6 @@ class TouhouWorld:
         if self._gate.route_by_model and decision.effort is not None:
             return True, tier_from_deep_score(decision.effort, self._gate.deep_cuts)
         return True, None
-
-    async def _gate_decide(self, snapshot: SceneSnapshot, turn: int) -> GateDecision:
-        """只做 decide + 日志（无副作用；跳过记账由 _system1_turn 按门控开关决定）。"""
-        recent = await self.memory.recent(5)
-        recent_texts = [m.content for m in reversed(recent)]
-        threshold = self._gate.group_threshold
-        energy_text = ""
-        if self._energy is not None:
-            # 精力调制：说多了/冷场久/深夜 -> 群聊模糊带阈值抬高（只抬不压）
-            threshold = self._energy.modulate_threshold(threshold)
-            energy_text = f" {self._energy.describe()}"
-        decision = await decide(
-            snapshot=snapshot,
-            bot_name=self.character.name,
-            persona=self._persona_brief,
-            recent=recent_texts,
-            presence=self._presence.stats(),
-            judge=self._judge,
-            group_threshold=threshold,
-            search_threshold=self._gate.search_threshold,
-            route_by_model=self._gate.route_by_model,
-        )
-        scores = (
-            f" reply={decision.scores.reply:.2f} addressed={decision.scores.addressed:.2f}"
-            f" search={decision.scores.search:.2f} threshold={decision.scores.threshold:.2f}"
-            if decision.scores is not None
-            else ""
-        )
-        deep = f" deep={decision.effort:.2f}" if decision.effort is not None else ""
-        self._logger.info(
-            f"[gate] 回合{turn} {'REPLY' if decision.reply else 'skip'} "
-            f"({decision.source}: {decision.reason}){scores}{deep}{energy_text} :: "
-            f"{snapshot.sender}: {snapshot.content[:60]}"
-        )
-        return decision
 
     def _remember_user(self, snapshot: SceneSnapshot) -> None:
         """门控跳过时只把用户这句话写进记忆（不回复≠没听过，保证连续性）。"""

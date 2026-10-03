@@ -12,9 +12,11 @@ import pytest
 from gensokyoai.core.brain.energy import EnergyModel
 from gensokyoai.core.brain.gate import PresenceTracker
 from gensokyoai.core.config import EnergySettings, GateSettings
+from gensokyoai.core.memorizer.manager import MemoryManager
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.prompts import prompt_mgr
 from gensokyoai.roleplay.character import Character, CharacterCard
+from gensokyoai.roleplay.components.gate_ctl import System1Gate
 from gensokyoai.roleplay.loop import TouhouWorld
 from gensokyoai.schemas.brain_schema import BrainConclusion
 from gensokyoai.schemas.model_schema import CompletionResult
@@ -264,24 +266,30 @@ async def test_world_judge_skip_feeds_energy(tmp_path):
     assert world._energy.skip_streak == 1
 
 
-async def test_world_threshold_modulated_by_energy(tmp_path):
+async def test_gate_threshold_modulated_by_energy(tmp_path):
     """精力低 -> 交给裁判的阈值被抬高（打分明细里能看到调制后的阈值）"""
     judge = _FakeJudge({"should_reply": 0.1, "needs_search": 0.0})
-    world = _make_world(
-        _StubBackend([]),
-        judge=judge,
-        gate=GateSettings(enabled=True, group_threshold=0.6),
-        energy=EnergySettings(enabled=True, presence_free_ratio=0.0, presence_penalty=1.0),
-        storage_dir=tmp_path,
+    model, presence, _ = _make_model(
+        EnergySettings(enabled=True, presence_free_ratio=0.0, presence_penalty=1.0)
+    )
+    memory = MemoryManager(storage_dir=tmp_path, session_id="energy-gate")
+    gate_ctl = System1Gate(
+        GateSettings(enabled=True, group_threshold=0.6),
+        judge,
+        presence,
+        model,
+        "【幽幽子】白玉楼的主人是也",
+        "幽幽子",
+        memory,
     )
     # 窗口里全是自己在说 -> 存在感因子 0 -> 精力 0 -> 阈值顶到 0.6+0.2
     for _ in range(4):
-        world._presence.record(from_bot=True)
+        presence.record(from_bot=True)
 
-    await world._gate_decide(_group_snapshot("随便聊聊"), 1)
+    await gate_ctl.decide(_group_snapshot("随便聊聊"), 1)
 
-    assert world._energy.energy() == 0.0
-    decision = await world._gate_decide(_group_snapshot("再聊聊"), 2)
+    assert model.energy() == 0.0
+    decision = await gate_ctl.decide(_group_snapshot("再聊聊"), 2)
     assert decision.scores.threshold == pytest.approx(0.8)
 
 
