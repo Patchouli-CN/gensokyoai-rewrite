@@ -39,8 +39,8 @@ from ..schemas.model_schema import ToolSpec
 from ..schemas.scene_schema import SceneSnapshot
 from ..utils.logger import LoggerManager
 from ..utils.tasks import TaskManager
-from ..utils.text import strip_control_chars
 from .character import Character
+from .components.delivery import DeliveryService
 from .components.effort import EffortGovernor
 from .components.gate_ctl import System1Gate
 from .components.health_report import HealthReporter
@@ -309,6 +309,16 @@ class TouhouWorld:
             min_interval=stall_min_interval,
         )
         """ 深思考过渡语（延迟掩盖 + 三重门控；见 components/stall.py）"""
+        self._delivery = DeliveryService(
+            self.responder,
+            self.mouth,
+            character.name,
+            self._presence,
+            self._energy,
+            self._parrot,
+            self._ooc_guard,
+        )
+        """ 表达 + 投递管线（主循环与主动发言共用的「说话」通道；见 components/delivery.py）"""
         self._shutdown_drain_timeout = shutdown_drain_timeout
         """ 关闭时等后台侧链收尾的秒数 """
 
@@ -489,9 +499,9 @@ class TouhouWorld:
                     conclusion = await self.brain.think(snapshot, memories, effort)
 
                     # 4. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
-                    reply = await self._express(snapshot, conclusion, memories)
+                    reply = await self._delivery.deliver(snapshot, conclusion, memories)
 
-                # 5. 记录（投递已在 _express 内完成）
+                # 5. 记录（投递已在 _delivery 内完成）
                 self._remember_turn(snapshot, reply)
                 if self.trace.enabled:
                     # 一次小追加（走线程池），保证本回合轨迹已落盘、便于复盘与测试
@@ -500,7 +510,7 @@ class TouhouWorld:
                     )
                 if self._ooc_guard.audit_enabled and not self._ooc_guard.blocking:
                     # 传 snapshot：System-1 审查需要诱发消息当上下文（旧 audit 只用 reply）。
-                    # blocking 模式已在 _express 里审过并记账，侧链不重复跑
+                    # blocking 模式已在 _delivery 里审过并记账，侧链不重复跑
                     self._tasks.spawn(self._ooc_guard.audit(snapshot, reply), name="ooc-audit")
 
                 # 6. 角色状态跟踪 + 健康喂食
@@ -632,91 +642,6 @@ class TouhouWorld:
         self._logger.warning(f"上下文占用过高（{value:.0%}），触发记忆蒸馏")
         await self._distill()
 
-    async def _express(self, snapshot, conclusion, memories, *, ooc_guard: bool = True) -> str:
-        """表达 + 投递的统一入口：口层支持流式则逐块显示，否则缓冲投递。
-
-        主循环与主动发言共用；主动发言传 `ooc_guard=False`（不做硬规则守门，
-        但防复读与可疑标记照跑——它也是「说话」）。
-
-        Args:
-            snapshot: 场景快照
-            conclusion: Brain 结论（主动发言为 pass_through 规则结论）
-            memories: 检索到的记忆
-            ooc_guard: 缓冲路径是否做 OOC 硬规则守门（流式路径恒不做，
-                靠后置 System-1 审查兜底——已投递的文本撤不回，重在记录与干预）
-
-        Returns:
-            str: 完整回复文本（供记忆落盘 / 后置审查）
-        """
-        # 防复读预防性提示：两条路径都生效（流式已投递无从改起，只能事前防）
-        avoid = self._parrot.avoid_hint()
-        # 精力状态提示：低精力时让 Responder 长话短说（空串不注入）
-        state_hint = self._energy.verbosity_hint() if self._energy is not None else ""
-        # blocking 闸门开启时**放弃流式**：回复必须先完整生成、过 System-1 出戏审查
-        # 才放行——逐字蹦的手感换「说出口的话都过了审」（本地模型每回合多一次
-        # 审查调用；侧链模式则两不误，默认）
-        if self.mouth.supports_streaming and not self._ooc_guard.blocking:
-            reply = await self._deliver_stream(
-                snapshot, conclusion, memories, avoid=avoid, state_hint=state_hint
-            )
-            await self._ooc_guard.note_suspicious(reply)
-            self._parrot.note_reply(reply)
-            return reply
-        reply = await self.responder.respond(
-            conclusion, snapshot, memories, avoid, state_hint=state_hint
-        )
-        if self._ooc_guard.blocking:
-            reply = await self._ooc_guard.guard_blocking(snapshot, reply)
-        if ooc_guard:
-            reply = await self._ooc_guard.guard_rules(reply)
-            reply = await self._parrot.guard(reply)
-        await self._ooc_guard.note_suspicious(reply)
-        final = self._parrot.dedup_ending(reply)
-        await self.mouth.send(self.character.name, strip_control_chars(final))
-        self._presence.record(from_bot=True)
-        if self._energy is not None:
-            self._energy.note_reply()
-        self._parrot.note_reply(reply)
-        return final
-
-    async def _deliver_stream(
-        self, snapshot, conclusion, memories, avoid: str = "", state_hint: str = ""
-    ) -> str:
-        """流式投递最终回复：responder.respond_stream → mouth.begin/delta/end。
-
-        逐块把回复文本送到可显示的平台（口层流式），并返回完整回复文本
-        （供记忆落盘 / 后置 System-1 审查 / 状态回写）。流式模式下跳过 OOC 预审。
-
-        Args:
-            snapshot: 场景快照
-            conclusion: Brain 结论
-            memories: 检索到的记忆
-            avoid: 防复读提示（生成前注入；空串不注入）
-            state_hint: 精力/状态提示（生成前注入；空串不注入）
-
-        Returns:
-            str: 完整回复文本（含情绪润色尾缀）
-        """
-        await self.mouth.begin(self.character.name)
-        parts: list[str] = []
-        try:
-            async for delta in self.responder.respond_stream(
-                conclusion, snapshot, memories, avoid, state_hint=state_hint
-            ):
-                parts.append(delta)
-                if delta:
-                    await self.mouth.delta(strip_control_chars(delta))
-        except Exception:
-            self._logger.exception("流式生成失败（结束投递，回退为已产出文本）")
-        finally:
-            await self.mouth.end()
-        reply = "".join(parts)
-        self._presence.record(from_bot=True)
-        if self._energy is not None:
-            self._energy.note_reply()
-        self._logger.info(f"流式投递完成: {len(reply)}字")
-        return reply
-
     async def _distill(self) -> None:
         """记忆蒸馏：把最早一批工作记忆压缩成摘要条目，然后遗忘原文。
 
@@ -797,7 +722,7 @@ class TouhouWorld:
                 emotion=self.character.status.emotion,
             )
             # 与主循环同一套投递：口层支持流式则逐块显示，否则缓冲投递（主动发言不做 OOC 守门）
-            reply = await self._express(snapshot, conclusion, recent, ooc_guard=False)
+            reply = await self._delivery.deliver(snapshot, conclusion, recent, ooc_guard=False)
 
         char_mem = MemoryItem(
             topic="对话",

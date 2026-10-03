@@ -4,6 +4,7 @@
 由 TouhouWorld 在装配层注入协作者（responder / memory / health ...）。
 """
 
+from .delivery import DeliveryService
 from .effort import EffortGovernor
 from .gate_ctl import System1Gate
 from .health_report import HealthReporter
@@ -12,6 +13,7 @@ from .parrot import ParrotGuard
 from .stall import StallSpeaker
 
 __all__ = [
+    "DeliveryService",
     "EffortGovernor",
     "HealthReporter",
     "OOCGuard",

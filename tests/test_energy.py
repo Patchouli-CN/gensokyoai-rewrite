@@ -18,7 +18,6 @@ from gensokyoai.prompts import prompt_mgr
 from gensokyoai.roleplay.character import Character, CharacterCard
 from gensokyoai.roleplay.components.gate_ctl import System1Gate
 from gensokyoai.roleplay.loop import TouhouWorld
-from gensokyoai.schemas.brain_schema import BrainConclusion
 from gensokyoai.schemas.model_schema import CompletionResult
 from gensokyoai.schemas.scene_schema import SceneSnapshot
 
@@ -293,38 +292,4 @@ async def test_gate_threshold_modulated_by_energy(tmp_path):
     assert decision.scores.threshold == pytest.approx(0.8)
 
 
-async def test_world_express_injects_state_hint_when_tired(tmp_path):
-    """低精力时 _express 把 [当前状态] 注入 Responder 提示词，且开口复位冷场"""
-    backend = _StubBackend(["困了，睡了。"])
-    world = _make_world(
-        backend,
-        energy=EnergySettings(enabled=True, presence_free_ratio=0.0, presence_penalty=1.0),
-        storage_dir=tmp_path,
-    )
-    world._energy.note_skip("judge")
-    for _ in range(3):
-        world._presence.record(from_bot=True)  # 精力归零
-    assert world._energy.verbosity_hint() != ""
-
-    reply = await world._express(
-        _group_snapshot("在吗"), BrainConclusion(intent="寒暄", emotion="疲惫"), []
-    )
-
-    assert reply == "困了，睡了。"
-    prompt = backend.calls[0]["messages"][-1].content
-    assert "[当前状态]" in prompt
-    assert "简短" in prompt
-    assert world._energy.skip_streak == 0, "开口后冷场退避复位"
-
-
-async def test_world_energy_disabled_by_default(tmp_path):
-    """不传 energy：不跟踪精力（旧行为），_express 不注入状态行"""
-    backend = _StubBackend(["在。"])
-    world = _make_world(backend, storage_dir=tmp_path)
-    assert world._energy is None
-
-    reply = await world._express(_group_snapshot("在吗"), BrainConclusion(intent="寒暄"), [])
-
-    assert reply == "在。"
-    prompt = backend.calls[0]["messages"][-1].content
-    assert "[当前状态]" not in prompt
+# 精力对投递的影响（状态提示注入 / 开口复位）见 test_delivery.py（DeliveryService 组件）

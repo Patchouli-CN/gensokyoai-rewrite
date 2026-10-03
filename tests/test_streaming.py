@@ -120,31 +120,3 @@ class _IdleEye:
 
     async def close(self):
         pass
-
-
-async def test_express_streams_proactive_line(tmp_path, capsys):
-    """口层支持流式时，_express 走流式投递（主动发言与主循环同款路径）"""
-    from gensokyoai.mouth.console import ConsoleMouth
-    from gensokyoai.roleplay.character import Character, CharacterCard
-    from gensokyoai.roleplay.loop import TouhouWorld
-
-    sm = SessionManager()
-    sm.set_default_backend(_StreamBackend(["唔……", "妖梦，茶点准备好了吗～"]))
-    character = Character(CharacterCard(name="幽幽子", system_prompt="白玉楼的主人"))
-    world = TouhouWorld(
-        eye=_IdleEye(),
-        character=character,
-        sessions=sm,
-        mouth=ConsoleMouth(),
-        session_id="t-express",
-        storage_dir=tmp_path,
-    )
-    snapshot = SceneSnapshot(sender="环境", content="（安静了片刻）", is_direct=False)
-    conclusion = BrainConclusion(intent="主动发起话题", emotion="平静", effort=BrainThinkEffort.LOW)
-
-    reply = await world._express(snapshot, conclusion, [], ooc_guard=False)
-
-    out = capsys.readouterr().out
-    assert "幽幽子: " in out, "应打出角色名前缀"
-    assert "妖梦" in out, "流式内容应逐块显示到控制台"
-    assert "妖梦" in reply, "应返回完整回复文本"
