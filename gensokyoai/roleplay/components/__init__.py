@@ -5,7 +5,8 @@
 """
 
 from .effort import EffortGovernor
+from .health_report import HealthReporter
 from .parrot import ParrotGuard
 from .stall import StallSpeaker
 
-__all__ = ["EffortGovernor", "ParrotGuard", "StallSpeaker"]
+__all__ = ["EffortGovernor", "HealthReporter", "ParrotGuard", "StallSpeaker"]

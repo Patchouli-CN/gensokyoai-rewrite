@@ -4,7 +4,6 @@
 后置深审 / System-1 审查 / blocking 闸门 / 健康指标喂食的世界级行为。
 """
 
-import time
 import types
 from pathlib import Path
 
@@ -303,7 +302,7 @@ async def test_blocking_gate_passes_accept():
 
 async def test_blocking_gate_forces_buffered_express():
     """blocking 生效时放弃流式：先完整生成、审过再一次性 send（不 begin/delta）"""
-    from gensokyoai.schemas.brain_schema import BrainConclusion, BrainThinkEffort
+    from gensokyoai.schemas.brain_schema import BrainConclusion
 
     judge = _FakeOOCJudge(
         {
@@ -328,7 +327,7 @@ async def test_blocking_gate_forces_buffered_express():
 
 async def test_side_chain_mode_still_streams():
     """默认 side_chain 模式不改流式行为（口层支持就流式）"""
-    from gensokyoai.schemas.brain_schema import BrainConclusion, BrainThinkEffort
+    from gensokyoai.schemas.brain_schema import BrainConclusion
 
     class _StreamStubBackend(_StubBackend):
         """带 chat_stream 的假后端（流式路径用）"""
@@ -353,30 +352,3 @@ async def test_side_chain_mode_still_streams():
     reply = await world._express(_snapshot("你好"), conclusion, [])
     assert reply == "啊啦～你好呀。"
     assert mouth.begun == 1, "side_chain 模式保持流式"
-
-
-# ---------- 健康指标喂食 ----------
-
-
-async def test_record_health_feeds_counters_as_metrics():
-    """回合计数器真正落成指标（曾把整本 dict 塞 record() 被静默丢弃）"""
-    world = _make_world(_StubBackend([]))
-    await world._record_health(1, BrainThinkEffort.LOW, time.monotonic())
-
-    assert (await world.health.get_metric_history("turn.count"))[-1].value == 1.0
-    # 档位分布由 effort.<档位> 指标聚合而来 —— 修复前恒为空
-    assert world.health.reasoning_distribution() == {"low": 1.0}
-    assert (await world.health.get_metric_history("memory.work_size"))[-1].value >= 0.0
-    assert (await world.health.get_metric_history("memory.long_size"))[-1].value >= 0.0
-    assert (await world.health.get_metric_history("turn.tokens"))[-1].value >= 0.0
-
-
-async def test_record_health_memory_alert_actually_fires():
-    """记忆规模超限时真的告警（阈值表早就配了，修复前从未触发）"""
-    world = _make_world(_StubBackend([]))
-    world.memory = types.SimpleNamespace(work_mem_size=600, long_mem_size=10)
-    await world._record_health(1, BrainThinkEffort.MID, time.monotonic())
-
-    alerts = [a for a in world.health.alerts() if a.metric and a.metric.name == "memory.work_size"]
-    assert alerts, "work_mem_size=600 超过阈值 500 应告警"
-    assert alerts[-1].metric.value == 600.0

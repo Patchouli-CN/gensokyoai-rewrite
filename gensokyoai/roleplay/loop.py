@@ -50,6 +50,7 @@ from ..utils.tasks import TaskManager
 from ..utils.text import strip_control_chars
 from .character import Character
 from .components.effort import EffortGovernor
+from .components.health_report import HealthReporter
 from .components.parrot import ParrotGuard
 from .components.stall import StallSpeaker
 from .initiative import describe_silence, evaluate_initiative
@@ -220,16 +221,14 @@ class TouhouWorld:
             session_provider=self._session_health,
         )
         """ 健康监控 + 主动干预（见 §3.5）"""
+        self._health_report = HealthReporter(sessions, self.memory, self.health)
+        """ 回合健康指标喂食（token/费用差值快照的安家；见 components/health_report.py）"""
 
         # --- 健康干预：把「监控」接成「动作」（装配层注册，core/health 不反向依赖）---
         self.health.register_intervention("session.context_usage", self._on_context_pressure)
         self.health.register_intervention("ooc.rate", self._on_ooc_spike)
         self._effort = EffortGovernor()
         """ 推理档位治理：注入识别 / OOC 干预的抬升与自愈（见 components/effort.py）"""
-        self._last_total_tokens = 0
-        """ 上次采集的累计 token，用于算回合增量 """
-        self._last_cost: dict[str, float] = {}
-        """ 上次采集的累计费用（币种 -> 金额），用于算回合增量 """
 
         self.compressor = Compressor(sessions)
 
@@ -495,7 +494,7 @@ class TouhouWorld:
                 # 6. 角色状态跟踪 + 健康喂食
                 if conclusion.emotion:
                     self.character.status.update(emotion=conclusion.emotion)
-                turn_cost = await self._record_health(turn, effort, t_start)
+                turn_cost = await self._health_report.record(effort, t_start)
 
                 # 7. 记忆蒸馏（后台侧链，不阻塞回合）
                 self._distill_counter += 1
@@ -646,49 +645,6 @@ class TouhouWorld:
             self.bus.publish(EventBus.new(EventTopic.MEMORY_WRITE, source="gate", payload=item)),
             name="memory-write",
         )
-
-    async def _record_health(self, turn: int, effort, t_start: float) -> dict[str, float]:
-        """回合粒度的健康指标喂食：档位分布 / 记忆规模 / 延迟 / token / 费用 / 上下文占用率。
-
-        Returns:
-            dict: 本回合新增费用（币种 -> 金额；本地模型为空）
-        """
-        total = self.sessions.total_usage()
-        turn_tokens = (total.prompt_tokens + total.completion_tokens) - self._last_total_tokens
-        self._last_total_tokens = total.prompt_tokens + total.completion_tokens
-        turn_cost = self._turn_cost()
-
-        # 注意：`HealthMonitor.record()` 只收**单条**指标（{"name", "value"}），
-        # 曾经把整本计数器 dict 塞进去，被「指标缺少 name」静默丢弃 ——
-        # 档位分布与 memory.* 阈值因此从未生效。逐条走 record_metric。
-        await self.health.record_metric("turn.count", 1.0)
-        await self.health.record_metric(f"effort.{effort.value}", 1.0)
-        await self.health.record_metric(
-            "memory.work_size", float(self.memory.work_mem_size), unit="条"
-        )
-        await self.health.record_metric(
-            "memory.long_size", float(self.memory.long_mem_size), unit="条"
-        )
-        await self.health.record_metric("turn.latency_s", time.monotonic() - t_start, unit="s")
-        await self.health.record_metric("turn.tokens", float(turn_tokens), unit="tok")
-        for currency, amount in turn_cost.items():
-            await self.health.record_metric(f"turn.cost_{currency.lower()}", amount, unit=currency)
-        await self.health.record_metric(
-            "session.context_usage", self.sessions.context_usage("responder"), unit="ratio"
-        )
-        return turn_cost
-
-    def _turn_cost(self) -> dict[str, float]:
-        """本回合新增费用（币种 -> 金额；本地模型全回合为空 dict）。
-        与 token 计量同款差值法：拿当前总量减上次快照。"""
-        now = self.sessions.total_cost()
-        delta = {
-            currency: round(amount - self._last_cost.get(currency, 0.0), 8)
-            for currency, amount in now.items()
-            if abs(amount - self._last_cost.get(currency, 0.0)) > 1e-9
-        }
-        self._last_cost = now
-        return delta
 
     def _session_health(self) -> dict[str, float]:
         """会话摘要（供健康报告采集；作为回调注入，避免 core/health 反向依赖）。"""
