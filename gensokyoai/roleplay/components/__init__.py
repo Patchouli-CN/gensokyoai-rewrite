@@ -4,6 +4,7 @@
 由 TouhouWorld 在装配层注入协作者（responder / memory / health ...）。
 """
 
+from .effort import EffortGovernor
 from .parrot import ParrotGuard
 
-__all__ = ["ParrotGuard"]
+__all__ = ["EffortGovernor", "ParrotGuard"]

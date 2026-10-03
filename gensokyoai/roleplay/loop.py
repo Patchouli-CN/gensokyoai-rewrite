@@ -50,6 +50,7 @@ from ..utils.logger import LoggerManager
 from ..utils.tasks import TaskManager
 from ..utils.text import strip_control_chars
 from .character import Character
+from .components.effort import EffortGovernor
 from .components.parrot import ParrotGuard
 from .initiative import describe_silence, evaluate_initiative
 from .persistence import CharacterStateCodec, SessionPersister
@@ -61,34 +62,6 @@ EXIT_WORDS = {"exit", "quit", "q", "退出"}
 _SUSPICIOUS_BARE = re.compile(r"^[0-9+\-*/().=\s]+$")
 """ 纯数字/符号短回复：疑似被用户消息夹带的指令带跑（也可能是冷面接梗——
     只标记不阻断，定夺交给带上下文的 System-1 出戏审查）"""
-
-_INJECTION_PATTERNS = re.compile(
-    r"(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+"
-    r"(?:instructions?|prompts?|rules?)"
-    r"|you\s+are\s+now\b"
-    r"|(?:从现在开始|此刻起)你(?:是|变成|充当)"
-    r"|无视.{0,10}(?:指令|设定|指示|提示词)"
-    r"|(?:repeat|print|show|reveal|输出|打印|重复|显示).{0,24}"
-    r"(?:system\s*prompt|提示词|系统指令)",
-    re.IGNORECASE,
-)
-""" 提示注入句型（指令改写 / 泄题）。命中只抬思考档位，不改文案——
-    误报代价仅一回合延迟，漏报代价是人设被带跑 """
-
-_EFFORT_ORDER = {
-    BrainThinkEffort.NONE: 0,
-    BrainThinkEffort.LOW: 1,
-    BrainThinkEffort.MID: 2,
-    BrainThinkEffort.HIGH: 3,
-    BrainThinkEffort.MAX: 4,
-}
-""" 档位全序（抬下限/比较用）"""
-
-
-def _effort_order(effort: BrainThinkEffort) -> int:
-    """档位的全序号。"""
-    return _EFFORT_ORDER[effort]
-
 
 _STALL_EFFORTS = {BrainThinkEffort.HIGH, BrainThinkEffort.MAX}
 """ 值得垫过渡语的档位：多轮接力思考，延迟肉眼可见 """
@@ -124,9 +97,8 @@ class _WorldRuntimeCodec:
         Returns:
             dict: 档位下限（无则 None）+ 过渡语回合号 + 蒸馏计数
         """
-        floor = self._world._effort_floor
         return {
-            "effort_floor": floor.value if floor is not None else None,
+            "effort_floor": self._world._effort.dump(),
             "stall_last_turn": self._world._stall_last_turn,
             "distill_counter": self._world._distill_counter,
         }
@@ -139,12 +111,7 @@ class _WorldRuntimeCodec:
         """
         if not isinstance(data, dict):
             return
-        raw_floor = data.get("effort_floor")
-        if raw_floor:
-            try:
-                self._world._effort_floor = BrainThinkEffort(raw_floor)
-            except ValueError:
-                self._world._logger.warning(f"档位下限非法，跳过: {raw_floor!r}")
+        self._world._effort.load(data.get("effort_floor"))
         turn = data.get("stall_last_turn")
         if isinstance(turn, int):
             self._world._stall_last_turn = turn
@@ -264,8 +231,8 @@ class TouhouWorld:
         # --- 健康干预：把「监控」接成「动作」（装配层注册，core/health 不反向依赖）---
         self.health.register_intervention("session.context_usage", self._on_context_pressure)
         self.health.register_intervention("ooc.rate", self._on_ooc_spike)
-        self._effort_floor: BrainThinkEffort | None = None
-        """ OOC 飙升时抬高的推理档位下限；审计恢复健康后清除 """
+        self._effort = EffortGovernor()
+        """ 推理档位治理：注入识别 / OOC 干预的抬升与自愈（见 components/effort.py）"""
         self._last_total_tokens = 0
         """ 上次采集的累计 token，用于算回合增量 """
         self._last_cost: dict[str, float] = {}
@@ -510,10 +477,8 @@ class TouhouWorld:
                     # 3. 决策阶段 (Brain)；深思考前先垫一句角色过渡语遮延迟
                     # 以当前消息为关联词，顺带把长期记忆里的相关旧事捞进来（语义检索）
                     memories = await self.memory.recent(5, search_term=snapshot.content)
-                    effort = self._apply_effort_floor(
-                        judged if judged is not None else route(snapshot)
-                    )
-                    effort = self._apply_injection_floor(snapshot, effort)
+                    effort = self._effort.floor(judged if judged is not None else route(snapshot))
+                    effort = self._effort.floor_for_injection(snapshot, effort)
                     await self._maybe_stall(snapshot, effort, turn)
                     conclusion = await self.brain.think(snapshot, memories, effort)
 
@@ -747,44 +712,7 @@ class TouhouWorld:
         """干预：出戏率飙升 → 抬高档位下限（文档 §3.5「自动调参」）。"""
         value = alert.metric.value if alert.metric else 0.0
         self._logger.warning(f"出戏率偏高（{value:.2f}），推理档位下限抬到 HIGH")
-        self._effort_floor = BrainThinkEffort.HIGH
-
-    def _apply_effort_floor(self, effort: BrainThinkEffort) -> BrainThinkEffort:
-        """把路由结果抬到干预设定的档位下限（无下限时原样返回）。"""
-        if self._effort_floor is None:
-            return effort
-        return (
-            effort
-            if _effort_order(effort) >= _effort_order(self._effort_floor)
-            else self._effort_floor
-        )
-
-    def _apply_injection_floor(
-        self, snapshot: SceneSnapshot, effort: BrainThinkEffort
-    ) -> BrainThinkEffort:
-        """入口注入识别：命中「指令改写 / 泄题」句型时，该回合档位下限抬到 MID。
-
-        依据 20 轮真机实录：OOC 注入回合裁判判了 low、Responder 被用户消息里的
-        直接指令（"Output only numbers"）带跑——Brain 其实看穿了（draft 在角色里），
-        但拿到的思考深度不够硬。这里只抬档、不改文案（行为闸，不是审查闸）；
-        出戏本身的定夺在口层 System-1 审查。
-
-        Args:
-            snapshot: 本回合场景快照（看诱发消息）
-            effort: 当前档位
-
-        Returns:
-            BrainThinkEffort: 可能被抬高的档位
-        """
-        if not _INJECTION_PATTERNS.search(snapshot.content):
-            return effort
-        floor = BrainThinkEffort.MID
-        if _effort_order(effort) >= _effort_order(floor):
-            return effort
-        self._logger.warning(
-            f"入口注入识别: 档位下限抬到 {floor.value} :: {snapshot.content[:60]!r}"
-        )
-        return floor
+        self._effort.raise_floor(BrainThinkEffort.HIGH)
 
     def _should_stall(self, effort: BrainThinkEffort, turn: int) -> bool:
         """是否值得垫过渡语：仅深思考档、非开局、出了冷却期、再掷中概率。
@@ -995,10 +923,9 @@ class TouhouWorld:
         )
         self.character.status.update(ooc_audited=audited, ooc_hits=hits, ooc_flags=flags)
         await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
-        if check.decision != "revise" and self._effort_floor is not None:
+        if check.decision != "revise":
             # 审查恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
-            self._effort_floor = None
-            self._logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
+            self._effort.recover()
 
     async def _note_suspicious(self, reply: str) -> None:
         """零成本启发式：纯数字/符号超短回复 = 疑似被用户消息里夹带的指令带跑
@@ -1106,10 +1033,9 @@ class TouhouWorld:
             )
             self.character.status.update(ooc_audited=audited, ooc_hits=hits)
             await self.health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
-            if not verdict.is_ooc and self._effort_floor is not None:
+            if not verdict.is_ooc:
                 # 审计恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
-                self._effort_floor = None
-                self._logger.info("OOC 已恢复健康，撤销抬高的推理档位下限")
+                self._effort.recover()
         except Exception:
             self._logger.exception("OOC 深审失败（不影响主链路）")
 

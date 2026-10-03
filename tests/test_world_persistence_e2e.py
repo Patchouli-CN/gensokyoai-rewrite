@@ -132,7 +132,7 @@ async def test_world_restart_restores_character_and_runtime_state(tmp_path):
     # 摆好「运行期会产生的状态」，交给关闭时的 flush 落盘
     world1.character.status.update(motivation=0.8)
     world1.character.status.extra["ooc_audited"] = 2
-    world1._effort_floor = BrainThinkEffort.HIGH
+    world1._effort.raise_floor(BrainThinkEffort.HIGH)
     world1._distill_counter = 7
     await _run(world1)  # 跑一回合 -> 蒸馏计数变 8，随之落盘
 
@@ -149,7 +149,9 @@ async def test_world_restart_restores_character_and_runtime_state(tmp_path):
 
     assert world2.character.status.motivation == 0.8, "对话欲应续上"
     assert world2.character.status.extra["ooc_audited"] == 2, "出戏计数应续上"
-    assert world2._effort_floor is BrainThinkEffort.HIGH, "干预抬高的档位下限应续上"
+    assert world2._effort.floor(BrainThinkEffort.LOW) is BrainThinkEffort.HIGH, (
+        "干预抬高的档位下限应续上"
+    )
     assert world2._distill_counter == 8, "蒸馏计数应续上（若归零会是 0）"
     # monotonic 时刻跨进程无意义：恢复时应重置为「现在」而非沿用旧值
     assert world2._stall_last_time != float("-inf")
