@@ -117,6 +117,29 @@ async def test_accumulates_token_usage():
     assert sm.token_usage("没调用过") == Usage()
 
 
+async def test_accumulates_cached_tokens():
+    """缓存命中/写入也要累计（前缀缓存复用率是成本观察数据，不能丢）"""
+
+    class _CacheBackend:
+        async def chat(self, messages, **kw):
+            return CompletionResult(
+                content="ok",
+                usage=Usage(
+                    prompt_tokens=100, completion_tokens=7, cached_tokens=42, cache_write_tokens=9
+                ),
+            )
+
+    sm = SessionManager()
+    sm.set_default_backend(_CacheBackend())
+    await sm.call("responder", [Message(role="user", content="hi")], stateless=True)
+    await sm.call("responder", [Message(role="user", content="hi again")], stateless=True)
+
+    usage = sm.total_usage()
+    assert usage.cached_tokens == 84
+    assert usage.cache_write_tokens == 18
+    assert sm.usage_breakdown()["responder"].cached_tokens == 84
+
+
 async def test_context_usage_ratio_and_owners():
     """上下文占用率 = 已用 token / 预算；owners 列出活跃会话"""
     sm = _manager(FakeBackend())

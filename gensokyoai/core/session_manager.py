@@ -94,11 +94,19 @@ class SessionManager:
         """读取全部 owner 的累计 token 用量（供回合计量取差值）。
 
         Returns:
-            Usage: 累计用量合计
+            Usage: 累计用量合计（含缓存命中/缓存写入——llama-server 的
+                前缀缓存与 Anthropic 的上下文缓存是成本观察的一手数据）
         """
         prompt = sum(u.prompt_tokens for u in self._usage.values())
         completion = sum(u.completion_tokens for u in self._usage.values())
-        return Usage(prompt_tokens=prompt, completion_tokens=completion)
+        cached = sum(u.cached_tokens for u in self._usage.values())
+        cache_write = sum(u.cache_write_tokens for u in self._usage.values())
+        return Usage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cached_tokens=cached,
+            cache_write_tokens=cache_write,
+        )
 
     # ---------------------------------------------------------------- 计费
 
@@ -154,13 +162,16 @@ class SessionManager:
         return self.usage(owner) / session.max_tokens
 
     def _accumulate(self, owner: str, usage: Usage | None) -> None:
-        """累计一次调用的 token 用量。"""
+        """累计一次调用的 token 用量（含缓存命中/写入——前缀缓存复用率
+        是成本观察的一手数据，丢了它 /quota 的缓存命中永远是 0）。"""
         if usage is None:
             return
         current = self._usage.get(owner, Usage())
         self._usage[owner] = Usage(
             prompt_tokens=current.prompt_tokens + usage.prompt_tokens,
             completion_tokens=current.completion_tokens + usage.completion_tokens,
+            cached_tokens=current.cached_tokens + usage.cached_tokens,
+            cache_write_tokens=current.cache_write_tokens + usage.cache_write_tokens,
         )
 
     def register_backend(
