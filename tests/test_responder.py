@@ -13,9 +13,11 @@ class ScriptedBackend:
     def __init__(self, results: list[CompletionResult]) -> None:
         self._results = list(results)
         self.calls: list[list[Message]] = []
+        self.params: list[dict] = []
 
     async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
         self.calls.append(list(messages))
+        self.params.append({"max_new_tokens": max_new_tokens, "temperature": temperature})
         return self._results.pop(0)
 
 
@@ -72,3 +74,16 @@ async def test_emotion_hint_appends_punctuation():
     responder = Responder(sm)
     reply = await responder.respond(_conclusion(emotion="愤怒"), _snapshot(), [])
     assert reply.endswith("！")
+
+
+async def test_stall_uses_small_budget_with_reasoning_headroom():
+    """过渡语小预算（256）+ 高温度：给思考模式留 reasoning 余量，48 会被吃光吐空"""
+    backend = ScriptedBackend([CompletionResult(content="唔……让妾身想想")])
+    sm = SessionManager()
+    sm.set_default_backend(backend)
+    responder = Responder(sm, persona="【幽幽子】\n白玉楼的主人是也")
+    line = await responder.stall(_snapshot())
+    assert line == "唔……让妾身想想"
+    assert len(backend.calls) == 1
+    assert backend.params[0]["max_new_tokens"] == 256
+    assert backend.params[0]["temperature"] == 0.95, "过渡语要高温度求自然"

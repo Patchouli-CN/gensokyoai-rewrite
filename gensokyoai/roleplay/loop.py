@@ -1,7 +1,6 @@
 """角色扮演主循环"""
 
 import asyncio
-import random
 import re
 import time
 from pathlib import Path
@@ -52,6 +51,7 @@ from ..utils.text import strip_control_chars
 from .character import Character
 from .components.effort import EffortGovernor
 from .components.parrot import ParrotGuard
+from .components.stall import StallSpeaker
 from .initiative import describe_silence, evaluate_initiative
 from .persistence import CharacterStateCodec, SessionPersister
 from .runtime import RuntimeState
@@ -62,9 +62,6 @@ EXIT_WORDS = {"exit", "quit", "q", "退出"}
 _SUSPICIOUS_BARE = re.compile(r"^[0-9+\-*/().=\s]+$")
 """ 纯数字/符号短回复：疑似被用户消息夹带的指令带跑（也可能是冷面接梗——
     只标记不阻断，定夺交给带上下文的 System-1 出戏审查）"""
-
-_STALL_EFFORTS = {BrainThinkEffort.HIGH, BrainThinkEffort.MAX}
-""" 值得垫过渡语的档位：多轮接力思考，延迟肉眼可见 """
 
 
 class _WorldRuntimeCodec:
@@ -99,7 +96,7 @@ class _WorldRuntimeCodec:
         """
         return {
             "effort_floor": self._world._effort.dump(),
-            "stall_last_turn": self._world._stall_last_turn,
+            "stall_last_turn": self._world._stall.dump(),
             "distill_counter": self._world._distill_counter,
         }
 
@@ -112,14 +109,10 @@ class _WorldRuntimeCodec:
         if not isinstance(data, dict):
             return
         self._world._effort.load(data.get("effort_floor"))
-        turn = data.get("stall_last_turn")
-        if isinstance(turn, int):
-            self._world._stall_last_turn = turn
+        self._world._stall.load(data.get("stall_last_turn"))
         counter = data.get("distill_counter")
         if isinstance(counter, int):
             self._world._distill_counter = counter
-        # monotonic 时刻跨进程无意义：以「现在」为起点重新计时
-        self._world._stall_last_time = time.monotonic()
 
 
 class TouhouWorld:
@@ -286,10 +279,7 @@ class TouhouWorld:
         self.clock = BiologicalClock()
         self.clock.every("initiative", self._initiative_interval, self._maybe_initiative)
 
-        # --- 过渡语 / OOC 旋钮 ---
-        self._stall_probability = stall_probability
-        self._stall_cooldown_turns = stall_cooldown_turns
-        self._stall_min_interval = stall_min_interval
+        # --- OOC 旋钮 ---
         self._ooc_retry = ooc_retry
         self._ooc_audit = ooc_audit
         self._ooc_judge = ooc_judge
@@ -299,6 +289,15 @@ class TouhouWorld:
         """ 文风防复读配置 """
         self._parrot = ParrotGuard(self._style, self.responder)
         """ 防复读守门（文风窗口状态的安家）"""
+        self._stall = StallSpeaker(
+            self.responder,
+            self.mouth,
+            character.name,
+            probability=stall_probability,
+            cooldown_turns=stall_cooldown_turns,
+            min_interval=stall_min_interval,
+        )
+        """ 深思考过渡语（延迟掩盖 + 三重门控；见 components/stall.py）"""
         self._shutdown_drain_timeout = shutdown_drain_timeout
         """ 关闭时等后台侧链收尾的秒数 """
 
@@ -306,10 +305,6 @@ class TouhouWorld:
         self._runtime = RuntimeState()
 
         self._distill_counter = 0
-        self._stall_last_turn = -(10**9)
-        """ 上次垫过渡语的回合号（冷却门控用）"""
-        self._stall_last_time = float("-inf")
-        """ 上次垫过渡语的时刻（冷却门控用）"""
 
         # 注册记忆写入侧链
         self.bus.subscribe(EventTopic.MEMORY_WRITE, self._handle_memory_write)
@@ -479,7 +474,7 @@ class TouhouWorld:
                     memories = await self.memory.recent(5, search_term=snapshot.content)
                     effort = self._effort.floor(judged if judged is not None else route(snapshot))
                     effort = self._effort.floor_for_injection(snapshot, effort)
-                    await self._maybe_stall(snapshot, effort, turn)
+                    await self._stall.maybe_stall(snapshot, effort, turn)
                     conclusion = await self.brain.think(snapshot, memories, effort)
 
                     # 4. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
@@ -713,49 +708,6 @@ class TouhouWorld:
         value = alert.metric.value if alert.metric else 0.0
         self._logger.warning(f"出戏率偏高（{value:.2f}），推理档位下限抬到 HIGH")
         self._effort.raise_floor(BrainThinkEffort.HIGH)
-
-    def _should_stall(self, effort: BrainThinkEffort, turn: int) -> bool:
-        """是否值得垫过渡语：仅深思考档、非开局、出了冷却期、再掷中概率。
-
-        Args:
-            effort: 本回合推理档位
-            turn: 当前回合号（从 1 起）
-
-        Returns:
-            bool: True 表示先垫一句过渡语
-        """
-        if effort not in _STALL_EFFORTS:
-            return False
-        if turn <= 1:
-            return False
-        if turn - self._stall_last_turn < self._stall_cooldown_turns:
-            return False
-        if time.monotonic() - self._stall_last_time < self._stall_min_interval:
-            return False
-        return random.random() < self._stall_probability
-
-    async def _maybe_stall(
-        self, snapshot: SceneSnapshot, effort: BrainThinkEffort, turn: int
-    ) -> None:
-        """深思考前垫一句角色口吻过渡语（如"唔……让我想想"），掩盖接力思考延迟。
-
-        三重门控防止人机感：冷却轮数 + 时间间隔 + 概率掷骰。
-        过渡语只投递显示层，不写记忆（对 Brain 是噪音）；
-        但它进了 responder 有状态会话，正式回复能看到它、自然承接不重复。
-        """
-        if not self._should_stall(effort, turn):
-            return
-        try:
-            line = await self.responder.stall(snapshot)
-        except Exception:
-            self._logger.exception("过渡语生成失败（跳过，不影响主链路）")
-            return
-        if not line:
-            return
-        self._stall_last_turn = turn
-        self._stall_last_time = time.monotonic()
-        await self.mouth.send(self.character.name, strip_control_chars(line))
-        self._logger.info(f"过渡语已投递: {line!r}")
 
     async def _express(self, snapshot, conclusion, memories, *, ooc_guard: bool = True) -> str:
         """表达 + 投递的统一入口：口层支持流式则逐块显示，否则缓冲投递。

@@ -154,7 +154,7 @@ async def test_world_restart_restores_character_and_runtime_state(tmp_path):
     )
     assert world2._distill_counter == 8, "蒸馏计数应续上（若归零会是 0）"
     # monotonic 时刻跨进程无意义：恢复时应重置为「现在」而非沿用旧值
-    assert world2._stall_last_time != float("-inf")
+    assert world2._stall._last_time != float("-inf")
 
 
 async def test_world_writes_reasoning_trace(tmp_path):

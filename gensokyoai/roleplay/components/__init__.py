@@ -6,5 +6,6 @@
 
 from .effort import EffortGovernor
 from .parrot import ParrotGuard
+from .stall import StallSpeaker
 
-__all__ = ["EffortGovernor", "ParrotGuard"]
+__all__ = ["EffortGovernor", "ParrotGuard", "StallSpeaker"]
