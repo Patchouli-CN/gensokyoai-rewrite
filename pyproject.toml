@@ -35,7 +35,7 @@ dev = [
     "ruff==0.15.4",
     "mypy==2.1.0",
     "build==1.4.2",
-    "hatchling==1.32.3",
+    "hatchling==1.32.4",
     # web_search 工具的依赖：测试全程打桩不联网，钉死保证 CI 行为一致
     "ddgs==9.14.4",
 ]
