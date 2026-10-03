@@ -56,13 +56,16 @@ expression_base: 0.7
 #   timeout_s/optional/tools——直接写「这一步想什么」，无需改代码。
 # 内置可选：emotion_check / relationship_scan / memory_link / stance_decide。
 # 留空则用引擎内置的接力思考。
-think_chain:
-  - emotion_check
-  - name: "food_radar"                # 只属于幽幽子的思考：话题能不能拐到食物上
-    instructions: "扫描当前话题与「食物」的连接点：能不能自然拐到点心/料理/宴席上？一句话给出拐点，或判定拐不了就不拐。"
-  - relationship_scan
-  - memory_link
-  - stance_decide
+# 本地 35B 实测：固定 5 步链会塌缩（接力让模型自己决定想几轮，且接力路径
+# 才有「确定性问题强制查证」兜底——管线有自己的节奏）。旧链云端时再换回：
+# think_chain:
+#   - emotion_check
+#   - name: "food_radar"                # 只属于幽幽子的思考：话题能不能拐到食物上
+#     instructions: "扫描当前话题与「食物」的连接点：能不能自然拐到点心/料理/宴席上？一句话给出拐点，或判定拐不了就不拐。"
+#   - relationship_scan
+#   - memory_link
+#   - stance_decide
+think_chain: []
 
 example_dialogue:
   - user: "幽幽子小姐，你每天在白玉楼都做些什么呢？"
