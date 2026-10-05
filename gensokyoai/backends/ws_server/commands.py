@@ -222,8 +222,10 @@ async def _account_lines(config: GensokyoConfig) -> list[str]:
         confs.append(config.memorizer)
     lines: list[str] = []
     for conf in confs:
+        if not conf.token or "moonshot" not in conf.base_url:
+            continue
         key = (conf.base_url, conf.token)
-        if not conf.token or "moonshot" not in conf.base_url or key in seen:
+        if key in seen:
             continue
         seen.add(key)
         balance = await _moonshot_balance(conf)
