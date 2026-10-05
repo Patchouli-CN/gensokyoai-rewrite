@@ -20,7 +20,7 @@ dependencies = [
     "msgspec",
     "loguru",
     "pyyaml",
-    "ayafileio>=1.11.1",
+    "ayafileio>=1.11.2",
     "numpy",
 ]
 
