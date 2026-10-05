@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..core.config import WorldSettings
+from ..core.persistence import JsonFilePersistence
 from ..core.resource import tenant_scope
 from ..core.session_manager import SessionManager
 from ..mouth.broadcast import BroadcastMouth, DeliverSink
@@ -105,11 +106,20 @@ class ChannelHub:
         self._merge_window = merge_window
         self._channels: dict[str, Channel] = {}
         self._factory: WorldFactory = world_factory or self._default_world
+        # 默认工厂下全部频道共享同一个持久化后端：写锁表跨频道去重，
+        # 且 prewarm 的暖缓存对所有频道生效（否则每世界一个实例，缓存是摆设）
+        self._persistence: JsonFilePersistence | None = None
+        if world_factory is None and "persistence" not in self._world_kwargs:
+            self._persistence = JsonFilePersistence(storage_dir)
 
     def _default_world(
         self, channel_id: str, perceiver: QueuePerceiver, mouth: BroadcastMouth
     ) -> TouhouWorld:
         """默认世界工厂：每频道一个会话 ID，持久化天然隔离。"""
+        kwargs = dict(self._world_kwargs)
+        if self._persistence is not None:
+            # 共享后端（写锁表 / 暖缓存跨频道生效）；调用方自带后端时尊重之
+            kwargs["persistence"] = self._persistence
         return TouhouWorld(
             eye=perceiver,
             mouth=mouth,
@@ -118,7 +128,7 @@ class ChannelHub:
             session_id=channel_id,
             storage_dir=self._storage_dir,
             settings=self._world_settings,
-            **self._world_kwargs,
+            **kwargs,
         )
 
     # ---------------------------------------------------------------- 挂载
@@ -226,6 +236,24 @@ class ChannelHub:
             await self._stop_channel(channel_id)
 
     # ---------------------------------------------------------------- 查询
+
+    async def prewarm(self, channel_ids: list[str]) -> int:
+        """启动期批量预载频道会话存档（如白名单群），首个消息到达时 restore 零 IO。
+
+        仅默认工厂（共享 JSON 后端）下有效；自定义 world_factory 不知道
+        会话键的约定，返回 0。已在运行的频道跳过（其会话早已加载）。
+
+        Returns:
+            int: 实际预载的频道数
+        """
+        if self._persistence is None:
+            self._logger.warning("自定义 world_factory 下无共享后端，prewarm 无效")
+            return 0
+        keys = [f"sessions/{cid}/session" for cid in channel_ids if cid not in self._channels]
+        count = await self._persistence.prewarm(keys)
+        if count:
+            self._logger.info(f"会话预载完成: {count} 个频道")
+        return count
 
     def channel_ids(self) -> list[str]:
         """当前活跃频道 ID 列表。"""

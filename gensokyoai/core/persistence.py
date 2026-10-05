@@ -20,6 +20,9 @@ import msgspec
 
 from ..utils.logger import LoggerManager
 
+_WARM_MISS = object()
+""" 暖缓存未命中哨兵（预载结果本身可能是 None，不能用 None 判断命中）"""
+
 
 class PersistenceBackend(Protocol):
     """持久化后端协议：key 寻址的 JSON 文档存取"""
@@ -31,6 +34,13 @@ class PersistenceBackend(Protocol):
     async def load(self, key: str) -> Any | None:
         """读取一个 JSON 文档；不存在或无法恢复地损坏时返回 None"""
         ...
+
+    async def load_many(self, keys: list[str]) -> dict[str, Any | None]:
+        """批量读取多个键；默认逐键并发，后端可覆写为真批量 IO"""
+        if not keys:
+            return {}
+        values = await asyncio.gather(*(self.load(key) for key in keys))
+        return dict(zip(keys, values, strict=True))
 
     def list_keys(self, prefix: str = "") -> list[str]:
         """列出已有键（按存储顺序），可按前缀过滤"""
@@ -61,6 +71,8 @@ class JsonFilePersistence:
         self._root.mkdir(parents=True, exist_ok=True)
         self._quarantine = self._root / "quarantine"
         self._locks: dict[str, asyncio.Lock] = {}
+        self._warm: dict[str, Any] = {}
+        """ prewarm() 预载的文档缓存；load() 命中即取走（一次性），零 IO """
         self._indent = indent if indent and indent > 0 else None
         """ 缩进宽度；None 表示输出紧凑单行 """
 
@@ -117,8 +129,68 @@ class JsonFilePersistence:
 
     async def load(self, key: str) -> Any | None:
         """读主文件；损坏时尝试 .bak 恢复；两者皆坏则隔离并返回 None"""
+        warm = self._warm.pop(key, _WARM_MISS)
+        if warm is not _WARM_MISS:
+            self._logger.debug(f"命中预载缓存，零 IO: {key}")
+            return warm
         async with self._lock(key):
             return await self._load_async(key)
+
+    async def load_many(self, keys: list[str]) -> dict[str, Any | None]:
+        """批量读取：主文件存在的键一次 `read_bytes_many` 并发读回（并行打开）。
+
+        回退规则（逐键隔离，不让一个坏键拖垮整批）：
+        - 主文件缺失 / 解码失败 → 该键走单键 `load()`（含 .bak 恢复链）
+        - 批量调用整体失败（如 exists() 之后文件被删的竞态）→ 整批回退单键路径
+        """
+        if not keys:
+            return {}
+        fast_keys: list[str] = []
+        fast_paths: list[str] = []
+        fallback: list[str] = []
+        for key in keys:
+            path = self._path(key)
+            if path.exists():
+                fast_keys.append(key)
+                fast_paths.append(str(path))
+            else:
+                fallback.append(key)
+
+        result: dict[str, Any | None] = {}
+        if fast_keys:
+            try:
+                blobs = await ayafileio.read_bytes_many(fast_paths)
+            except Exception:
+                self._logger.exception("批量读取失败，整批回退单键路径")
+                fallback.extend(fast_keys)
+            else:
+                for key, blob in zip(fast_keys, blobs, strict=True):
+                    try:
+                        result[key] = msgspec.json.decode(blob)
+                    except Exception:
+                        self._logger.exception(f"文件损坏: {self._path(key).name} (backup=False)")
+                        fallback.append(key)
+        if fallback:
+            loaded = await asyncio.gather(*(self.load(key) for key in fallback))
+            result.update(zip(fallback, loaded, strict=True))
+        return result
+
+    async def prewarm(self, keys: list[str]) -> int:
+        """批量预载键到暖缓存；后续 `load()` 命中即取，零 IO。
+
+        用于启动期已知将要恢复的键（如白名单频道的会话存档）：
+        一次并发批量读替代 N 次冷启动单读。未消费的缓存会常驻到
+        进程结束（体积即文档本身，键集合通常很小）。
+
+        Returns:
+            int: 本次实际预载的键数（已在缓存中的跳过）
+        """
+        pending = [key for key in keys if key not in self._warm]
+        if not pending:
+            return 0
+        loaded = await self.load_many(pending)
+        self._warm.update(loaded)
+        return len(loaded)
 
     async def _load_async(self, key: str) -> Any | None:
         """真异步读取（ayafileio）；.bak 恢复成功后回写主文件"""

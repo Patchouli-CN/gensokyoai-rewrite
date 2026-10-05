@@ -273,3 +273,29 @@ async def test_hub_default_world_end_to_end(tmp_path):
 
     await hub.shutdown()
     assert hub.channel_ids() == []
+
+
+async def test_hub_prewarm_warms_shared_backend(tmp_path):
+    """默认工厂下 prewarm 把频道会话批量预载进共享后端的暖缓存"""
+    from gensokyoai.core.persistence import JsonFilePersistence
+
+    seeder = JsonFilePersistence(tmp_path)
+    await seeder.save("sessions/c1/session", {"turn_count": 7})
+    await seeder.save("sessions/c2/session", {"turn_count": 3})
+
+    hub = ChannelHub(
+        sessions=SessionManager(),
+        character=_char(),
+        storage_dir=str(tmp_path),
+    )
+    assert await hub.prewarm(["c1", "c2", "c3"]) == 3
+    warm = hub._persistence._warm
+    assert warm["sessions/c1/session"] == {"turn_count": 7}
+    assert warm["sessions/c2/session"] == {"turn_count": 3}
+    assert warm["sessions/c3/session"] is None, "无存档的频道预载为 None"
+
+
+async def test_hub_prewarm_noop_with_custom_factory():
+    """自定义 world_factory 没有共享后端，prewarm 安全无操作"""
+    hub, _ = _build_hub()
+    assert await hub.prewarm(["c1"]) == 0

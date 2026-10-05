@@ -507,3 +507,82 @@ async def test_codec_failure_is_isolated(tmp_path):
     await persister.flush()
 
     assert await persister.restore() is True, "坏 codec 不应让整体恢复失败"
+
+
+# ---------- JsonFilePersistence 批量读 / 预载 ----------
+
+
+async def test_load_many_roundtrip(tmp_path):
+    """批量读取多个键，结果按键对齐"""
+    backend = JsonFilePersistence(tmp_path)
+    await backend.save("s/a", {"v": 1})
+    await backend.save("s/b", {"v": 2})
+    await backend.save("s/c", {"v": 3})
+
+    result = await backend.load_many(["s/a", "s/b", "s/c"])
+    assert result == {"s/a": {"v": 1}, "s/b": {"v": 2}, "s/c": {"v": 3}}
+
+
+async def test_load_many_missing_and_corrupt_fallback(tmp_path):
+    """缺失键返回 None；主文件损坏的键回退单键路径走 .bak 恢复"""
+    backend = JsonFilePersistence(tmp_path)
+    await backend.save("s/good", {"v": 1})
+    await backend.save("s/bad", {"v": 1})
+    await backend.save("s/bad", {"v": 2})
+    (tmp_path / "s" / "bad.json").write_text("{broken", encoding="utf-8")
+
+    result = await backend.load_many(["s/good", "s/bad", "s/missing"])
+    assert result["s/good"] == {"v": 1}
+    assert result["s/bad"] == {"v": 1}, "坏主文件应从 .bak 恢复上一版"
+    assert result["s/missing"] is None
+
+
+async def test_load_many_batch_failure_falls_back(tmp_path, monkeypatch):
+    """批量调用整体失败（如文件在 exists() 后被删）时整批回退单键路径"""
+    import ayafileio
+
+    backend = JsonFilePersistence(tmp_path)
+    await backend.save("s/a", {"v": 1})
+
+    async def _boom(paths):
+        raise OSError("simulated batch failure")
+
+    monkeypatch.setattr(ayafileio, "read_bytes_many", _boom)
+    assert await backend.load_many(["s/a"]) == {"s/a": {"v": 1}}, "应回退单键路径读到数据"
+
+
+async def test_load_many_empty(tmp_path):
+    """空键列表是空操作"""
+    backend = JsonFilePersistence(tmp_path)
+    assert await backend.load_many([]) == {}
+
+
+async def test_prewarm_then_load_zero_io(tmp_path, monkeypatch):
+    """prewarm 后 load 命中暖缓存：不再触碰磁盘"""
+    import ayafileio
+
+    backend = JsonFilePersistence(tmp_path)
+    await backend.save("s/a", {"v": 1})
+    await backend.save("s/b", {"v": 2})
+
+    assert await backend.prewarm(["s/a", "s/b", "s/missing"]) == 3
+    assert await backend.prewarm(["s/a", "s/b"]) == 0, "已预载的键不应重复读盘"
+
+    async def _forbidden(path, mode):
+        raise AssertionError("暖缓存命中时不应再打开文件")
+
+    monkeypatch.setattr(ayafileio, "open", _forbidden)
+    assert await backend.load("s/a") == {"v": 1}
+    assert await backend.load("s/b") == {"v": 2}
+    assert await backend.load("s/missing") is None, "预载过的缺失键也应走缓存"
+
+
+async def test_warm_cache_does_not_mask_new_writes(tmp_path):
+    """暖缓存是一次性的：消费后新写入必须可见（防陈旧快照）"""
+    backend = JsonFilePersistence(tmp_path)
+    await backend.save("s/a", {"v": 1})
+    await backend.prewarm(["s/a"])
+
+    await backend.save("s/a", {"v": 2})
+    assert await backend.load("s/a") == {"v": 1}, "预载早于写入，第一次 load 拿到预载值"
+    assert await backend.load("s/a") == {"v": 2}, "缓存已被消费，第二次必须读盘拿新值"
