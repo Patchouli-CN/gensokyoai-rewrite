@@ -97,7 +97,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402", "S101"]  # 测试的 assert 是惯用法
-"scripts/*" = ["E402"]  # 仓库根 sys.path 引导必须走在 import 之前
+"scripts/*" = ["E402", "ASYNC240"]  # E402: 仓库根 sys.path 引导必须走在 import 之前；ASYNC240: CLI 脚本启动期的一次性元数据判断（exists/rmtree），同步即可
 
 [tool.ruff.format]
 quote-style = "double"

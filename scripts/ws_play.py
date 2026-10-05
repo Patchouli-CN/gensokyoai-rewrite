@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 import aiohttp
+import ayafileio
 
 # 内置话题池：寒暄/食物/哲学/情感/往事/调侃/知识混合，避免话题单调
 _TOPICS = [
@@ -220,7 +221,7 @@ async def run(args: argparse.Namespace) -> int:
     texts: list[str] = []
     probes: list[str] = []
     if args.scenario:
-        items = json.loads(Path(args.scenario).read_text(encoding="utf-8"))
+        items = json.loads(await ayafileio.read_text(args.scenario, encoding="utf-8"))
         texts = [item["text"] if isinstance(item, dict) else item for item in items]
         probes = [item.get("probe", "") if isinstance(item, dict) else "" for item in items]
         waits = [float(item.get("sleep", 0.0)) if isinstance(item, dict) else 0.0 for item in items]

@@ -31,6 +31,8 @@ from pathlib import Path
 # 从仓库根直接 `python scripts/xxx.py` 运行时，把根目录喂给 sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import ayafileio  # noqa: E402
+
 from gensokyoai.app import (  # noqa: E402
     DEFAULT_CONFIG,
     build_session_and_character,
@@ -123,7 +125,7 @@ async def run(args: argparse.Namespace) -> int:
 
     scenario: list[dict] = _DEFAULT_SCENARIO
     if args.scenario:
-        scenario = json.loads(Path(args.scenario).read_text(encoding="utf-8"))
+        scenario = json.loads(await ayafileio.read_text(args.scenario, encoding="utf-8"))
 
     config = load_config(args.config or resolve_resource(DEFAULT_CONFIG))
     sessions, character = build_session_and_character(
