@@ -87,3 +87,113 @@ async def test_file_backed_mode_writes_under_storage_dir(tmp_path, monkeypatch):
 
     assert (tmp_path / "s1" / "long_memory.json").exists()
     assert not (tmp_path / "long_memory.json").exists(), "不应落到 CWD"
+
+
+# ---------- 写入时语义自动关联 ----------
+
+
+class _FakeEmbedder:
+    """按内容映射返回预设向量的假向量化器（未映射内容给默认向量）"""
+
+    def __init__(self, vectors: dict[str, list[float]]) -> None:
+        self._map = vectors
+        self.calls: list[list[str]] = []
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        return [self._map.get(t, [0.0, 1.0]) for t in texts]
+
+
+async def test_semantic_association_links_similar():
+    """语义相近的记忆写入时自动建双向边；不相近的不建"""
+    vectors = {
+        "灵梦: 离冬至还有几天啊？": [1.0, 0.0],
+        "幽幽子: 冬至倒计时我来算算": [0.95, 0.05],
+        "魔理沙: 今天午饭吃什么好呢": [0.0, 1.0],
+    }
+    mgr = MemoryManager(embedder=_FakeEmbedder(vectors))
+    a = MemoryItem(content="灵梦: 离冬至还有几天啊？")
+    b = MemoryItem(content="幽幽子: 冬至倒计时我来算算")
+    c = MemoryItem(content="魔理沙: 今天午饭吃什么好呢")
+    await mgr.store(a)
+    await mgr.store(b)
+    await mgr.store(c)
+
+    assert b.memory_id in a.relate_ids, "B 应连到 A"
+    assert a.memory_id in b.relate_ids, "A 应连到 B（双向）"
+    assert not c.relate_ids, "不相干的 C 不应建边"
+    assert c.memory_id not in a.relate_ids and c.memory_id not in b.relate_ids
+
+
+async def test_association_skips_short_content():
+    """内容太短的碎片（「哈哈」类）不上图，也不花 embedding 调用"""
+    embedder = _FakeEmbedder({})
+    mgr = MemoryManager(embedder=embedder)
+    await mgr.store(MemoryItem(content="哈哈"))
+    assert not embedder.calls, "短内容不应触发向量化"
+
+
+async def test_association_without_embedder_is_noop():
+    """未配置 embedder：不建边、不报错（行为同旧版）"""
+    mgr = MemoryManager()
+    a = MemoryItem(content="这是一条足够长的记忆内容")
+    await mgr.store(a)
+    assert not a.relate_ids
+
+
+async def test_association_embedder_failure_degrades():
+    """embedding 服务挂了：写入照常，跳过关联（不影响主链路）"""
+
+    class _BoomEmbedder:
+        async def embed(self, texts):
+            raise ConnectionError("embedding server down")
+
+    mgr = MemoryManager(embedder=_BoomEmbedder())
+    item = MemoryItem(content="这是一条足够长的记忆内容")
+    await mgr.store(item)
+    assert mgr.work_mem_size == 1
+    assert not item.relate_ids
+
+
+async def test_restore_then_rebuild_vectors_and_associate():
+    """restore 恢复的旧记忆没有向量：下次写入先批量重建，再正常关联"""
+    old = MemoryItem(content="灵梦: 上次说的冬至倒计时")
+    mgr = MemoryManager(
+        embedder=_FakeEmbedder(
+            {
+                "灵梦: 上次说的冬至倒计时": [1.0, 0.0],
+                "灵梦: 冬至还有几天来着": [0.95, 0.05],
+            }
+        )
+    )
+    mgr.restore([old])
+    assert not mgr._work_vectors, "restore 后不立即建向量"
+
+    new = MemoryItem(content="灵梦: 冬至还有几天来着")
+    await mgr.store(new)
+    embedder_calls = mgr._embedder.calls
+    assert embedder_calls == [["灵梦: 上次说的冬至倒计时", "灵梦: 冬至还有几天来着"]], (
+        "应一次批量覆盖旧记忆与新记忆，不重复 embed"
+    )
+    assert new.memory_id in old.relate_ids and old.memory_id in new.relate_ids
+
+
+async def test_forget_cleans_vectors():
+    """forget 删除记忆时同步清理向量（不留孤儿进候选集）"""
+    mgr = MemoryManager(embedder=_FakeEmbedder({}))
+    item = MemoryItem(content="这是一条足够长的记忆内容")
+    await mgr.store(item)
+    assert item.memory_id in mgr._work_vectors
+    mgr.forget([item.memory_id])
+    assert item.memory_id not in mgr._work_vectors
+
+
+async def test_eviction_cleans_vectors():
+    """淘汰时同步清理向量"""
+    mgr = MemoryManager(max_capacity=2, embedder=_FakeEmbedder({}))
+    items = [MemoryItem(content=f"足够长的记忆内容{i}号") for i in range(3)]
+    for item in items:
+        await mgr.store(item)
+    assert mgr.work_mem_size == 2
+    evicted = items[0]  # 同分最早者被淘汰
+    assert evicted.memory_id not in mgr._work_vectors

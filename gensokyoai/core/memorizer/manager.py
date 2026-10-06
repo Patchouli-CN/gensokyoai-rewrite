@@ -11,13 +11,23 @@ from pathlib import Path
 from ...schemas.memory_schema import MemoryItem
 from ...utils.logger import LoggerManager
 from ...utils.tasks import TaskManager
-from .embedder import Embedder
+from .embedder import Embedder, cosine_rank
 from .store import LongMemoryStore
 
 # 核心设定，不可遗忘
 _CORE_IMPORTANCE_THRESHOLD = 0.9
 # 如果重要程度超过这个值，直接进入长期记忆，不参与短期淘汰
 _DUMP_TO_LONG_TERM_THRESHOLD = 0.6
+
+# 写入时语义自动关联：新记忆与工作记忆里「在讲同一件事」的旧记忆建边
+_ASSOC_MIN_SCORE = 0.55
+""" 建边相似度下限（比检索阈高——检索宁滥勿缺，关联宁缺勿滥，防万物互联）"""
+_ASSOC_TOP_K = 3
+""" 每条新记忆最多建几条边（控制扇出）"""
+_ASSOC_CANDIDATE_WINDOW = 50
+""" 只在最近 N 条工作记忆里找关联（控成本 + 联想本就偏向近期）"""
+_ASSOC_MIN_CONTENT_CHARS = 8
+""" 内容太短（「哈哈」类反射弧碎片）不上图 """
 
 
 class MemoryManager:
@@ -55,6 +65,11 @@ class MemoryManager:
         self._work_mem_store: dict[str, MemoryItem] = {}
         self._work_mem_queue: deque[str] = deque()
         self._work_max = max_capacity  # 工作记忆上限（超出淘汰）
+        self._embedder = embedder
+        self._work_vectors: dict[str, list[float]] = {}
+        """ 工作记忆向量（语义自动关联用；仅内存，重启后由 restore 标脏重建）"""
+        self._vectors_stale = False
+        """ restore 恢复了记忆但还没有向量——下次写入时先批量重建再关联 """
 
         # --- 长期记忆（冷）：JSON 落盘，按会话隔离 ---
         if (storage_dir is None) != (session_id is None):
@@ -88,6 +103,59 @@ class MemoryManager:
         # 3. 检查容量，触发遗忘
         if len(self._work_mem_store) > self._work_max:
             self._evict_earliest()
+
+        # 4. 语义自动关联（embedding 可用时；失败不阻塞写入）
+        await self._associate(item)
+
+    async def _associate(self, item: MemoryItem) -> None:
+        """写入时语义自动关联：把新记忆和「在讲同一件事」的旧记忆建边。
+
+        关联图因此从「谁挨着谁」（线性时间链）升级为「谁在讲同一件事」——
+        cascade_retrieve 的顺藤摸瓜才算真正启动。embedding 未配置 / 失败时
+        静默跳过，行为与旧版一致（单边时间链）。
+        """
+        if self._embedder is None or len(item.content) < _ASSOC_MIN_CONTENT_CHARS:
+            return
+        try:
+            if self._vectors_stale:
+                await self._rebuild_work_vectors()
+            # 重建批次可能已覆盖本条（restore 后首次写入），别重复 embed
+            vector = self._work_vectors.get(item.memory_id)
+            if vector is None:
+                [vector] = await self._embedder.embed([item.content])
+        except Exception:
+            self._logger.exception("记忆关联向量化失败（本次跳过，不影响写入）")
+            return
+
+        # 候选：最近 N 条已有向量的旧记忆（排除自己；dict 保 insertion 序 = 写入序）
+        candidates = {
+            mid: vec
+            for mid, vec in list(self._work_vectors.items())[-_ASSOC_CANDIDATE_WINDOW:]
+            if mid != item.memory_id
+        }
+        for mid, score in cosine_rank(vector, candidates, limit=_ASSOC_TOP_K):
+            if score < _ASSOC_MIN_SCORE:
+                break  # 已按相似度降序，后面的更低
+            other = self._work_mem_store.get(mid)
+            if other is None:
+                continue
+            item.relate_ids.add(mid)
+            other.relate_ids.add(item.memory_id)
+            self._logger.debug(
+                f"语义关联({score:.2f}): {item.content[:20]!r} <-> {other.content[:20]!r}"
+            )
+        self._work_vectors[item.memory_id] = vector
+
+    async def _rebuild_work_vectors(self) -> None:
+        """restore 后批量重建工作记忆向量（一次 embed 调用）；失败保留脏标下次重试"""
+        items = [
+            self._work_mem_store[mid] for mid in self._work_mem_queue if mid in self._work_mem_store
+        ]
+        if items and self._embedder is not None:
+            vectors = await self._embedder.embed([i.content for i in items])
+            self._work_vectors = {i.memory_id: v for i, v in zip(items, vectors, strict=True)}
+            self._logger.info(f"工作记忆向量已重建: {len(vectors)} 条")
+        self._vectors_stale = False
 
     def retrieve(self, memory_id: str) -> MemoryItem | None:
         """根据 ID 获取单条记忆，并增加热度"""
@@ -217,6 +285,8 @@ class MemoryManager:
         idset = set(memory_ids)
         removed = sum(1 for mid in idset if self._work_mem_store.pop(mid, None) is not None)
         if removed:
+            for mid in idset:
+                self._work_vectors.pop(mid, None)
             self._work_mem_queue = deque(m for m in self._work_mem_queue if m not in idset)
             self._logger.debug(f"主动遗忘 {removed} 条记忆")
         return removed
@@ -245,6 +315,8 @@ class MemoryManager:
                 self._work_mem_store[item.memory_id] = item
                 self._work_mem_queue.append(item.memory_id)
         restored = len(self._work_mem_store)
+        if restored:
+            self._vectors_stale = True  # 恢复的记忆还没有向量，下次写入时批量重建
         self._logger.info(f"工作记忆恢复: {restored} 条")
         return restored
 
@@ -287,6 +359,7 @@ class MemoryManager:
         # 如果有一定价值（中等分值），扔给长期记忆 JSON 落盘
         if min_id:
             self._work_mem_store.pop(min_id)
+            self._work_vectors.pop(min_id, None)  # 向量同步清掉，不留孤儿
             # 从队列里清理（FIFO 里可能有残留，但不影响正确性，访问时若不存在直接跳过）
             if min_item:  # 空检查
                 if min_item.importance > 0.3:

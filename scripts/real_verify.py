@@ -40,6 +40,7 @@ from gensokyoai.app import (  # noqa: E402
 )
 from gensokyoai.core.brain.judge import build_judge  # noqa: E402
 from gensokyoai.core.config import WorldSettings, load_config  # noqa: E402
+from gensokyoai.core.memorizer.embedder import build_embedder  # noqa: E402
 from gensokyoai.mouth.broadcast import BroadcastMouth  # noqa: E402
 from gensokyoai.roleplay.loop import TouhouWorld  # noqa: E402
 from gensokyoai.satori.queue import QueuePerceiver  # noqa: E402
@@ -132,6 +133,7 @@ async def run(args: argparse.Namespace) -> int:
         config_path=args.config, character_path=args.character
     )
     judge = build_judge(config.gate, sessions)
+    embedder = build_embedder(config.embedding)
     chain = character.card.think_chain
     print(
         f"[verify] 角色={character.name} 裁判={type(judge).__name__ if judge else '无（纯规则）'} "
@@ -154,6 +156,7 @@ async def run(args: argparse.Namespace) -> int:
         mouth=mouth,
         judge=judge,
         gate=config.gate,
+        embedder=embedder,
         storage_dir=storage,
         session_id=args.session,
         settings=WorldSettings(
