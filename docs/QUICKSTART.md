@@ -141,7 +141,11 @@ python scripts/real_verify.py --scenario my.json
 - **思考链**：步骤级开关 `tools=True` 才挂（其余步骤不挂、省 token）；内置步骤 `time_anchor` 默认开启。代码里这样写：
 
 ```python
-chain = ThinkPipeline("感知链") >> ThinkStep("time_check", instructions="先确认当前时间", tools=True) >> ...
+chain = (
+    ThinkPipeline("感知链")
+    >> ThinkStep("time_check", instructions="先确认当前时间", tools=True)
+    >> ...
+)
 ```
 
 **本地小模型的「文本喊话」约定**：不走原生 `tool_calls` 协议的模型（如 llama-server 上的 Qwen），在思考里写 `调用 days_until {"target_date": "2026-12-22"}` 即可——系统识别后执行并把结果回填，可一次喊多个。**带参工具的自学机制**：缺参调用失败时，回给模型的错误信息会附带标准调用格式（`调用 days_until {"target_date": "..."}`），真机验证弱模型能照着格式在下一轮纠正重试（Qwen 实际跑通过「冬至倒计时」：口算错 46 天 → 工具给出正确 91 天）。
