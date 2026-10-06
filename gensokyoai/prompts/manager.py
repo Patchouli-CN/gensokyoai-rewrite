@@ -76,10 +76,17 @@ def brain_think_user(persona, sender, content, context, memory, tools="", **_) -
 
 
 @prompt_mgr.prompt("brain.think")
-def brain_think() -> str:
-    return """你是角色扮演引擎的决策模块。你拥有“接力思考”能力，可以分多轮逐步深入推理。
+def brain_think(tool_style: str = "shout") -> str:
+    # 工具约定双版本：原生模式不教喊话（模型会优先听 prompt 而放弃结构化通道）；
+    # 备胎模式明文教「调用 工具名 {...}」（不支持 tool_calls 的本地小模型靠这个）
+    tool_rule = (
+        "6. 需要外部信息时，直接使用系统提供的工具（原生 tool_calls），不要在 thought 里手写调用语句；工具结果会自动补充到下一轮思考中。"
+        if tool_style == "native"
+        else '6. 需要调用工具时，直接在 thought 里写：调用 工具名 {"参数": "值"}（例如：调用 days_until {"target_date": "2026-12-22"}；只有无参工具才写 {}）。参数必须写全，不许省略。系统会识别这句话、执行工具并把结果补充给你，不要自己在脑袋里假装执行结果。'
+    )
+    return f"""你是角色扮演引擎的决策模块。你拥有“接力思考”能力，可以分多轮逐步深入推理。
 你每轮输出必须是一个 JSON 对象，包含以下字段：
-{"thought": "当前回合的思考内容", "intent": "意图", "emotion": "情绪", "action_hint": "当前的行动指令（为 Responder 提供简短指导，不超过 30 字）", "confidence": 0.0, "need_continue_think": false}
+{{"thought": "当前回合的思考内容", "intent": "意图", "emotion": "情绪", "action_hint": "当前的行动指令（为 Responder 提供简短指导，不超过 30 字）", "confidence": 0.0, "need_continue_think": false}}
 
 思考规则：
 1. 循序渐进：如果当前信息不足，或者需要更深入推演，必须将 need_continue_think 设为 true。
@@ -87,7 +94,7 @@ def brain_think() -> str:
 3. 不要把大段内心独白写进 action_hint，它只需要给 Responder 一个“怎么演”的提示。
 4. 工具调用（如查询记忆）不计入思考轮数。当需要外部信息时，你可以直接调用工具；工具结果会自动补充到下一轮思考中。
 5. 如果思考超过了系统给定的最大轮数限制，系统会强制结束思考，你不需要关心这个限制。
-6. 需要调用工具时，直接在 thought 里写：调用 工具名 {"参数": "值"}（例如：调用 days_until {"target_date": "2026-12-22"}；只有无参工具才写 {}）。参数必须写全，不许省略。系统会识别这句话、执行工具并把结果补充给你，不要自己在脑袋里假装执行结果。
+{tool_rule}
 只输出 JSON 对象，不要输出任何其他内容。"""
 
 
@@ -118,9 +125,19 @@ def think_step_system() -> str:
 
 
 @prompt_mgr.prompt("think.step.tools_hint")
-def think_step_tools_hint(tool_lines, **_):
-    """挂了工具的步骤专用约定：摊开每个工具的签名（参数格式 upfront，不等报错）"""
+def think_step_tools_hint(tool_lines, tool_style: str = "shout", **_):
+    """挂了工具的步骤专用约定：摊开每个工具的签名（参数格式 upfront，不等报错）。
+
+    原生模式只摊签名、不教喊话（避免模型听 prompt 放弃结构化通道）；
+    备胎模式明文教「调用 工具名 {...}」。
+    """
     lines = "\n".join(f"- {line}" for line in tool_lines)
+    if tool_style == "native":
+        return (
+            f"\n【可用工具】\n{lines}\n"
+            "需要外部信息时，直接使用系统提供的工具（原生 tool_calls），"
+            "不要在思考里手写调用语句；工具结果会补充给你，拿到结果后再下结论，不要自己编造。"
+        )
     return (
         f"\n【可用工具】\n{lines}\n"
         '需要外部信息时，直接在思考里写：调用 工具名 {"参数": "值"}'

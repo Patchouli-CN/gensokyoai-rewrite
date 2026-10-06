@@ -38,7 +38,16 @@ class _StubBackend:
         self.replies = list(replies)
         self.calls: list[dict] = []
 
-    async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
+    async def chat(
+        self,
+        messages,
+        *,
+        max_new_tokens=512,
+        temperature=0.7,
+        stop=None,
+        tools=None,
+        execute_tools=True,
+    ):
         self.calls.append(
             {
                 "messages": list(messages),

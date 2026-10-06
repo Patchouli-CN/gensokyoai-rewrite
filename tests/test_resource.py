@@ -221,3 +221,29 @@ async def test_gate_snapshot_lists_all_tenants():
         pass
     tenants = {q.tenant for q in gate.snapshot()}
     assert tenants == {"a", "b"}
+
+
+async def test_gated_backend_forwards_execute_tools_and_probe():
+    """GatedBackend 透传 execute_tools 与 probe_native_tools。
+
+    缺了透传，闸门包装下探测永远落「不支持」、execute_tools=False 直接 TypeError——
+    真机装配（资源闸门默认开启）就是这个路径。
+    """
+
+    class _NativeBackend(_StubBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen_kw: dict = {}
+
+        async def probe_native_tools(self) -> bool:
+            return True
+
+        async def chat(self, messages, **kw):
+            self.seen_kw = kw
+            return await super().chat(messages, **kw)
+
+    inner = _NativeBackend()
+    gated = GatedBackend(inner, ResourceGate())
+    assert await gated.probe_native_tools() is True, "探测应透传到内层"
+    await gated.chat(_msg(), execute_tools=False)
+    assert inner.seen_kw.get("execute_tools") is False, "execute_tools 应透传到内层"

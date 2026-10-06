@@ -47,6 +47,9 @@ class ModelConfig(msgspec.Struct, frozen=True):
     """ 单次工具执行超时（秒）；与 core.toolkit 默认值保持一致 """
     tool_max_result_chars: int = 2000
     """ 工具结果最大字符数，超出截断（保护上下文窗口）"""
+    tool_support: bool | None = None
+    """ 原生 tool_calls 支持：None = 启动后首次用工具前自动探测一次（推荐）；
+        True/False = 强制走原生 / 强制文本喊话备胎（跳过探测）"""
     price: ModelPrice | None = None
     """ 价格覆盖：配了就用它（优先级高于内置价格表），None = 查内置表；
         本地模型不配 = 不计价（unpriced） """
@@ -102,6 +105,17 @@ class ToolSpec:
     def is_async(self) -> bool:
         """是否为异步工具"""
         return self._is_coro
+
+    @property
+    def required_params(self) -> list[str]:
+        """函数签名里无默认值的参数名（调用必填）"""
+        sig = inspect.signature(self.tool_func)
+        return [
+            name
+            for name, param in sig.parameters.items()
+            if param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            and param.default is inspect.Parameter.empty
+        ]
 
     def to_openai_tool(self) -> dict:
         """转成 OpenAI tools 声明格式（llama-server / vLLM 通用）。

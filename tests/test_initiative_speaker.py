@@ -29,7 +29,16 @@ class _StubBackend:
     def __init__(self, reply: str) -> None:
         self.reply = reply
 
-    async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
+    async def chat(
+        self,
+        messages,
+        *,
+        max_new_tokens=512,
+        temperature=0.7,
+        stop=None,
+        tools=None,
+        execute_tools=True,
+    ):
         return CompletionResult(content=self.reply, finish_reason="stop")
 
     def normalize_tool_calls(self, result, parsed_content=None):

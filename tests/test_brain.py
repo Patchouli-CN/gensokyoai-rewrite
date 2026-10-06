@@ -16,7 +16,16 @@ class FakeBackend:
         self.content = content
         self.calls: list[list[Message]] = []
 
-    async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
+    async def chat(
+        self,
+        messages,
+        *,
+        max_new_tokens=512,
+        temperature=0.7,
+        stop=None,
+        tools=None,
+        execute_tools=True,
+    ):
         self.calls.append(list(messages))
         return CompletionResult(content=self.content)
 

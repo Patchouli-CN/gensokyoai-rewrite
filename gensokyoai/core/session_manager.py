@@ -22,6 +22,7 @@ class ChatBackend(Protocol):
         temperature: float = 0.7,
         stop: list[str] | None = None,
         tools: list[ToolSpec] | None = None,
+        execute_tools: bool = True,
     ) -> CompletionResult: ...
 
     def normalize_tool_calls(
@@ -216,6 +217,7 @@ class SessionManager:
         temperature: float = 0.7,
         stop: list[str] | None = None,
         tools: list[ToolSpec] | None = None,
+        execute_tools: bool = True,
     ) -> CompletionResult:
         """模块统一调用入口：按 owner 路由到对应 backend -> 拼会话 -> 预算裁剪 -> 调模型 -> 回写历史。"""
         started = time.monotonic()
@@ -232,6 +234,7 @@ class SessionManager:
                 temperature=temperature,
                 stop=stop,
                 tools=tools,
+                execute_tools=execute_tools,
             )
             self._accumulate(owner, result.usage)
             self._accumulate_cost(owner, backend, result)
@@ -250,6 +253,7 @@ class SessionManager:
             temperature=temperature,
             stop=stop,
             tools=tools,
+            execute_tools=execute_tools,
         )
         self._accumulate(owner, result.usage)
         self._accumulate_cost(owner, backend, result)
@@ -261,6 +265,18 @@ class SessionManager:
             f"占用≈{self.usage(owner)}tok 耗时={time.monotonic() - started:.2f}s"
         )
         return result
+
+    async def native_tools_supported(self, owner: str) -> bool:
+        """该 owner 路由到的模型是否支持原生 tool_calls（探测结果按 provider 实例缓存）。
+
+        鸭子类型后端（测试假后端 / 第三方极简实现）没有探测方法时按不支持处理，
+        落文本喊话备胎——与旧行为一致。
+        """
+        backend = self._get_backend(owner)
+        probe = getattr(backend, "probe_native_tools", None)
+        if probe is None:
+            return False
+        return await probe()
 
     async def call_stream(
         self,

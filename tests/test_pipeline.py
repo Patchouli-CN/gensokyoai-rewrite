@@ -44,7 +44,16 @@ class _ScriptBackend:
         self.calls: list[list] = []
         self.kwargs: list[dict] = []
 
-    async def chat(self, messages, *, max_new_tokens=512, temperature=0.7, stop=None, tools=None):
+    async def chat(
+        self,
+        messages,
+        *,
+        max_new_tokens=512,
+        temperature=0.7,
+        stop=None,
+        tools=None,
+        execute_tools=True,
+    ):
         self.calls.append(list(messages))
         self.kwargs.append(
             {"max_new_tokens": max_new_tokens, "temperature": temperature, "tools": tools}

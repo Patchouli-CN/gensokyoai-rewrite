@@ -11,7 +11,12 @@ from ...utils.logger import LoggerManager
 from ...utils.text import try_extract_json_object
 from ..config import KnowledgeSite
 from ..session_manager import SessionManager
-from ..toolkit import DEFAULT_MAX_RESULT_CHARS, DEFAULT_TIMEOUT, build_executor
+from ..toolkit import (
+    DEFAULT_MAX_RESULT_CHARS,
+    DEFAULT_TIMEOUT,
+    build_executor,
+    fill_single_param_calls,
+)
 from .ooc_detector import OOCDetector
 from .pipeline import PipelineAbort, ThinkPipeline
 
@@ -197,6 +202,11 @@ class BrainEngine:
         max_rounds = self._get_max_rounds(effort)
         memory_text = "\n".join(f"- [{m.topic}] {m.content}" for m in memories) or "（无相关记忆）"
         context_text = "\n".join(snapshot.context_snippet[-5:]) or "（无上下文）"
+        # 原生 tool_calls 探测（按 provider 实例缓存，只有首次是真请求）：
+        # 支持 -> 原生优先，prompt 不教喊话；不支持 -> 文本喊话备胎
+        tool_style = (
+            "native" if await self._sessions.native_tools_supported("brain.think") else "shout"
+        )
         # 工具签名 upfront 摊开（文本喊话路径的小模型不用等报错才知道参数格式）
         tool_block = (
             "\n".join(f"- {tool.signature()}" for tool in self._tools) if self._tools else ""
@@ -205,7 +215,7 @@ class BrainEngine:
             tool_block += f"\n{self._tool_directive}"
 
         base_messages = [
-            Message(role="system", content=prompt_mgr.render("brain.think")),
+            Message(role="system", content=prompt_mgr.render("brain.think", tool_style=tool_style)),
             Message(
                 role="user",
                 content=prompt_mgr.render(
@@ -280,6 +290,9 @@ class BrainEngine:
                     temperature=0.4,
                     max_new_tokens=400,
                     tools=self._tools,
+                    # 原生调用也由脑层统一执行：与文本喊话同一条【工具执行结果】
+                    # 回填路径，查证兜底 / 轮次控制 / 轨迹留档语义与调用通道解耦
+                    execute_tools=False,
                 )
             except Exception:
                 self._logger.exception("推理调用失败，降级为快速路径")
@@ -292,29 +305,32 @@ class BrainEngine:
                 raw_reasoning_parts.append(result.reasoning)
 
             parsed = try_extract_json_object(result.content) or {}
-            if not parsed:
+            if not parsed and not result.tool_calls:
                 self._logger.warning(f"推理输出 JSON 解析失败: {result.content!r}")
                 if current_round < max_rounds:
                     continue
                 return self._fast_path(snapshot, effort)
 
-            # 记录本轮思考快照（ReasoningStep）：留给轨迹留档与事后复盘。
-            # 注意：这里存的是**模型自述**的 need_continue_think；若随后因工具调用
-            # 被强制续轮，循环层面的强制不会改动本步记录（保持「模型当时怎么想」的原貌）。
-            step = ReasoningStep(
-                round=current_round,
-                thought=str(parsed.get("thought", "")),
-                need_continue_think=bool(parsed.get("need_continue_think", False)),
-                action_hint=str(parsed.get("action_hint", "")) or None,
-                intent=str(parsed.get("intent", "")),
-                emotion=str(parsed.get("emotion", "")),
-                confidence=float(parsed.get("confidence", 0.5)),
-            )
-            steps.append(step)
-            self._logger.info(
-                f"思考第 {step.round} 轮: 意图={step.intent or '—'} 情绪={step.emotion or '—'} "
-                f"续轮={step.need_continue_think} 思考={step.thought[:60]!r}"
-            )
+            if parsed:
+                # 记录本轮思考快照（ReasoningStep）：留给轨迹留档与事后复盘。
+                # 注意：这里存的是**模型自述**的 need_continue_think；若随后因工具调用
+                # 被强制续轮，循环层面的强制不会改动本步记录（保持「模型当时怎么想」的原貌）。
+                # 原生 tool_calls 轮可能没有 JSON 正文（调用在 tool_calls 字段、content
+                # 为空）——那不是坏输出，不记步、直接执行工具。
+                step = ReasoningStep(
+                    round=current_round,
+                    thought=str(parsed.get("thought", "")),
+                    need_continue_think=bool(parsed.get("need_continue_think", False)),
+                    action_hint=str(parsed.get("action_hint", "")) or None,
+                    intent=str(parsed.get("intent", "")),
+                    emotion=str(parsed.get("emotion", "")),
+                    confidence=float(parsed.get("confidence", 0.5)),
+                )
+                steps.append(step)
+                self._logger.info(
+                    f"思考第 {step.round} 轮: 意图={step.intent or '—'} 情绪={step.emotion or '—'} "
+                    f"续轮={step.need_continue_think} 思考={step.thought[:60]!r}"
+                )
 
             # 【统一工具调用处理】由 Provider 负责标准化格式
             result = self._sessions.normalize_tool_calls(result, parsed)
@@ -322,7 +338,13 @@ class BrainEngine:
             # 执行工具调用（只负责执行，不负责解析格式）
             tool_results = []
             if result.tool_calls:
-                tool_results = await self._execute_tool_calls(result.tool_calls)
+                # 抢救源文本用 thought + action_hint（字段值），不能用 result.content
+                # 原始 JSON——第一个引号匹配永远是字段名 "thought"（真机填进去过：
+                # days_until 收到 target_date='thought'）
+                tool_results = await self._execute_tool_calls(
+                    result.tool_calls,
+                    source_text=f"{parsed.get('thought', '')}\n{parsed.get('action_hint', '')}",
+                )
 
             if tool_results:
                 tool_result_cache = "\n".join(tool_results)
@@ -405,17 +427,20 @@ class BrainEngine:
             timestamp=time.time(),
         )
 
-    async def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> list[str]:
+    async def _execute_tool_calls(
+        self, tool_calls: list[ToolCall], source_text: str = ""
+    ) -> list[str]:
         """执行工具调用，返回回填给模型的文本列表。
 
         与 Provider 的工具循环共用 `ToolExecutor`（结果截断 / 超时 / 同步下线程 /
-        结构化错误），不再各写一份执行逻辑。
+        结构化错误），不再各写一份执行逻辑。执行前先做 spec 感知的参数抢救
+        （唯一必填参数 + 空参 + 文本孤引号值 -> 填上，见 toolkit.fill_single_param_calls）。
         """
         outcomes = await build_executor(
             self._tools,
             timeout=self._tool_timeout,
             max_result_chars=self._tool_max_result_chars,
-        ).execute_many(tool_calls)
+        ).execute_many(fill_single_param_calls(tool_calls, self._tools, source_text))
         return [outcome.to_model_text() for outcome in outcomes]
 
     def _get_max_rounds(self, effort: BrainThinkEffort) -> int:

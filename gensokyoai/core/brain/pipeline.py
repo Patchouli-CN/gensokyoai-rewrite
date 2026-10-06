@@ -33,7 +33,7 @@ from ...utils.fluent import FluentAPI
 from ...utils.logger import LoggerManager
 from ...utils.text import extract_json_object, try_extract_json_object
 from ..session_manager import SessionManager
-from ..toolkit import build_executor
+from ..toolkit import build_executor, fill_single_param_calls
 
 _JSON_CORRECTION = "上次输出不是合法 JSON。请只输出一个 JSON 对象，不要包含任何其他内容。"
 
@@ -279,15 +279,23 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         超时（wait_for）不重试，直接向上冒泡给 run() 的步骤失败策略。
         `deep`（MAX 档）：每步预算翻倍 + 降温——慢而深，只给重大剧情节点。
         `tools`：仅当 `step.tools=True` 且tools 非空时随调用带上模型——
-        原生 tool_calls 由 Provider 内循环自行执行；本地小模型的「文本喊话」
-        在这里识别、执行、把结果回填后重取一次（与接力思考同款语义）。
+        原生 tool_calls 与本地小模型的「文本喊话」统一在本层识别、执行、
+        回填后重取一次（与接力思考同款语义，execute_tools=False 保证原生
+        调用也不在 Provider 内循环被提前消化）。
         """
         call_tools = tools if (step.tools and tools) else None
-        # 挂了工具的步骤：system 里注入喊话约定 + 摊开工具签名（参数格式 upfront）
+        # 挂了工具的步骤：原生探测决定教不教喊话（原生模式只摊签名，
+        # 免得模型听 prompt 放弃结构化通道）；签名 upfront 不等报错
+        tool_style = (
+            "native"
+            if call_tools and await sessions.native_tools_supported(f"brain.think.{step.name}")
+            else "shout"
+        )
         system_content = prompt_mgr.render("think.step.system") + (
             prompt_mgr.render(
                 "think.step.tools_hint",
                 tool_lines=[tool.signature() for tool in call_tools],
+                tool_style=tool_style,
             )
             if call_tools
             else ""
@@ -319,11 +327,14 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
                     ),
                     temperature=_DEEP_TEMPERATURE if deep else step.temperature,
                     tools=call_tools,
+                    # 原生调用同样交给步骤层统一执行（与喊话同一条回填路径）
+                    execute_tools=False,
                 ),
                 timeout=step.timeout_s,
             )
             content = result.content or ""
-            # 文本喊话工具调用（原生格式已被 Provider 内循环消化，到这里的是喊话）
+            # 统一工具调用处理：原生 tool_calls（execute_tools=False 原样返回）
+            # 与文本喊话都由本层执行、回填后重取一次（与接力思考同款语义）
             if call_tools:
                 normalized = sessions.normalize_tool_calls(result, try_extract_json_object(content))
                 if normalized.tool_calls:
@@ -353,7 +364,13 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         tools: list[ToolSpec],
     ) -> list[Message]:
         """执行文本喊话的工具调用，把结果回填成下一轮消息（同接力思考语义）。"""
-        outcomes = await build_executor(tools).execute_many(calls)
+        # 抢救源文本用步骤 JSON 的字段值（note/thought/action_hint），不用原始
+        # content——否则第一个引号匹配永远是 JSON 字段名（真机填进去过 'thought'）
+        parsed = try_extract_json_object(result.content or "") or {}
+        source = "\n".join(str(parsed.get(k, "")) for k in ("note", "thought", "action_hint"))
+        outcomes = await build_executor(tools).execute_many(
+            fill_single_param_calls(calls, tools, source)
+        )
         result_text = "\n".join(outcome.to_model_text() for outcome in outcomes)
         return [
             *base,

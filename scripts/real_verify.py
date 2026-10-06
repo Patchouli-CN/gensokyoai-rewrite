@@ -113,7 +113,7 @@ async def _wait_turn_done(world: TouhouWorld, timeout: float) -> bool:
     started = time.monotonic()
     while time.monotonic() - started < timeout:
         queue_empty = world.eye.queue.qsize() == 0
-        if queue_empty and not world._busy and time.monotonic() - started > 0.5:
+        if queue_empty and not world.busy and time.monotonic() - started > 0.5:
             await asyncio.sleep(0.5)  # 记忆写入等是异步侧链，给半秒沉降
             return True
         await asyncio.sleep(0.3)

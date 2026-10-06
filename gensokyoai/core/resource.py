@@ -326,6 +326,13 @@ class GatedBackend:
             )
         return pricing(usage, model)
 
+    async def probe_native_tools(self) -> bool:
+        """透传原生 tool_calls 探测（不包这层，探测会永远落到「不支持」）。"""
+        probe = getattr(self._inner, "probe_native_tools", None)
+        if probe is None:
+            return False
+        return await probe()
+
     async def chat(
         self,
         messages: list[Message],
@@ -334,6 +341,7 @@ class GatedBackend:
         temperature: float = 0.7,
         stop: list[str] | None = None,
         tools: list[ToolSpec] | None = None,
+        execute_tools: bool = True,
     ) -> CompletionResult:
         """经闸门调用内层后端（缓冲路径）。"""
         tenant = current_tenant()
@@ -344,6 +352,7 @@ class GatedBackend:
                 temperature=temperature,
                 stop=stop,
                 tools=tools,
+                execute_tools=execute_tools,
             )
         self._gate.record(tenant, result.usage)
         return result

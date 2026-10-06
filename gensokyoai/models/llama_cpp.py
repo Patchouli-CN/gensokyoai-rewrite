@@ -21,17 +21,51 @@ _TEXT_TOOL_PATTERNS: tuple[re.Pattern, ...] = (
 _ARGS_WINDOW = 120
 """ 工具名之后查找 JSON 参数的字符窗口 """
 
+_PROSE_PARAM_SOURCE = r"([a-zA-Z_][a-zA-Z0-9_]*)[^\"“”'‘’]{0,20}?[\"“'‘]([^\"”'’]+)[\"”'’]"
+_PROSE_PARAM_PATTERN = re.compile(_PROSE_PARAM_SOURCE)
+""" prose 参数抢救：参数名之后 20 个非引号字符内的第一个带引号值。
+真机写法集合：`将target_date设置为"..."`、`target_date参数为"..."`、
+`target_date格式为YYYY-MM-DD，所以应该是"..."`——小模型口头提及工具时
+参数值一定带引号（直/弯都行），参数名和值之间的废话长度不定。"""
 
-def _json_args_after(text: str, position: int) -> str:
-    """工具名位置之后的小窗口里找 JSON 对象作为参数；找不到/不合法返回 "{}"。
+
+def _prose_args(window: str, *, exclude: str = "") -> str:
+    """花括号缺席时的兜底：从中文 prose 里抢救参数；一个都救不到返回 "{}"。
+
+    真机病灶：小模型写「我要调用 days_until 工具，将 target_date 设置为
+    "2026-12-22"」——工具名和参数值都对，就是不肯写花括号。提及即调用是
+    提取器的设计，参数抢救让这种调用不至于必然缺参失败。
+    工具名本身不算参数：窗口起点就是它，且它后面 20 字符内往往就是参数值——
+    不能靠事后过滤（那时值已被消费），要在匹配时就用负向断言跳过它。
+    """
+    pattern = (
+        re.compile(
+            # \b 在 CJK 与英文交界处不成立（两边都是 \w），边界与排除都得用
+            # ASCII 词字符的环视来写：前面不是 ASCII 词字符、且不是工具名本身
+            r"(?<![a-zA-Z0-9_])(?!"
+            + re.escape(exclude)
+            + r"(?![a-zA-Z0-9_]))"
+            + _PROSE_PARAM_SOURCE
+        )
+        if exclude
+        else _PROSE_PARAM_PATTERN
+    )
+    pairs = pattern.findall(window)
+    if not pairs:
+        return "{}"
+    return msgspec.json.encode(dict(pairs)).decode()
+
+
+def _json_args_after(text: str, position: int, *, tool_name: str = "") -> str:
+    """工具名位置之后的小窗口里找 JSON 对象作为参数；找不到则 prose 抢救，再不行返回 "{}"。
 
     花括号配对为朴素深度计数（参数内含花括号的极端场景会解析失败降级空参，
-    好过把非 JSON 当参数传）。
+    好过把非 JSON 当参数传）。tool_name 用于 prose 抢救时排除工具名本身。
     """
     window = text[position : position + _ARGS_WINDOW]
     start = window.find("{")
     if start == -1:
-        return "{}"
+        return _prose_args(window, exclude=tool_name)
     depth = 0
     for index in range(start, len(window)):
         char = window[index]
@@ -53,7 +87,8 @@ def extract_text_tool_calls(text: str) -> list[ToolCall]:
     """从自然语言里提取「文本喊话」的工具调用（去重保序，支持一次多个）。
 
     识别三类模式：`调用/使用 X`、`X(`、`需要 X 工具`；每个工具名之后的
-    小窗口内找 JSON 对象作为参数（找不到 = 空参，调用方按无参工具执行）。
+    小窗口内先找 JSON 对象作为参数（花括号缺席则 prose 抢救引号值，
+    再找不到 = 空参，交给 toolkit 缺参预检回自教学错误）。
     真机实测：本地 Qwen 不走原生 tool_calls 协议，这是它的主要调用形态。
 
     Args:
@@ -78,7 +113,7 @@ def extract_text_tool_calls(text: str) -> list[ToolCall]:
             ToolCall(
                 id=f"call_{len(calls)}",
                 name=name,
-                arguments=_json_args_after(text, position),
+                arguments=_json_args_after(text, position, tool_name=name),
             )
         )
     return calls

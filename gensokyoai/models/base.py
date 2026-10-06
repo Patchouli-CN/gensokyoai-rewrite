@@ -81,9 +81,21 @@ class ModelProvider(ABC):
         temperature: float = 0.7,
         stop: list[str] | None = None,
         tools: list[ToolSpec] | None = None,
+        execute_tools: bool = True,
     ) -> CompletionResult:
-        """单次补全（无状态，调用方持有全部消息）"""
+        """单次补全（无状态，调用方持有全部消息）
+
+        execute_tools=False 时原生 tool_calls 不在 provider 内循环消化，
+        原样返回给调用方（脑层要自己执行并掌控回填格式时用它）。
+        """
         ...
+
+    async def probe_native_tools(self) -> bool:
+        """探测该模型是否支持原生 tool_calls；默认不支持（走文本喊话备胎）。
+
+        支持 OpenAI 兼容协议的子类应覆盖为真探测（一次性小请求，结果缓存）。
+        """
+        return False
 
     def normalize_tool_calls(
         self, result: CompletionResult, parsed_content: dict | None = None
@@ -142,6 +154,56 @@ class OpenAICompatProvider(ModelProvider):
     def __init__(self) -> None:
         self._logger = LoggerManager.get_logger(self.log_tag)
         self._conf: ModelConfig | None = None
+        self._native_probe: bool | None = None
+        """ 原生 tool_calls 探测结果缓存（None = 未探测）"""
+
+    async def probe_native_tools(self) -> bool:
+        """启发式探测原生 tool_calls 支持：一次性小请求，结果按实例缓存。
+
+        配置 `tool_support` 显式指定时短路（True/False 都跳过探测）。
+        探测发一个「必须调用 dummy 工具」的最小请求：返回带 tool_calls = 支持；
+        报错 / 超时 / 没调 = 不支持（落文本喊话备胎，行为与旧版一致）。
+        """
+        if self._conf is not None and self._conf.tool_support is not None:
+            return self._conf.tool_support
+        if self._native_probe is not None:
+            return self._native_probe
+
+        supported = False
+        try:
+            headers = {"Content-Type": "application/json"}
+            if self._conf and self._conf.token:
+                headers["Authorization"] = f"Bearer {self._conf.token}"
+            url = f"{self._conf.base_url.rstrip('/')}/chat/completions"  # type: ignore[union-attr]
+            payload = self._build_payload(
+                [Message(role="user", content="调用 noop 工具")],
+                max_new_tokens=64,
+                temperature=0.0,
+                stop=None,
+            )
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "noop",
+                        "description": "空操作测试工具，必须被调用",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+            payload["tool_choice"] = "required"
+            timeout = aiohttp.ClientTimeout(total=min(self._conf.timeout, 60.0))  # type: ignore[union-attr]
+            async with aiohttp.ClientSession(timeout=timeout) as http:
+                data = await self._post_json(http, url, payload, headers, time.monotonic())
+            result = self._build_result(data)
+            supported = bool(result.tool_calls)
+        except Exception:
+            self._logger.exception("原生 tool_calls 探测失败，按不支持处理（文本喊话备胎）")
+        self._native_probe = supported
+        self._logger.info(
+            f"原生 tool_calls 探测: {'支持（原生优先）' if supported else '不支持（文本喊话备胎）'}"
+        )
+        return supported
 
     def config(self, conf: ModelConfig) -> Self:
         """更新配置。"""
@@ -157,8 +219,14 @@ class OpenAICompatProvider(ModelProvider):
         temperature: float = 0.7,
         stop: list[str] | None = None,
         tools: list[ToolSpec] | None = None,
+        execute_tools: bool = True,
     ) -> CompletionResult:
-        """单次补全：POST {base_url}/chat/completions。"""
+        """单次补全：POST {base_url}/chat/completions。
+
+        execute_tools=False 时原生 tool_calls 不进内循环、原样返回——
+        脑层接力/管线用它把「原生调用」与「文本喊话」统一到同一条
+        执行+回填路径（查证兜底等语义与调用通道解耦）。
+        """
         if self._conf is None:
             raise RuntimeError("模型未配置: 请先调用 config()")
         if self._conf.invoker_type != "openai":
@@ -198,7 +266,7 @@ class OpenAICompatProvider(ModelProvider):
                 cached_total += result.usage.cached_tokens
                 cache_write_total += result.usage.cache_write_tokens
 
-                if not result.tool_calls or not tools:
+                if not result.tool_calls or not tools or not execute_tools:
                     break
                 rounds += 1
                 if rounds > _MAX_TOOL_ROUNDS:

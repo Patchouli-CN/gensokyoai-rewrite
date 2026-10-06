@@ -10,6 +10,8 @@
 """
 
 import asyncio
+import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -26,6 +28,47 @@ DEFAULT_MAX_RESULT_CHARS = 2000
 """ 工具结果默认最大字符数，超出截断（保护 8K 上下文）"""
 
 _TRUNCATED_MARK = "…（结果过长已截断）"
+
+_LONE_QUOTED_VALUE = re.compile(r"[\"“'‘]([^\"”'’]{1,120})[\"”'’]")
+""" 文本里孤零零的引号值（直/弯/单引号）——唯一必填参数工具的最后抢救对象 """
+
+
+def fill_single_param_calls(
+    tool_calls: list[ToolCall], tools: list[ToolSpec], source_text: str
+) -> list[ToolCall]:
+    """spec 感知的最后一级参数抢救：唯一必填参数 + 空参调用 + 文本里有孤引号值 -> 填上。
+
+    真机写法：「参数是 "2026-12-22"」——连参数名都不提，llama_cpp 的文本级
+    抢救救不了（它不知道参数名）。这一级在执行前做，因为这里有 spec：
+    当前带参工具（days_until / fetch_url / web_search）全是唯一必填参数，
+    引号值就是那个参数的值。填错了也不过工具报错 + 自教学重试，不会更糟。
+    """
+    if not source_text:
+        return tool_calls
+    index = {spec.tool_name: spec for spec in tools}
+    filled: list[ToolCall] = []
+    for call in tool_calls:
+        spec = index.get(call.name)
+        args: Any = None
+        if spec is not None:
+            try:
+                args = json.loads(call.arguments or "{}")
+            except ValueError:
+                args = None
+        required = spec.required_params if spec is not None else []
+        if (
+            isinstance(args, dict)
+            and not args
+            and len(required) == 1
+            and (match := _LONE_QUOTED_VALUE.search(source_text))
+        ):
+            call = ToolCall(
+                id=call.id,
+                name=call.name,
+                arguments=json.dumps({required[0]: match.group(1)}, ensure_ascii=False),
+            )
+        filled.append(call)
+    return filled
 
 
 @dataclass(slots=True)
@@ -103,6 +146,22 @@ class ToolExecutor:
         if args is None:
             self._logger.warning(f"工具参数 JSON 解析失败: {name}({arguments!r})")
             return ToolResult(name=name, ok=False, error="参数不是合法的 JSON 对象")
+
+        # 缺参预检：必填参数没给齐就不做必败的执行（省一次异常 + 白烧的思考轮），
+        # 直接回自教学错误。真机病灶：小模型喊话不带 {}，提取器按 '{}' 兜底，
+        # 执行必然 TypeError——错误信息要教会的是「参数写在花括号里」
+        missing = [p for p in tool.required_params if p not in args]
+        if missing:
+            example = ", ".join(f'"{param}": "..."' for param in tool.required_params)
+            self._logger.warning(f"工具缺参拒绝执行: {name}({args}) 缺 {missing}")
+            return ToolResult(
+                name=name,
+                ok=False,
+                error=(
+                    f"缺少必填参数: {', '.join(missing)}（参数必须写在花括号里）；"
+                    f"调用格式：调用 {name} {{{example}}}"
+                ),
+            )
 
         try:
             output = await asyncio.wait_for(self._invoke(tool, args), timeout=self.timeout)

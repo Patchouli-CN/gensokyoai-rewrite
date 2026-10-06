@@ -63,8 +63,8 @@ def test_render_tools_hint_exposes_signatures():
 
 def test_render_static_template_is_cached():
     """无参数模板走缓存，重复渲染返回同一对象"""
-    first = prompt_mgr.render("brain.think")
-    again = prompt_mgr.render("brain.think")
+    first = prompt_mgr.render("gate.system")
+    again = prompt_mgr.render("gate.system")
     assert first is again
 
 
