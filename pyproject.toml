@@ -37,7 +37,7 @@ dev = [
     "build==1.6.1",
     "hatchling==1.32.4",
     # web_search 工具的依赖：测试全程打桩不联网，钉死保证 CI 行为一致
-    "ddgs==9.14.4",
+    "ddgs==9.16.0",
 ]
 # TypeSafe system one 后端（gate.judge=typesafe）：官方 TypeSafe Python SDK
 typesafe = [
