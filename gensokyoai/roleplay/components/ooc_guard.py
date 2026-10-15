@@ -160,19 +160,8 @@ class OOCGuard:
         """
         if not self.blocking:
             return reply
-        judge = self._judge
-        assert judge is not None  # blocking 已保证非空（mypy 收窄）
         try:
-            recent = await self._memory.recent(5)
-            check = await audit_with_judge(
-                judge,
-                persona=self._persona_brief,
-                new_message=snapshot.content,
-                reply=reply,
-                recent=[m.content for m in reversed(recent)],
-                bot_name=self._character.name,
-                settings=self._judge_cfg,
-            )
+            check = await self._judge_check(snapshot, reply)
         except Exception:
             # 审查自身故障 = 放行（防御不是裁判，不能让一次故障吞掉回合）
             self._logger.exception("blocking 出戏审查失败，放行")
@@ -242,21 +231,9 @@ class OOCGuard:
 
     async def _audit_judge(self, snapshot: SceneSnapshot, reply: str) -> None:
         """System-1 出戏审查侧链：多问概率 -> 三档结论 -> 记账/干预。"""
-        judge = self._judge
-        if judge is None:
-            return
         gen = self._generation()
         try:
-            recent = await self._memory.recent(5)
-            check = await audit_with_judge(
-                judge,
-                persona=self._persona_brief,
-                new_message=snapshot.content,
-                reply=reply,
-                recent=[m.content for m in reversed(recent)],
-                bot_name=self._character.name,
-                settings=self._judge_cfg,
-            )
+            check = await self._judge_check(snapshot, reply)
         except Exception:
             self._logger.exception("System-1 出戏审查失败（不影响主链路）")
             return
@@ -269,6 +246,32 @@ class OOCGuard:
         elif check.decision == "flag":
             self._logger.info(f"System-1 出戏审查 flag: {check.reason} | {check.answers}")
         await self._record_check(check)
+
+    async def _judge_check(self, snapshot: SceneSnapshot, reply: str) -> OOCCheck:
+        """跑一次 System-1 出戏审查（blocking 闸门与后置侧链共用）。
+
+        Args:
+            snapshot: 场景快照（诱发消息进审查 state）
+            reply: 待审回复
+
+        Returns:
+            OOCCheck: 三档结论 + 原始概率
+
+        Raises:
+            RuntimeError: 未配置裁判（调用方应先判 blocking / enabled）
+        """
+        if self._judge is None:
+            raise RuntimeError("未配置出戏审查裁判")
+        recent = await self._memory.recent(5)
+        return await audit_with_judge(
+            self._judge,
+            persona=self._persona_brief,
+            new_message=snapshot.content,
+            reply=reply,
+            recent=[m.content for m in reversed(recent)],
+            bot_name=self._character.name,
+            settings=self._judge_cfg,
+        )
 
     async def _audit_legacy(self, reply: str) -> None:
         """旧单点 OOC 深审（无 System-1 裁判时的降级路径；只看人设+回复，无诱发消息）。"""

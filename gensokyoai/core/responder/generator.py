@@ -11,6 +11,9 @@ from ...utils.logger import LoggerManager
 from ..session_manager import SessionManager
 from .style import apply_emotion_hint
 
+_CONTINUE_PROMPT = "继续，从中断处直接接续写完。不要重复已写内容。"
+""" 半截续写指令（回复被 max_tokens 截断时追加） """
+
 
 class Responder:
     """表达层：只做表达，不做思考。
@@ -56,36 +59,8 @@ class Responder:
             f"初稿={'有' if conclusion.draft else '无'} 记忆={len(memories)}条 "
             f"档位={conclusion.effort.value}"
         )
-        if not self._system_ready and self._persona:
-            self._sessions.set_system(self._OWNER, self._persona)
-            self._system_ready = True
-
-        memory_text = "\n".join(f"- {m.content}" for m in memories) or "（无）"
-
-        # 初稿措辞要硬（「默认按这个骨架走」）：软措辞会被小模型当成可选建议，
-        # 容易被用户消息里的直接指令（如"只输出数字"）带跑
-        draft_hint = (
-            f"初稿参考（默认按这个骨架说，除非初稿本身有问题）: {conclusion.draft}\n"
-            if conclusion.draft
-            else ""
-        )
-        # 小模型有时会把工具调用写成文本混进初稿，这种伪工具调用直接丢弃
-        if conclusion.draft and '"tool"' in conclusion.draft:
-            self._logger.warning(f"检测到伪工具调用文本，丢弃: {conclusion.draft}")
-            draft_hint = ""
-
-        user = prompt_mgr.render(
-            "responder.user",
-            sender=snapshot.sender,
-            content=snapshot.content,
-            intent=conclusion.intent,
-            emotion=conclusion.emotion,
-            draft_hint=draft_hint,
-            memory=memory_text,
-            avoid=avoid,
-            reasoning=conclusion.reasoning or "",
-            state=state_hint,
-        )
+        self._ensure_system()
+        user = self._user_prompt(conclusion, snapshot, memories, avoid, state_hint)
         result = await self._sessions.call(
             self._OWNER,
             [Message(role="user", content=user)],
@@ -99,7 +74,7 @@ class Responder:
             self._logger.info(f"回复被截断（{len(content)}字），发起续写")
             cont = await self._sessions.call(
                 self._OWNER,
-                [Message(role="user", content="继续，从中断处直接接续写完。不要重复已写内容。")],
+                [Message(role="user", content=_CONTINUE_PROMPT)],
                 max_new_tokens=1024,
                 temperature=0.8,
             )
@@ -139,32 +114,8 @@ class Responder:
             f"流式生成开始: 意图={conclusion.intent} 情绪={conclusion.emotion} "
             f"初稿={'有' if conclusion.draft else '无'} 记忆={len(memories)}条 档位={conclusion.effort.value}"
         )
-        if not self._system_ready and self._persona:
-            self._sessions.set_system(self._OWNER, self._persona)
-            self._system_ready = True
-
-        memory_text = "\n".join(f"- {m.content}" for m in memories) or "（无）"
-        draft_hint = (
-            f"初稿参考（默认按这个骨架说，除非初稿本身有问题）: {conclusion.draft}\n"
-            if conclusion.draft
-            else ""
-        )
-        if conclusion.draft and '"tool"' in conclusion.draft:
-            self._logger.warning(f"检测到伪工具调用文本，丢弃: {conclusion.draft}")
-            draft_hint = ""
-
-        user = prompt_mgr.render(
-            "responder.user",
-            sender=snapshot.sender,
-            content=snapshot.content,
-            intent=conclusion.intent,
-            emotion=conclusion.emotion,
-            draft_hint=draft_hint,
-            memory=memory_text,
-            avoid=avoid,
-            reasoning=conclusion.reasoning or "",
-            state=state_hint,
-        )
+        self._ensure_system()
+        user = self._user_prompt(conclusion, snapshot, memories, avoid, state_hint)
 
         parts: list[str] = []
         finish = "stop"
@@ -186,7 +137,7 @@ class Responder:
             self._logger.info(f"回复被截断（{len(''.join(parts))}字），发起流式续写")
             async for ev in self._sessions.call_stream(
                 self._OWNER,
-                [Message(role="user", content="继续，从中断处直接接续写完。不要重复已写内容。")],
+                [Message(role="user", content=_CONTINUE_PROMPT)],
                 max_new_tokens=1024,
                 temperature=0.8,
             ):
@@ -218,9 +169,7 @@ class Responder:
             过渡语文本；生成结果为空时返回空字符串
         """
         started = time.monotonic()
-        if not self._system_ready and self._persona:
-            self._sessions.set_system(self._OWNER, self._persona)
-            self._system_ready = True
+        self._ensure_system()
         user = prompt_mgr.render(
             "responder.stall",
             sender=snapshot.sender,
@@ -237,6 +186,57 @@ class Responder:
         line = result.content.strip().strip('"“” \n')
         self._logger.info(f"过渡语生成: {line!r} 耗时={time.monotonic() - started:.2f}s")
         return line
+
+    def _ensure_system(self) -> None:
+        """首次开口前把人设设为会话的 system 前缀（稳定前缀利于 KV cache 复用）。"""
+        if not self._system_ready and self._persona:
+            self._sessions.set_system(self._OWNER, self._persona)
+            self._system_ready = True
+
+    def _user_prompt(
+        self,
+        conclusion: BrainConclusion,
+        snapshot: SceneSnapshot,
+        memories: list[MemoryItem],
+        avoid: str,
+        state_hint: str,
+    ) -> str:
+        """拼本轮的 responder.user 提示词（缓冲与流式两条路径共用）。
+
+        Args:
+            conclusion: Brain 结论
+            snapshot: 场景快照
+            memories: 检索到的记忆
+            avoid: 防复读提示
+            state_hint: 精力/状态提示
+
+        Returns:
+            str: 渲染好的用户提示词
+        """
+        memory_text = "\n".join(f"- {m.content}" for m in memories) or "（无）"
+        # 初稿措辞要硬（「默认按这个骨架走」）：软措辞会被小模型当成可选建议，
+        # 容易被用户消息里的直接指令（如"只输出数字"）带跑
+        draft_hint = (
+            f"初稿参考（默认按这个骨架说，除非初稿本身有问题）: {conclusion.draft}\n"
+            if conclusion.draft
+            else ""
+        )
+        # 小模型有时会把工具调用写成文本混进初稿，这种伪工具调用直接丢弃
+        if conclusion.draft and '"tool"' in conclusion.draft:
+            self._logger.warning(f"检测到伪工具调用文本，丢弃: {conclusion.draft}")
+            draft_hint = ""
+        return prompt_mgr.render(
+            "responder.user",
+            sender=snapshot.sender,
+            content=snapshot.content,
+            intent=conclusion.intent,
+            emotion=conclusion.emotion,
+            draft_hint=draft_hint,
+            memory=memory_text,
+            avoid=avoid,
+            reasoning=conclusion.reasoning or "",
+            state=state_hint,
+        )
 
     async def correct(self, bad_reply: str, reason: str) -> str:
         """OOC 纠偏重生成：告知模型刚才哪里出戏，重新以角色身份回复。

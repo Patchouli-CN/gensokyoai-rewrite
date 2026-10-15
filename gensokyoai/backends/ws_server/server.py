@@ -28,11 +28,14 @@ import sys
 
 from aiohttp import WSMsgType, web
 
-from ...app import DEFAULT_CONFIG, build_session_and_character, resolve_resource
+from ...app import (
+    DEFAULT_CONFIG,
+    build_session_and_character,
+    build_world_kwargs,
+    resolve_resource,
+)
 from ...command import CommandContext, CommandExecutor
-from ...core.brain.judge import build_judge, build_ooc_judge
 from ...core.config import WorldSettings, load_config
-from ...core.memorizer.embedder import build_embedder
 from ...core.resource import IngressLimiter
 from ...roleplay.hub import ChannelHub, ChannelLimitError
 from ...schemas.scene_schema import SceneType
@@ -409,8 +412,8 @@ def main(argv: list[str] | None = None) -> int:
             config_path=args.config, character_path=args.character
         )
         config = load_config(args.config or resolve_resource(DEFAULT_CONFIG))
-        judge = build_judge(config.gate, sessions)
-        ooc_judge = build_ooc_judge(config.gate, config.ooc_judge, sessions)
+        world_kwargs = build_world_kwargs(config, sessions)
+        judge, ooc_judge = world_kwargs["judge"], world_kwargs["ooc_judge"]
         if config.gate.enabled:
             _logger.info(f"发言门控 on | 裁判: {type(judge).__name__ if judge else '无（纯规则）'}")
         if ooc_judge is not None:
@@ -420,17 +423,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"启动失败: {err}", file=sys.stderr)
         return 2
 
-    world_kwargs: dict = {
-        "judge": judge,
-        "gate": config.gate,
-        "ooc_judge": ooc_judge,
-        "ooc_judge_settings": config.ooc_judge,
-        "style": config.style,
-        "energy": config.energy,
-        "search": config.search,
-        "embedder": build_embedder(config.embedding),
-        "memory_min_score": config.embedding.min_score,
-    }
     stall = (
         args.stall_probability
         if args.stall_probability is not None

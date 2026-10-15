@@ -19,7 +19,7 @@ from ..toolkit import (
     run_tool_calls,
 )
 from .ooc_detector import OOCDetector
-from .pipeline import JSON_CORRECTION, PipelineAbort, ThinkPipeline
+from .pipeline import JSON_CORRECTION, PipelineAbort, ThinkPipeline, build_context
 
 _logger = LoggerManager.get_logger("BRAIN")
 
@@ -211,8 +211,7 @@ class BrainEngine:
         治「事实问句被人设闪避」：发散性与确定性分流，确定性问题先拿真值再演。
         """
         max_rounds = self._get_max_rounds(effort)
-        memory_text = "\n".join(f"- [{m.topic}] {m.content}" for m in memories) or "（无相关记忆）"
-        context_text = "\n".join(snapshot.context_snippet[-5:]) or "（无上下文）"
+        material = build_context(snapshot, memories, self._persona_brief)
         # 原生 tool_calls 探测（按 provider 实例缓存，只有首次是真请求）：
         # 支持 -> 原生优先，prompt 不教喊话；不支持 -> 文本喊话备胎
         tool_style = (
@@ -231,11 +230,11 @@ class BrainEngine:
                 role="user",
                 content=prompt_mgr.render(
                     "brain.think.user",
-                    persona=self._persona_brief or "（未提供）",
+                    persona=material.persona,
                     sender=snapshot.sender,
                     content=snapshot.content,
-                    context=context_text,
-                    memory=memory_text,
+                    context=material.context,
+                    memory=material.memory,
                     tools=tool_block,
                 ),
             ),

@@ -27,6 +27,30 @@ _MAX_TOOL_ROUNDS = 8
 """ 单次 chat 内工具执行轮数上限，防止模型无限循环调工具 """
 
 
+def _parse_usage(usage: dict) -> Usage:
+    """解析 OpenAI 协议的 usage 块（缓冲响应与流式末块同一口径）。
+
+    缓存命中在 `prompt_tokens_details.cached_tokens`；缓存写入各家字段不一，
+    兼容 `cache_write_input_tokens`（details 内）与 Anthropic 式的
+    `cache_creation_input_tokens`（顶层）。
+
+    Args:
+        usage: 响应里的 usage 字典
+
+    Returns:
+        Usage: 用量
+    """
+    details = usage.get("prompt_tokens_details") or {}
+    return Usage(
+        prompt_tokens=int(usage.get("prompt_tokens", 0)),
+        completion_tokens=int(usage.get("completion_tokens", 0)),
+        cached_tokens=int(details.get("cached_tokens", 0)),
+        cache_write_tokens=int(
+            details.get("cache_write_input_tokens", usage.get("cache_creation_input_tokens", 0))
+        ),
+    )
+
+
 def _preview(text: str, limit: int = 80) -> str:
     """日志预览：长文本截断并标注总长，换行折叠。"""
     flat = text.replace("\n", "\\n")
@@ -214,10 +238,7 @@ class OpenAICompatProvider(ModelProvider):
             tuple[bool, bool]: (是否支持, 是否为确定答案——瞬时故障为 False)
         """
         try:
-            headers = {"Content-Type": "application/json"}
-            if self._conf and self._conf.token:
-                headers["Authorization"] = f"Bearer {self._conf.token}"
-            url = f"{self._conf.base_url.rstrip('/')}/chat/completions"  # type: ignore[union-attr]
+            url, headers = self._request_target()
             payload = self._build_payload(
                 [Message(role="user", content="调用 noop 工具")],
                 max_new_tokens=64,
@@ -275,11 +296,7 @@ class OpenAICompatProvider(ModelProvider):
         if self._conf.invoker_type != "openai":
             raise NotImplementedError(f"调用模式 {self._conf.invoker_type} 暂未实现")
 
-        headers = {"Content-Type": "application/json"}
-        if self._conf.token:
-            headers["Authorization"] = f"Bearer {self._conf.token}"
-
-        url = f"{self._conf.base_url.rstrip('/')}/chat/completions"
+        url, headers = self._request_target()
         self._logger.debug(
             f"请求发出: url={url} 模型={self._conf.model_name} 消息数={len(messages)} "
             f"max_tokens={max_new_tokens} temperature={temperature} stop={stop} "
@@ -372,11 +389,7 @@ class OpenAICompatProvider(ModelProvider):
         if self._conf.invoker_type != "openai":
             raise NotImplementedError(f"调用模式 {self._conf.invoker_type} 暂未实现流式")
 
-        headers = {"Content-Type": "application/json"}
-        if self._conf.token:
-            headers["Authorization"] = f"Bearer {self._conf.token}"
-
-        url = f"{self._conf.base_url.rstrip('/')}/chat/completions"
+        url, headers = self._request_target()
         self._logger.debug(
             f"流式请求发出: url={url} 模型={self._conf.model_name} 消息数={len(messages)} "
             f"max_tokens={max_new_tokens} temperature={temperature} stop={stop} 工具={len(tools) if tools else 0}个"
@@ -419,18 +432,12 @@ class OpenAICompatProvider(ModelProvider):
                 yield StreamEvent(delta=text)
             if choice.get("finish_reason"):
                 finish = choice["finish_reason"]
-            usage = event.get("usage")
-            if usage:
-                details = usage.get("prompt_tokens_details") or {}
-                prompt_total += int(usage.get("prompt_tokens", 0))
-                completion_total += int(usage.get("completion_tokens", 0))
-                cached_total += int(details.get("cached_tokens", 0))
-                cache_write_total += int(
-                    details.get(
-                        "cache_write_input_tokens",
-                        usage.get("cache_creation_input_tokens", 0),
-                    )
-                )
+            if event.get("usage"):
+                usage = _parse_usage(event["usage"])
+                prompt_total += usage.prompt_tokens
+                completion_total += usage.completion_tokens
+                cached_total += usage.cached_tokens
+                cache_write_total += usage.cache_write_tokens
             if event.get("model"):
                 model_name = event["model"]
 
@@ -600,12 +607,26 @@ class OpenAICompatProvider(ModelProvider):
             return ""
         return f" 费用={breakdown.currency} {breakdown.total:.6f}"
 
+    def _request_target(self) -> tuple[str, dict[str, str]]:
+        """补全端点 URL 与请求头（探测 / 缓冲 / 流式三处共用）。
+
+        Returns:
+            tuple[str, dict[str, str]]: (URL, 请求头)
+
+        Raises:
+            RuntimeError: 模型未配置
+        """
+        if self._conf is None:
+            raise RuntimeError("模型未配置: 请先调用 config()")
+        headers = {"Content-Type": "application/json"}
+        if self._conf.token:
+            headers["Authorization"] = f"Bearer {self._conf.token}"
+        return f"{self._conf.base_url.rstrip('/')}/chat/completions", headers
+
     def _build_result(self, data: dict) -> CompletionResult:
         """解析 /chat/completions 响应；子类可覆盖定制。"""
         choice = data["choices"][0]
         message = choice.get("message") or {}
-        usage = data.get("usage") or {}
-        details = usage.get("prompt_tokens_details") or {}
         tool_calls = [
             ToolCall(
                 id=str(c.get("id", "")),
@@ -618,16 +639,7 @@ class OpenAICompatProvider(ModelProvider):
             content=message.get("content") or "",
             reasoning=message.get("reasoning_content"),
             finish_reason=choice.get("finish_reason") or "stop",
-            usage=Usage(
-                prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                completion_tokens=int(usage.get("completion_tokens", 0)),
-                cached_tokens=int(details.get("cached_tokens", 0)),
-                cache_write_tokens=int(
-                    details.get(
-                        "cache_write_input_tokens", usage.get("cache_creation_input_tokens", 0)
-                    )
-                ),
-            ),
+            usage=_parse_usage(data.get("usage") or {}),
             model=data.get("model") or (self._conf.model_name if self._conf else ""),
             tool_calls=tool_calls,
         )

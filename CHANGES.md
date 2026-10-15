@@ -9,6 +9,17 @@
 ## [Unreleased]
 
 ### 变更
+  - **重复实现收编**（对外行为不变）：
+    - `Responder`：`respond` / `respond_stream` / `stall` 三处的 system 前缀设置与
+      `responder.user` 提示词拼装收编为 `_ensure_system()` / `_user_prompt()`。
+    - `OOCGuard`：blocking 闸门与后置侧链的 `audit_with_judge(...)` 调用收编为
+      `_judge_check()`。
+    - `models/base.py`：探测 / 缓冲 / 流式三处的 URL + 请求头拼装收编为
+      `_request_target()`；缓冲响应与流式末块的 usage 解析收编为 `_parse_usage()`。
+    - 控制台与 WS 两个入口各装一份的世界协作者（裁判 / 出戏裁判 / embedder /
+      各配置段）收编为 `app.build_world_kwargs()`。
+    - 接力思考与思考链各写一份的「记忆 / 上下文」文本拼装收编为
+      `pipeline.build_context()`。
   - **世界行为旋钮收敛为 `WorldSettings` 结构体（`core/config.py`）**：
     `TouhouWorld` 构造器从 28 参降到 18 参——14 个裸旋钮（蒸馏节奏 / 主动
     发言 / 过渡语 / OOC / 工具 / 关闭）收编成一个 msgspec 结构体，

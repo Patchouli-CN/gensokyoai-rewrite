@@ -235,7 +235,7 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         if not steps:
             raise PipelineAbort("思考链为空")
 
-        context = _build_context(snapshot, memories, persona)
+        context = build_context(snapshot, memories, persona)
         digests = ""
         executed: list[ReasoningStep] = []
         for index, step in enumerate(steps):
@@ -506,10 +506,19 @@ def _step_from_card(item: str | dict) -> ThinkStep:
     return ThinkStep(**item)
 
 
-def _build_context(
+def build_context(
     snapshot: SceneSnapshot, memories: list[MemoryItem], persona: str
 ) -> ThinkContext:
-    """全链共用材料（格式与接力思考一致：省 token 的纯文本）。"""
+    """思考材料（思考链与接力思考共用同一份格式：省 token 的纯文本）。
+
+    Args:
+        snapshot: 场景快照
+        memories: 检索到的记忆
+        persona: 人设（摘要）
+
+    Returns:
+        ThinkContext: 人设 / 场景 / 最近上下文 / 相关记忆
+    """
     memory_text = "\n".join(f"- [{m.topic}] {m.content}" for m in memories) or "（无相关记忆）"
     context_text = "\n".join(snapshot.context_snippet[-5:]) or "（无上下文）"
     return ThinkContext(

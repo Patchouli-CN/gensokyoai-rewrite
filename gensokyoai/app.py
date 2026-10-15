@@ -15,7 +15,7 @@ from typing import Any
 
 from .core.bootstrap import discover_all
 from .core.brain.judge import build_judge, build_ooc_judge
-from .core.config import load_config, load_eye_config
+from .core.config import GensokyoConfig, load_config, load_eye_config
 from .core.memorizer.embedder import build_embedder
 from .core.resource import ResourceGate
 from .core.session_factory import build_resource_gate, build_session_manager
@@ -98,6 +98,29 @@ def build_session_and_character(
     return sessions, character
 
 
+def build_world_kwargs(config: GensokyoConfig, sessions: SessionManager) -> dict[str, Any]:
+    """按配置造世界的协作者与配置参数（控制台与 WS 两个入口共用，免得各装一份）。
+
+    Args:
+        config: 引擎配置
+        sessions: 会话管理器（本地裁判走它）
+
+    Returns:
+        dict[str, Any]: 可直接展开给 `TouhouWorld(...)` 的关键字参数
+    """
+    return {
+        "judge": build_judge(config.gate, sessions),
+        "gate": config.gate,
+        "ooc_judge": build_ooc_judge(config.gate, config.ooc_judge, sessions),
+        "ooc_judge_settings": config.ooc_judge,
+        "style": config.style,
+        "energy": config.energy,
+        "search": config.search,
+        "embedder": build_embedder(config.embedding),
+        "memory_min_score": config.embedding.min_score,
+    }
+
+
 def build_world(
     *,
     config_path: str | Path | None = None,
@@ -126,10 +149,7 @@ def build_world(
         config_path=config_path, character_path=character_path, gate=gate
     )
     config = load_config(config_path or resolve_resource(DEFAULT_CONFIG))
-    judge = build_judge(config.gate, sessions)
-    ooc_judge = build_ooc_judge(config.gate, config.ooc_judge, sessions)
-    embedder = build_embedder(config.embedding)
-    world_kwargs: dict[str, Any] = {}
+    world_kwargs = build_world_kwargs(config, sessions)
     if storage_dir is not None:
         world_kwargs["storage_dir"] = storage_dir
     return TouhouWorld(
@@ -140,15 +160,6 @@ def build_world(
         sessions=sessions,
         mouth=mouth if mouth is not None else ConsoleMouth(),
         session_id=session_id,
-        judge=judge,
-        gate=config.gate,
-        ooc_judge=ooc_judge,
-        ooc_judge_settings=config.ooc_judge,
-        style=config.style,
-        energy=config.energy,
-        search=config.search,
-        embedder=embedder,
-        memory_min_score=config.embedding.min_score,
         **world_kwargs,
     )
 
@@ -223,6 +234,7 @@ __all__ = [
     "build_parser",
     "build_session_and_character",
     "build_world",
+    "build_world_kwargs",
     "main",
     "resolve_resource",
 ]
