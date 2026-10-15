@@ -301,9 +301,15 @@ async def decide(
 
 
 def _fallback(snapshot: SceneSnapshot, bot_name: str, recent: list[str], why: str) -> GateDecision:
-    """兜底规则：名字被提及才接话（私聊/被 @ 已在规则层放过，不会到这）。"""
+    """兜底规则：名字被提及才接话（私聊/被 @ 已在规则层放过，不会到这）。
+
+    近况里角色**自己**的发言（`角色名: ...`）不算被提及——否则角色说过一句话，
+    之后裁判每次故障都会因为看到自己的名字而接话，「点名才回」形同虚设。
+    """
+    own_prefix = f"{bot_name}:"
     mentioned = bool(bot_name) and (
-        bot_name in snapshot.content or any(bot_name in line for line in recent)
+        bot_name in snapshot.content
+        or any(bot_name in line for line in recent if not line.startswith(own_prefix))
     )
     return GateDecision(
         reply=mentioned,

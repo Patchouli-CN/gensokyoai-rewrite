@@ -236,8 +236,17 @@ class SessionManager:
         return self._parent._fallback_backend()
 
     def _get_backend(self, owner: str) -> ChatBackend:
-        """获取 owner 对应的 backend，未注册则回退默认"""
+        """获取 owner 对应的 backend：精确匹配 -> 按点号逐级回退父 owner -> 默认。
+
+        `brain.think.<步骤名>` / `brain.think.conclusion` 是 brain 的思考步骤，
+        应落到 `brain.think` 注册的模型（此前精确匹配不中直接掉到默认模型，
+        「Brain 用 DeepSeek」对卡片思考链形同虚设）。
+        """
         backend = self._backends.get(owner)
+        parent = owner
+        while backend is None and "." in parent:
+            parent = parent.rsplit(".", 1)[0]
+            backend = self._backends.get(parent)
         if backend is None:
             backend = self._fallback_backend()
             if backend is None:
@@ -403,13 +412,21 @@ class SessionManager:
         session.last_used_at = time.time()
 
     def normalize_tool_calls(
-        self, result: CompletionResult, parsed_content: dict | None = None
+        self, result: CompletionResult, parsed_content: dict | None = None, *, owner: str = ""
     ) -> CompletionResult:
-        """代理到后端 Provider 的工具调用标准化"""
-        backend = self._get_backend(
-            "normalize"
-        )  # 用哪个 backend 无所谓，反正有 normalize_tool_calls
-        if hasattr(backend, "normalize_tool_calls"):
+        """代理到产出该结果的 owner 所路由的 Provider 做工具调用标准化。
+
+        Args:
+            result: 模型输出
+            parsed_content: 正文解析出的 JSON（喊话抢救用）
+            owner: 产出 result 的模块标识（不同 provider 的喊话格式不同，
+                要交给同一个 provider 认；空串 = 默认 backend）
+
+        Returns:
+            CompletionResult: tool_calls 已标准化的结果
+        """
+        backend = self._get_backend(owner) if owner else self._fallback_backend()
+        if backend is not None and hasattr(backend, "normalize_tool_calls"):
             return backend.normalize_tool_calls(result, parsed_content)
         return result
 

@@ -34,9 +34,9 @@ from ...utils.fluent import FluentAPI
 from ...utils.logger import LoggerManager
 from ...utils.text import extract_json_object, try_extract_json_object
 from ..session_manager import SessionManager
-from ..toolkit import build_executor, fill_single_param_calls
+from ..toolkit import DEFAULT_MAX_RESULT_CHARS, DEFAULT_TIMEOUT, known_calls, run_tool_calls
 
-_JSON_CORRECTION = "上次输出不是合法 JSON。请只输出一个 JSON 对象，不要包含任何其他内容。"
+JSON_CORRECTION = "上次输出不是合法 JSON。请只输出一个 JSON 对象，不要包含任何其他内容。"
 
 _CONCLUSION_TIMEOUT_S = 90.0
 """ 结论步骤的超时（未单独配步骤超时时的兜底） """
@@ -196,6 +196,8 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         persona: str,
         effort: BrainThinkEffort,
         tools: list[ToolSpec] | None = None,
+        tool_timeout: float = DEFAULT_TIMEOUT,
+        tool_max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
     ) -> BrainConclusion:
         """按推理档位裁剪链条深度，串行执行，产出结构化结论。
 
@@ -215,6 +217,8 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
             effort: 本回合推理档位（决定链深）
             tools: 全链可用的工具声明；仅 `ThinkStep.tools=True` 的步骤会带上
                 （本地小模型的「文本喊话」由本模块识别、执行并回填后重取一次）
+            tool_timeout: 单次工具执行超时（秒；与接力思考同一份配置）
+            tool_max_result_chars: 工具结果最大字符数
 
         Returns:
             BrainConclusion: 结论（verdict=draft 时带行动指令）
@@ -236,7 +240,16 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         executed: list[ReasoningStep] = []
         for index, step in enumerate(steps):
             try:
-                parsed = await self._run_step(step, context, digests, sessions, deep, tools)
+                parsed = await self._run_step(
+                    step,
+                    context,
+                    digests,
+                    sessions,
+                    deep,
+                    tools,
+                    tool_timeout=tool_timeout,
+                    tool_max_result_chars=tool_max_result_chars,
+                )
             except Exception as err:  # 不含 CancelledError（BaseException，原样穿透）
                 if not step.optional:
                     raise PipelineAbort(f"必要步骤 {step.name} 失败: {err}") from err
@@ -274,6 +287,9 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         sessions: SessionManager,
         deep: bool = False,
         tools: list[ToolSpec] | None = None,
+        *,
+        tool_timeout: float = DEFAULT_TIMEOUT,
+        tool_max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
     ) -> dict:
         """跑一步：无状态小调用；JSON 解析失败纠正重试一次，再失败抛 ValueError。
 
@@ -283,6 +299,10 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         原生 tool_calls 与本地小模型的「文本喊话」统一在本层识别、执行、
         回填后重取一次（与接力思考同款语义，execute_tools=False 保证原生
         调用也不在 Provider 内循环被提前消化）。
+
+        工具回合与 JSON 纠偏各有一次独立额度（此前共用 `range(2)`：调了一次工具
+        就没有纠偏重试；连喊两次工具则掉出循环撞上 `AssertionError("unreachable")`）。
+        工具额度用完后模型再喊工具，按普通输出解析。
         """
         call_tools = tools if (step.tools and tools) else None
         # 挂了工具的步骤：原生探测决定教不教喊话（原生模式只摊签名，
@@ -317,7 +337,9 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
             ),
         ]
         messages = list(base)
-        for attempt in range(2):
+        tool_rounds_left = 1
+        json_retries_left = 1
+        while True:
             result = await asyncio.wait_for(
                 sessions.call(
                     f"brain.think.{step.name}",
@@ -336,45 +358,70 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
             content = result.content or ""
             # 统一工具调用处理：原生 tool_calls（execute_tools=False 原样返回）
             # 与文本喊话都由本层执行、回填后重取一次（与接力思考同款语义）
-            if call_tools:
-                normalized = sessions.normalize_tool_calls(result, try_extract_json_object(content))
-                if normalized.tool_calls:
+            if call_tools and tool_rounds_left:
+                normalized = sessions.normalize_tool_calls(
+                    result, try_extract_json_object(content), owner=f"brain.think.{step.name}"
+                )
+                calls = known_calls(normalized.tool_calls, call_tools)
+                if calls:
+                    tool_rounds_left -= 1
                     messages = await self._feed_tool_results(
-                        base, result, normalized.tool_calls, call_tools
+                        messages,
+                        result,
+                        calls,
+                        call_tools,
+                        timeout=tool_timeout,
+                        max_result_chars=tool_max_result_chars,
                     )
                     continue
             try:
                 return _parse_step_json(content)
             except ValueError:
-                if attempt:
+                if not json_retries_left:
                     raise
-                # 纠正重试：带上坏输出 + 纠偏指令（同 system-one-adapter 的 corrective retry）
+                json_retries_left -= 1
+                # 纠正重试：带上坏输出 + 纠偏指令（同 system-one-adapter 的 corrective
+                # retry）；保留此前的工具回填，纠偏不该让模型忘了查到的东西
                 messages = [
-                    *base,
+                    *messages,
                     Message(role="assistant", content=content),
-                    Message(role="user", content=_JSON_CORRECTION),
+                    Message(role="user", content=JSON_CORRECTION),
                 ]
-
-        raise AssertionError("unreachable")  # pragma: no cover - 循环必返回或抛错
 
     @staticmethod
     async def _feed_tool_results(
-        base: list[Message],
+        messages: list[Message],
         result: CompletionResult,
         calls: list[ToolCall],
         tools: list[ToolSpec],
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+        max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
     ) -> list[Message]:
-        """执行文本喊话的工具调用，把结果回填成下一轮消息（同接力思考语义）。"""
+        """执行工具调用，把结果回填成下一轮消息（同接力思考语义）。
+
+        Args:
+            messages: 本次调用的消息
+            result: 模型这次的输出（带工具调用）
+            calls: 已过 known_calls 的工具调用
+            tools: 本步可用的工具声明
+            timeout: 单次工具执行超时（秒）
+            max_result_chars: 工具结果最大字符数
+
+        Returns:
+            list[Message]: 追加了调用与【工具执行结果】的下一轮消息
+        """
         # 抢救源文本用步骤 JSON 的字段值（note/thought/action_hint），不用原始
         # content——否则第一个引号匹配永远是 JSON 字段名（真机填进去过 'thought'）
         parsed = try_extract_json_object(result.content or "") or {}
         source = "\n".join(str(parsed.get(k, "")) for k in ("note", "thought", "action_hint"))
-        outcomes = await build_executor(tools).execute_many(
-            fill_single_param_calls(calls, tools, source)
+        result_text = "\n".join(
+            await run_tool_calls(
+                calls, tools, source_text=source, timeout=timeout, max_result_chars=max_result_chars
+            )
         )
-        result_text = "\n".join(outcome.to_model_text() for outcome in outcomes)
         return [
-            *base,
+            *messages,
             Message(role="assistant", content=result.content or "", tool_calls=calls),
             Message(
                 role="user",

@@ -12,8 +12,9 @@ from ..core.registry import ToolRegistry
 _MAX_RESULTS_LIMIT = 10
 """ 单次搜索返回条数上限（防一次拉爆上下文）"""
 
-_SEARCH_TIMEOUT = 20
-""" 单次搜索超时（秒）"""
+_SEARCH_TIMEOUT = 8
+""" 单次搜索超时（秒）：必须小于工具执行器的超时（默认 10s）——否则慢而
+成功的搜索会被执行器先判超时，结果作废、线程还在后台跑 """
 
 
 @ToolRegistry.tool

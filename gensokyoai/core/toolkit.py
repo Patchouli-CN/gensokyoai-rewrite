@@ -27,6 +27,8 @@ DEFAULT_TIMEOUT = 10.0
 DEFAULT_MAX_RESULT_CHARS = 2000
 """ 工具结果默认最大字符数，超出截断（保护 8K 上下文）"""
 
+_logger = LoggerManager.get_logger("TOOLKIT")
+
 _TRUNCATED_MARK = "…（结果过长已截断）"
 
 _LONE_QUOTED_VALUE = re.compile(r"[\"“'‘]([^\"”'’]{1,120})[\"”'’]")
@@ -244,10 +246,61 @@ def build_executor(
     return ToolExecutor(tools=list(tools or []), timeout=timeout, max_result_chars=max_result_chars)
 
 
+def known_calls(calls: list[ToolCall] | None, tools: list[ToolSpec]) -> list[ToolCall]:
+    """只留调用了已注册工具的条目。
+
+    文本喊话的解析器不认识工具表——提示词里写着「请用 JSON 格式回复」，它就
+    识别出一次 `JSON` 工具调用；不过滤的话，「未知工具」的报错也算工具结果，
+    白白强制续一轮推理。
+
+    Args:
+        calls: 模型（或喊话解析器）给出的工具调用；None 视为空
+        tools: 本次可用的工具声明
+
+    Returns:
+        list[ToolCall]: 工具名在声明表里的调用
+    """
+    if not calls:
+        return []
+    names = {spec.tool_name for spec in tools}
+    kept = [call for call in calls if call.name in names]
+    if len(kept) < len(calls):
+        dropped = [call.name for call in calls if call.name not in names]
+        _logger.debug(f"丢弃未注册工具的调用: {dropped}")
+    return kept
+
+
+async def run_tool_calls(
+    calls: list[ToolCall],
+    tools: list[ToolSpec],
+    *,
+    source_text: str = "",
+    timeout: float = DEFAULT_TIMEOUT,
+    max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
+) -> list[str]:
+    """参数抢救 -> 执行 -> 转成回填给模型的文本（接力思考与思考链共用）。
+
+    Args:
+        calls: 待执行的工具调用（应已过 `known_calls`）
+        tools: 工具声明
+        source_text: 参数抢救的源文本（模型 JSON 的字段值，不是原始 content）
+        timeout: 单次执行超时（秒）
+        max_result_chars: 结果最大字符数
+
+    Returns:
+        list[str]: 与调用一一对应的回填文本
+    """
+    executor = build_executor(tools, timeout=timeout, max_result_chars=max_result_chars)
+    outcomes = await executor.execute_many(fill_single_param_calls(calls, tools, source_text))
+    return [outcome.to_model_text() for outcome in outcomes]
+
+
 __all__ = [
     "DEFAULT_MAX_RESULT_CHARS",
     "DEFAULT_TIMEOUT",
     "ToolExecutor",
     "ToolResult",
     "build_executor",
+    "known_calls",
+    "run_tool_calls",
 ]
