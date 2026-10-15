@@ -168,6 +168,9 @@ class MemoryManager:
         """按写入时间倒序取最近 n 条记忆。
         如果提供 search_term，也会去长期记忆中捞取相关旧事。
 
+        长期命中有**预留名额**（至多 n 的一半）：先截近况再追加旧事再截一刀，
+        工作记忆一满 n 条，旧事就被全部截掉——检索白跑、召回永远进不了 prompt。
+
         Args:
             n: 返回条数上限
             search_term: 可选，关联检索词
@@ -177,16 +180,15 @@ class MemoryManager:
             self._work_mem_store[mid]
             for mid in reversed(self._work_mem_queue)
             if mid in self._work_mem_store
-        ]
-        items = items[:n]
+        ][:n]
 
-        # 2. 冷记忆：如果有关联词，去长期记忆里补全
-        if search_term:
+        # 2. 冷记忆：如果有关联词，去长期记忆里捞旧事，占用预留名额
+        if search_term and n > 0:
+            reserve = max(1, n // 2)
             long_items = await self._long_mem_store.retrieve_by_topic(search_term, limit=n)
-            # 合并去重
             ids = {i.memory_id for i in items}
-            items.extend([i for i in long_items if i.memory_id not in ids])
-            items = items[:n]  # 再次截断
+            extra = [i for i in long_items if i.memory_id not in ids][:reserve]
+            items = items[: n - len(extra)] + extra
 
         # 3. 结算访问热度
         for item in items:

@@ -1,5 +1,7 @@
 """记忆的存储和检索 - 长期记忆（JSON 文件持久化）"""
 
+import asyncio
+import time
 from pathlib import Path
 
 import ayafileio
@@ -42,8 +44,13 @@ class LongMemoryStore:
         self._min_score = min_score
         self._items: dict[str, MemoryItem] = {}
         self._vectors: dict[str, list[float]] = {}
-        self._dirty = False
-        self._vectors_dirty = False
+        # 版本号而非布尔脏标：写盘期间又有新条目进来时，写完不能把「新的脏」一并清掉
+        self._version = 0
+        self._written_version = 0
+        self._vectors_version = 0
+        self._vectors_written_version = 0
+        self._write_lock = asyncio.Lock()
+        """ 串行化落盘：并发 dump 共用同一个临时文件，交错写会截断彼此 """
         if self._file_path is not None:
             self._load_from_disk()
 
@@ -76,7 +83,13 @@ class LongMemoryStore:
             }
             self._logger.info(f"从磁盘加载长期记忆: {len(self._items)} 条")
         except Exception:
-            self._logger.exception("长期记忆文件损坏，重置为空存储")
+            # 坏文件先挪走留证：否则下一次 dump 用「只含新条目」的内容原子覆盖它，
+            # 旧的长期记忆就此永久丢失
+            quarantined = self._file_path.with_name(
+                f"{self._file_path.name}.corrupt-{int(time.time())}"
+            )
+            self._file_path.replace(quarantined)
+            self._logger.exception(f"长期记忆文件损坏，已隔离到 {quarantined.name}，以空存储继续")
         self._load_vectors_from_disk()
 
     def _load_vectors_from_disk(self) -> None:
@@ -97,19 +110,18 @@ class LongMemoryStore:
             return
         for item in items:
             self._items[item.memory_id] = item
-        self._dirty = True
+        self._version += 1
         await self._embed_new(items)
 
         if self._file_path is None:
             # 纯内存：仅留在进程内
-            self._dirty = False
-            self._vectors_dirty = False
             self._logger.info(f"长期记忆归档(纯内存): {len(items)} 条")
             return
 
         # 真异步落盘（ayafileio：IOCP/io_uring/GCD 内核级完成，不占线程池）
-        await self._async_to_disk()
-        await self._async_vectors_to_disk()
+        async with self._write_lock:
+            await self._async_to_disk()
+            await self._async_vectors_to_disk()
         self._logger.info(f"长期记忆归档: {len(items)} 条 -> {self._file_path.name}")
 
     async def _embed_new(self, items: list[MemoryItem]) -> None:
@@ -126,12 +138,13 @@ class LongMemoryStore:
             return
         for item, vector in zip(pending, vectors, strict=True):
             self._vectors[item.memory_id] = vector
-        self._vectors_dirty = True
+        self._vectors_version += 1
 
     async def _async_to_disk(self) -> None:
         """真异步将缓存写入磁盘（ayafileio；原子写入：先写临时文件，再替换）"""
-        if self._file_path is None or not self._dirty:
+        if self._file_path is None or self._written_version == self._version:
             return
+        version = self._version
         data = list(self._items.values())
         # msgspec 提供快速的 JSON 序列化（字节直写，无需过一层文本编解码）
         content = msgspec.json.encode(data)
@@ -145,15 +158,16 @@ class LongMemoryStore:
             async with ayafileio.open(temp_file, "wb") as handle:
                 await handle.write(content)
             temp_file.replace(self._file_path)  # 原子替换，防止写一半崩溃
-            self._dirty = False
+            self._written_version = version
         except Exception:
             self._logger.exception(f"长期记忆写入失败: {self._file_path}")
 
     async def _async_vectors_to_disk(self) -> None:
         """向量 sidecar 落盘（msgpack 二进制 + 原子替换，与正文同一套口径）"""
         path = self._vectors_path
-        if path is None or not self._vectors_dirty:
+        if path is None or self._vectors_written_version == self._vectors_version:
             return
+        version = self._vectors_version
         content = msgspec.msgpack.encode(self._vectors)
         temp_file = path.with_suffix(".tmp")
         try:
@@ -161,7 +175,7 @@ class LongMemoryStore:
             async with ayafileio.open(temp_file, "wb") as handle:
                 await handle.write(content)
             temp_file.replace(path)
-            self._vectors_dirty = False
+            self._vectors_written_version = version
         except Exception:
             self._logger.exception(f"记忆向量写入失败: {path}")
 

@@ -1,6 +1,11 @@
 """MemoryManager 单元测试：存储 / 最近检索 / 蒸馏选取与遗忘"""
 
+import asyncio
+
+import ayafileio
+
 from gensokyoai.core.memorizer.manager import MemoryManager
+from gensokyoai.core.memorizer.store import LongMemoryStore
 from gensokyoai.schemas.memory_schema import MemoryItem
 
 
@@ -197,3 +202,70 @@ async def test_eviction_cleans_vectors():
     assert mgr.work_mem_size == 2
     evicted = items[0]  # 同分最早者被淘汰
     assert evicted.memory_id not in mgr._work_vectors
+
+
+async def test_recent_reserves_slots_for_long_term_hits(tmp_path):
+    """工作记忆已满 n 条时，长期命中仍占预留名额进结果（此前被二次截断全部丢掉）"""
+    mgr = MemoryManager(storage_dir=tmp_path, session_id="recall")
+    await mgr._long_mem_store.dump([MemoryItem(topic="往事", content="去年冬至一起吃了饺子")])
+    for i in range(10):
+        await mgr.store(MemoryItem(content=f"闲聊{i}"))
+
+    recalled = await mgr.recent(5, search_term="冬至")
+    contents = [m.content for m in recalled]
+    assert len(recalled) == 5
+    assert "去年冬至一起吃了饺子" in contents, f"长期命中应进结果: {contents}"
+    assert contents[0] == "闲聊9", "近况仍按新到旧排在前面"
+
+
+async def test_long_store_dump_during_write_is_not_lost(tmp_path, monkeypatch):
+    """A 正在写盘时 B 加入新条目、且 B 的 embedding 比 A 的写盘慢：B 的条目也要落盘
+
+    （布尔脏标下 A 写完清脏，B 醒来看到「不脏」直接返回，B 的条目只在内存里）
+    """
+    real_open = ayafileio.open
+
+    class _SlowWrite:
+        def __init__(self, *args, **kwargs) -> None:
+            self._ctx = real_open(*args, **kwargs)
+
+        async def __aenter__(self):
+            self._handle = await self._ctx.__aenter__()
+            return self
+
+        async def __aexit__(self, *exc):
+            return await self._ctx.__aexit__(*exc)
+
+        async def write(self, data):
+            await asyncio.sleep(0.02)
+            return await self._handle.write(data)
+
+    class _Embedder:
+        async def embed(self, texts):
+            if "后到" in texts[0]:
+                await asyncio.sleep(0.06)
+            return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(ayafileio, "open", _SlowWrite)
+    path = tmp_path / "long_memory.json"
+    store = LongMemoryStore(path, embedder=_Embedder())
+
+    first = asyncio.create_task(store.dump([MemoryItem(content="先到的那条")]))
+    await asyncio.sleep(0.005)  # A 已在写盘
+    await asyncio.gather(first, store.dump([MemoryItem(content="后到的那条")]))
+
+    reloaded = LongMemoryStore(path)
+    assert {m.content for m in reloaded._items.values()} == {"先到的那条", "后到的那条"}
+
+
+async def test_long_store_quarantines_corrupt_file(tmp_path):
+    """长期记忆文件损坏：先挪走留证，不能被下一次 dump 静默覆盖"""
+    path = tmp_path / "long_memory.json"
+    path.write_text("{这不是合法 JSON", encoding="utf-8")
+
+    store = LongMemoryStore(path)
+    await store.dump([MemoryItem(content="新记忆")])
+
+    quarantined = list(tmp_path.glob("long_memory.json.corrupt-*"))
+    assert len(quarantined) == 1, "坏文件应被隔离留证"
+    assert quarantined[0].read_text(encoding="utf-8") == "{这不是合法 JSON"
