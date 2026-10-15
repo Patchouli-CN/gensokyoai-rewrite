@@ -87,7 +87,8 @@ class HealthMonitor:
         self.thresholds: dict[str, MetricThreshold] = {t.name: t for t in table}
 
         self._metrics: dict[str, deque[HealthMetric]] = {}
-        self._alerts: list[HealthAlert] = []
+        self._alerts: deque[HealthAlert] = deque(maxlen=history_size)
+        """ 最近的告警（有界：长跑进程里告警只增不减，满了丢最旧的）"""
         self._interventions: dict[str, list[InterventionHandler]] = {}
         self._alert_state: dict[str, tuple[str, float]] = {}
         """ 指标名 -> (上次告警级别, 时刻)，用于边沿触发与冷却 """
@@ -188,7 +189,7 @@ class HealthMonitor:
         Returns:
             list[HealthAlert]: 最近告警
         """
-        return self._alerts[-limit:]
+        return list(self._alerts)[-limit:]
 
     async def report(self) -> HealthReport:
         """生成健康报告（聚合摘要 + 推理档位分布 + 系统摘要）。

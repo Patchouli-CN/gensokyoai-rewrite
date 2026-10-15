@@ -287,6 +287,11 @@ class ChannelHub:
             self._logger.info(f"会话预载完成: {count} 个频道")
         return count
 
+    @property
+    def sessions(self) -> SessionManager:
+        """根会话管理器（各频道视图的父级；服务退出时由它统一释放 backend 资源）。"""
+        return self._sessions
+
     def channel_ids(self) -> list[str]:
         """当前活跃频道 ID 列表。"""
         return list(self._channels)

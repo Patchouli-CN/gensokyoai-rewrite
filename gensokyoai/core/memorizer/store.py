@@ -6,10 +6,11 @@ from pathlib import Path
 
 import ayafileio
 import msgspec
+import numpy as np
 
 from ...schemas.memory_schema import MemoryItem
 from ...utils.logger import LoggerManager
-from .embedder import Embedder, cosine_rank
+from .embedder import Embedder, rank_matrix
 
 
 class LongMemoryStore:
@@ -49,6 +50,8 @@ class LongMemoryStore:
         self._written_version = 0
         self._vectors_version = 0
         self._vectors_written_version = 0
+        self._matrix: tuple[list[str], np.ndarray, np.ndarray] | None = None
+        """ 检索用的缓存矩阵（键表 / float32 矩阵 / 行范数）；向量集合变化时作废 """
         self._write_lock = asyncio.Lock()
         """ 串行化落盘：并发 dump 共用同一个临时文件，交错写会截断彼此 """
         if self._file_path is not None:
@@ -99,18 +102,32 @@ class LongMemoryStore:
             return
         try:
             self._vectors = msgspec.msgpack.decode(path.read_bytes(), type=dict[str, list[float]])
+            self._matrix = None
             self._logger.info(f"从磁盘加载记忆向量: {len(self._vectors)} 条")
         except Exception:
             self._logger.exception("向量 sidecar 损坏，忽略（下次归档时重建）")
             self._vectors = {}
 
-    async def dump(self, items: list[MemoryItem]) -> None:
-        """异步批量写入（归档冷记忆），写入后标记为不脏"""
+    async def dump(
+        self, items: list[MemoryItem], vectors: dict[str, list[float]] | None = None
+    ) -> None:
+        """异步批量写入（归档冷记忆），写入后标记为不脏
+
+        Args:
+            items: 待归档的记忆
+            vectors: 调用方手上已有的向量（工作记忆关联时算过的）——直接收下，
+                不再为同一段文本再调一次 embedding
+        """
         if not items:
             return
         for item in items:
             self._items[item.memory_id] = item
         self._version += 1
+        for mid, vector in (vectors or {}).items():
+            if mid in self._items and mid not in self._vectors:
+                self._vectors[mid] = vector
+                self._vectors_version += 1
+                self._matrix = None
         await self._embed_new(items)
 
         if self._file_path is None:
@@ -139,6 +156,7 @@ class LongMemoryStore:
         for item, vector in zip(pending, vectors, strict=True):
             self._vectors[item.memory_id] = vector
         self._vectors_version += 1
+        self._matrix = None
 
     async def _async_to_disk(self) -> None:
         """真异步将缓存写入磁盘（ayafileio；原子写入：先写临时文件，再替换）"""
@@ -193,7 +211,7 @@ class LongMemoryStore:
             except Exception:
                 self._logger.exception("查询向量化失败，本次退回子串匹配")
             else:
-                ranked = cosine_rank(query, self._vectors, limit=limit)
+                ranked = rank_matrix(query, *self._search_matrix(), limit=limit)
                 hits = [
                     self._items[key]
                     for key, score in ranked
@@ -209,6 +227,18 @@ class LongMemoryStore:
         # 按重要性 + 访问热度 + 时间排序
         matches.sort(key=lambda x: (x.importance, x.access_count, x.last_accessed_at), reverse=True)
         return matches[:limit]
+
+    def _search_matrix(self) -> tuple[list[str], np.ndarray, np.ndarray]:
+        """取（必要时重建）检索矩阵：此前每次查询都从 Python 列表重建 N×768 矩阵。
+
+        Returns:
+            tuple: (键表, float32 矩阵, 行范数)
+        """
+        if self._matrix is None:
+            keys = list(self._vectors)
+            matrix = np.array([self._vectors[k] for k in keys], dtype=np.float32)
+            self._matrix = (keys, matrix, np.linalg.norm(matrix, axis=1))
+        return self._matrix
 
     def size(self) -> int:
         """当前长期记忆总量"""

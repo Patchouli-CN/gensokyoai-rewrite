@@ -272,3 +272,44 @@ async def test_long_store_quarantines_corrupt_file(tmp_path):
     quarantined = list(tmp_path.glob("long_memory.json.corrupt-*"))
     assert len(quarantined) == 1, "坏文件应被隔离留证"
     assert quarantined[0].read_text(encoding="utf-8") == "{这不是合法 JSON"
+
+
+async def test_important_memory_embedded_once():
+    """高重要性记忆：关联时算过的向量直接交给长期记忆，不再为同一段文本 embed 第二次"""
+    embedder = _FakeEmbedder({})
+    mgr = MemoryManager(embedder=embedder)
+    await mgr.store(MemoryItem(content="灵梦答应冬至一起吃饺子", importance=0.8))
+    embedded = [t for call in embedder.calls for t in call]
+    assert embedded.count("灵梦答应冬至一起吃饺子") == 1, embedder.calls
+
+
+async def test_restore_rebuild_is_windowed_and_single_flight():
+    """restore 后的重建只覆盖关联窗口，且并发写入只重建一次"""
+    embedder = _FakeEmbedder({})
+    mgr = MemoryManager(embedder=embedder)
+    mgr.restore([MemoryItem(content=f"恢复出来的旧记忆第{i}条") for i in range(300)])
+    await asyncio.gather(
+        mgr.store(MemoryItem(content="新写入的第一条记忆内容")),
+        mgr.store(MemoryItem(content="新写入的第二条记忆内容")),
+    )
+    rebuild_batches = [call for call in embedder.calls if len(call) > 1]
+    assert len(rebuild_batches) == 1, "并发写入只应重建一次"
+    assert len(rebuild_batches[0]) <= 50, "只重建关联候选窗口"
+
+
+async def test_recent_does_not_inflate_access_count():
+    """读近况不结算热度（一回合读 3~4 次，淘汰分不该被「展示次数」主导）"""
+    mgr = MemoryManager()
+    item = MemoryItem(content="一条普通的记忆")
+    await mgr.store(item)
+    for _ in range(10):
+        await mgr.recent(5)
+    assert item.access_count == 0
+
+
+async def test_eviction_removes_id_from_queue():
+    """淘汰时队列同步清理：满容量后持续写入，队列长度不随写入增长"""
+    mgr = MemoryManager(max_capacity=5)
+    for i in range(50):
+        await mgr.store(MemoryItem(content=f"第{i}句"))
+    assert len(mgr._work_mem_queue) == mgr.work_mem_size == 5

@@ -1,8 +1,9 @@
 """Embedder 与长期记忆语义检索单元测试：余弦排序 / 语义检索 / 降级 / sidecar 持久化"""
 
+import numpy as np
 import pytest
 
-from gensokyoai.core.memorizer.embedder import cosine_rank
+from gensokyoai.core.memorizer.embedder import cosine_rank, rank_matrix
 from gensokyoai.core.memorizer.store import LongMemoryStore
 from gensokyoai.schemas.memory_schema import MemoryItem
 
@@ -133,3 +134,29 @@ async def test_min_score_filters_noise():
     store_open = LongMemoryStore(embedder=embedder, min_score=0.0)
     await store_open.dump([MemoryItem(content="寺庙香火很旺"), MemoryItem(content="晚饭吃了咖喱")])
     assert len(await store_open.retrieve_by_topic("毫不相关的查询")) == 1
+
+
+async def test_semantic_retrieve_reuses_cached_matrix():
+    """检索矩阵缓存：连续查询不重建，新向量入库后作废重建"""
+    embedder = FakeEmbedder({"冬至": [1.0, 0.0], "吃饺子": [0.9, 0.1], "看樱花": [0.0, 1.0]})
+    store = LongMemoryStore(embedder=embedder)
+    await store.dump([MemoryItem(content="吃饺子")])
+    await store.retrieve_by_topic("冬至")
+    cached = store._matrix
+    await store.retrieve_by_topic("冬至")
+    assert store._matrix is cached, "向量没变时不应重建矩阵"
+    await store.dump([MemoryItem(content="看樱花")])
+    hits = await store.retrieve_by_topic("冬至", limit=1)
+    assert store._matrix is not cached
+    assert [h.content for h in hits] == ["吃饺子"]
+
+
+def test_rank_matrix_top_k_matches_full_sort():
+    """top-k 走 argpartition：结果与全排序一致"""
+    rng = np.random.default_rng(0)
+    matrix = rng.standard_normal((200, 8)).astype(np.float32)
+    keys = [f"k{i}" for i in range(200)]
+    query = rng.standard_normal(8).tolist()
+    full = rank_matrix(query, keys, matrix, np.linalg.norm(matrix, axis=1), limit=200)
+    top = rank_matrix(query, keys, matrix, np.linalg.norm(matrix, axis=1), limit=5)
+    assert [k for k, _ in top] == [k for k, _ in full[:5]]

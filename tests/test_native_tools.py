@@ -41,7 +41,7 @@ class _StubProvider(LlamaProvider):
         self._responses = list(responses)
         self.payloads: list[dict] = []
 
-    async def _post_json(self, http, url, payload, headers, started) -> dict:
+    async def _post_json(self, http, url, payload, headers, started, timeout=None) -> dict:
         self.payloads.append(payload)
         return self._responses.pop(0)
 
@@ -102,7 +102,7 @@ async def test_probe_failure_falls_back_to_shout():
     """探测请求失败按不支持处理（文本喊话备胎，不炸启动）"""
 
     class _BoomProvider(LlamaProvider):
-        async def _post_json(self, http, url, payload, headers, started):
+        async def _post_json(self, http, url, payload, headers, started, timeout=None):
             raise ConnectionError("server has no --jinja")
 
     provider = _BoomProvider()
@@ -445,7 +445,7 @@ async def test_probe_transient_failure_is_not_cached():
     attempts = {"n": 0}
 
     class _FlakyProvider(LlamaProvider):
-        async def _post_json(self, http, url, payload, headers, started):
+        async def _post_json(self, http, url, payload, headers, started, timeout=None):
             attempts["n"] += 1
             if attempts["n"] == 1:
                 raise TimeoutError("模型还在加载")

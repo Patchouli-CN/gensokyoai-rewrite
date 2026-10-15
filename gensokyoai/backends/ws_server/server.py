@@ -386,6 +386,7 @@ async def run_server(
         await asyncio.gather(reaper, return_exceptions=True)
         await hub.shutdown()
         await runner.cleanup()
+        await hub.sessions.aclose()
 
 
 def main(argv: list[str] | None = None) -> int:

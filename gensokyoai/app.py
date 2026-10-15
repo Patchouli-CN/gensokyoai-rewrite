@@ -203,8 +203,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     logger.info("启动幻想乡...")
+
+    async def _run() -> None:
+        try:
+            await world.start()
+        finally:
+            await world.sessions.aclose()
+
     try:
-        asyncio.run(world.start())
+        asyncio.run(_run())
     except KeyboardInterrupt:
         logger.info("收到中断，退出")
     return 0

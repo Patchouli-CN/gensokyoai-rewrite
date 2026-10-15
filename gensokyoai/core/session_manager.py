@@ -496,6 +496,21 @@ class SessionManager:
         """清空某个 owner 的会话"""
         self._sessions.pop(owner, None)
 
+    async def aclose(self) -> None:
+        """释放全部 backend 持有的资源（复用的 HTTP 连接池；进程 / 服务退出时调用）。
+
+        作用域视图共享父管理器的 backend 表，由根管理器统一关闭即可。
+        """
+        backends = {id(b): b for b in [*self._backends.values(), self._default_backend] if b}
+        for backend in backends.values():
+            close = getattr(backend, "aclose", None)
+            if close is None:
+                continue
+            try:
+                await close()
+            except Exception:
+                self._logger.exception(f"backend 关闭失败: {type(backend).__name__}")
+
     def reset_all(self) -> None:
         """清空全部会话（如新一轮对话开始）"""
         self._sessions.clear()

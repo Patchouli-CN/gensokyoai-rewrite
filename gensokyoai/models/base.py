@@ -159,6 +159,27 @@ class OpenAICompatProvider(ModelProvider):
         """ 原生 tool_calls 探测结果缓存（None = 未探测或上次只得到瞬时故障）"""
         self._probe_lock = asyncio.Lock()
         """ 探测单飞：多个频道 / 步骤同时首调时只发一次探测请求 """
+        self._http: aiohttp.ClientSession | None = None
+        """ 复用的 HTTP 会话（连接池）：一回合要调 4~10 次模型，每次新建会话
+        = 每次重新 TCP+TLS 握手（云端模型尤其明显）。超时按请求单独给 """
+
+    def _session(self) -> aiohttp.ClientSession:
+        """取复用的 HTTP 会话；未建 / 已关 / 绑在别的事件循环上时重建。
+
+        Returns:
+            aiohttp.ClientSession: 当前事件循环上可用的会话
+        """
+        http = self._http
+        if http is None or http.closed or http._loop is not asyncio.get_running_loop():
+            http = aiohttp.ClientSession()
+            self._http = http
+        return http
+
+    async def aclose(self) -> None:
+        """关闭复用的 HTTP 会话（进程 / 服务退出时调用；之后再调用会自动重建）。"""
+        http, self._http = self._http, None
+        if http is not None and not http.closed:
+            await http.close()
 
     async def probe_native_tools(self) -> bool:
         """启发式探测原生 tool_calls 支持：一次性小请求，结果按实例缓存。
@@ -215,8 +236,9 @@ class OpenAICompatProvider(ModelProvider):
             ]
             payload["tool_choice"] = "required"
             timeout = aiohttp.ClientTimeout(total=min(self._conf.timeout, 60.0))  # type: ignore[union-attr]
-            async with aiohttp.ClientSession(timeout=timeout) as http:
-                data = await self._post_json(http, url, payload, headers, time.monotonic())
+            data = await self._post_json(
+                self._session(), url, payload, headers, time.monotonic(), timeout=timeout
+            )
             return bool(self._build_result(data).tool_calls), True
         except aiohttp.ClientResponseError as err:
             definite = 400 <= err.status < 500 and err.status not in (408, 429)
@@ -269,31 +291,31 @@ class OpenAICompatProvider(ModelProvider):
         prompt_total = completion_total = cached_total = cache_write_total = 0
         rounds = 0
 
-        async with aiohttp.ClientSession(timeout=timeout) as http:
-            while True:
-                payload = self._build_payload(
-                    messages,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    stop=stop,
-                )
-                if tools:
-                    payload["tools"] = [t.to_openai_tool() for t in tools]
-                    payload["tool_choice"] = "auto"
-                data = await self._post_json(http, url, payload, headers, started)
-                result = self._build_result(data)
-                prompt_total += result.usage.prompt_tokens
-                completion_total += result.usage.completion_tokens
-                cached_total += result.usage.cached_tokens
-                cache_write_total += result.usage.cache_write_tokens
+        http = self._session()
+        while True:
+            payload = self._build_payload(
+                messages,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                stop=stop,
+            )
+            if tools:
+                payload["tools"] = [t.to_openai_tool() for t in tools]
+                payload["tool_choice"] = "auto"
+            data = await self._post_json(http, url, payload, headers, started, timeout=timeout)
+            result = self._build_result(data)
+            prompt_total += result.usage.prompt_tokens
+            completion_total += result.usage.completion_tokens
+            cached_total += result.usage.cached_tokens
+            cache_write_total += result.usage.cache_write_tokens
 
-                if not result.tool_calls or not tools or not execute_tools:
-                    break
-                rounds += 1
-                if rounds > _MAX_TOOL_ROUNDS:
-                    self._logger.warning(f"工具调用超过 {_MAX_TOOL_ROUNDS} 轮，强制收尾")
-                    break
-                messages = await self._execute_tools(messages, result, tools)
+            if not result.tool_calls or not tools or not execute_tools:
+                break
+            rounds += 1
+            if rounds > _MAX_TOOL_ROUNDS:
+                self._logger.warning(f"工具调用超过 {_MAX_TOOL_ROUNDS} 轮，强制收尾")
+                break
+            messages = await self._execute_tools(messages, result, tools)
 
         assert result is not None
         if rounds:
@@ -387,29 +409,30 @@ class OpenAICompatProvider(ModelProvider):
         finish = "stop"
         model_name = self._conf.model_name
 
-        async with aiohttp.ClientSession(timeout=timeout) as http:
-            async for event in self._iter_sse_events(http, url, payload, headers):
-                choice = (event.get("choices") or [{}])[0]
-                delta = choice.get("delta") or {}
-                text = delta.get("content") or ""
-                if text:
-                    yield StreamEvent(delta=text)
-                if choice.get("finish_reason"):
-                    finish = choice["finish_reason"]
-                usage = event.get("usage")
-                if usage:
-                    details = usage.get("prompt_tokens_details") or {}
-                    prompt_total += int(usage.get("prompt_tokens", 0))
-                    completion_total += int(usage.get("completion_tokens", 0))
-                    cached_total += int(details.get("cached_tokens", 0))
-                    cache_write_total += int(
-                        details.get(
-                            "cache_write_input_tokens",
-                            usage.get("cache_creation_input_tokens", 0),
-                        )
+        async for event in self._iter_sse_events(
+            self._session(), url, payload, headers, timeout=timeout
+        ):
+            choice = (event.get("choices") or [{}])[0]
+            delta = choice.get("delta") or {}
+            text = delta.get("content") or ""
+            if text:
+                yield StreamEvent(delta=text)
+            if choice.get("finish_reason"):
+                finish = choice["finish_reason"]
+            usage = event.get("usage")
+            if usage:
+                details = usage.get("prompt_tokens_details") or {}
+                prompt_total += int(usage.get("prompt_tokens", 0))
+                completion_total += int(usage.get("completion_tokens", 0))
+                cached_total += int(details.get("cached_tokens", 0))
+                cache_write_total += int(
+                    details.get(
+                        "cache_write_input_tokens",
+                        usage.get("cache_creation_input_tokens", 0),
                     )
-                if event.get("model"):
-                    model_name = event["model"]
+                )
+            if event.get("model"):
+                model_name = event["model"]
 
         elapsed = time.monotonic() - started
         final_usage = Usage(
@@ -436,13 +459,15 @@ class OpenAICompatProvider(ModelProvider):
         url: str,
         payload: dict,
         headers: dict,
+        *,
+        timeout: aiohttp.ClientTimeout | None = None,
     ):
         """发送流式请求并逐条解析 SSE `data:` 行（测试可覆写此方法）。
 
         Yields:
             dict: 每条 SSE 事件解析出的 JSON 对象
         """
-        async with http.post(url, json=payload, headers=headers) as resp:
+        async with http.post(url, json=payload, headers=headers, timeout=timeout) as resp:
             if resp.status != 200:
                 body = await resp.text()
                 self._logger.error(
@@ -472,9 +497,11 @@ class OpenAICompatProvider(ModelProvider):
         payload: dict,
         headers: dict,
         started: float,
+        *,
+        timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict:
         """单次 POST 并解析 JSON 响应。"""
-        async with http.post(url, json=payload, headers=headers) as resp:
+        async with http.post(url, json=payload, headers=headers, timeout=timeout) as resp:
             if resp.status != 200:
                 body = await resp.text()
                 self._logger.error(

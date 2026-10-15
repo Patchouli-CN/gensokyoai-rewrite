@@ -4,8 +4,10 @@
 并用遗忘曲线 (重要性 + 访问次数 + 时间衰减) 决定淘汰。
 """
 
+import asyncio
 import time
 from collections import deque
+from itertools import islice
 from pathlib import Path
 
 from ...schemas.memory_schema import MemoryItem
@@ -70,6 +72,8 @@ class MemoryManager:
         """ 工作记忆向量（语义自动关联用；仅内存，重启后由 restore 标脏重建）"""
         self._vectors_stale = False
         """ restore 恢复了记忆但还没有向量——下次写入时先批量重建再关联 """
+        self._rebuild_lock = asyncio.Lock()
+        """ 重建单飞：首回合的两个 MEMORY_WRITE 会同时撞上脏标，各重建一遍 """
 
         # --- 长期记忆（冷）：JSON 落盘，按会话隔离 ---
         if (storage_dir is None) != (session_id is None):
@@ -96,16 +100,17 @@ class MemoryManager:
         self._work_mem_store[mid] = item
         self._work_mem_queue.append(mid)
 
-        # 2. 如果记忆至关重要，直接归档到长期记忆，保障不丢失
-        if item.importance >= _DUMP_TO_LONG_TERM_THRESHOLD:
-            await self._long_mem_store.dump([item])
-
-        # 3. 检查容量，触发遗忘
+        # 2. 检查容量，触发遗忘
         if len(self._work_mem_store) > self._work_max:
             self._evict_earliest()
 
-        # 4. 语义自动关联（embedding 可用时；失败不阻塞写入）
+        # 3. 语义自动关联（embedding 可用时；失败不阻塞写入）
         await self._associate(item)
+
+        # 4. 如果记忆至关重要，直接归档到长期记忆，保障不丢失（放在关联之后：
+        #    关联时算好的向量顺手交给长期记忆，同一段文本不再 embed 第二次）
+        if item.importance >= _DUMP_TO_LONG_TERM_THRESHOLD:
+            await self._long_mem_store.dump([item], self._vectors_of([item]))
 
     async def _associate(self, item: MemoryItem) -> None:
         """写入时语义自动关联：把新记忆和「在讲同一件事」的旧记忆建边。
@@ -147,15 +152,35 @@ class MemoryManager:
         self._work_vectors[item.memory_id] = vector
 
     async def _rebuild_work_vectors(self) -> None:
-        """restore 后批量重建工作记忆向量（一次 embed 调用）；失败保留脏标下次重试"""
-        items = [
-            self._work_mem_store[mid] for mid in self._work_mem_queue if mid in self._work_mem_store
-        ]
-        if items and self._embedder is not None:
-            vectors = await self._embedder.embed([i.content for i in items])
-            self._work_vectors = {i.memory_id: v for i, v in zip(items, vectors, strict=True)}
-            self._logger.info(f"工作记忆向量已重建: {len(vectors)} 条")
-        self._vectors_stale = False
+        """restore 后批量重建工作记忆向量（一次 embed 调用）；失败保留脏标下次重试。
+
+        只重建关联候选窗口（最近 N 条）——关联只看这么多，全量重建最多 1000 条
+        文本一次塞进 embedding 请求，白费且容易超时；单飞，并发写入只重建一次。
+        """
+        async with self._rebuild_lock:
+            if not self._vectors_stale:
+                return  # 等锁期间别人已经重建完了
+            recent_ids = list(islice(reversed(self._work_mem_queue), _ASSOC_CANDIDATE_WINDOW))
+            items = [
+                self._work_mem_store[mid]
+                for mid in reversed(recent_ids)
+                if mid in self._work_mem_store and mid not in self._work_vectors
+            ]
+            if items and self._embedder is not None:
+                vectors = await self._embedder.embed([i.content for i in items])
+                rebuilt = {i.memory_id: v for i, v in zip(items, vectors, strict=True)}
+                # 保持写入序：重建出的旧条目在前，期间新写入的在后
+                self._work_vectors = {**rebuilt, **self._work_vectors}
+                self._logger.info(f"工作记忆向量已重建: {len(vectors)} 条")
+            self._vectors_stale = False
+
+    def _vectors_of(self, items: list[MemoryItem]) -> dict[str, list[float]]:
+        """取这些记忆手上已有的向量（转长期记忆时一并交过去）。"""
+        return {
+            i.memory_id: self._work_vectors[i.memory_id]
+            for i in items
+            if i.memory_id in self._work_vectors
+        }
 
     def retrieve(self, memory_id: str) -> MemoryItem | None:
         """根据 ID 获取单条记忆，并增加热度"""
@@ -168,6 +193,10 @@ class MemoryManager:
         """按写入时间倒序取最近 n 条记忆。
         如果提供 search_term，也会去长期记忆中捞取相关旧事。
 
+        **不结算访问热度**：一回合要读 3~4 次近况（门控 / 主循环 / 出戏审查 /
+        主动发言），每次都 touch 的话淘汰分基本只由「被展示了几次」决定。
+        热度只在真正的检索命中（`retrieve` / 长期召回 / 级联联想）时结算。
+
         长期命中有**预留名额**（至多 n 的一半）：先截近况再追加旧事再截一刀，
         工作记忆一满 n 条，旧事就被全部截掉——检索白跑、召回永远进不了 prompt。
 
@@ -175,12 +204,17 @@ class MemoryManager:
             n: 返回条数上限
             search_term: 可选，关联检索词
         """
-        # 1. 热记忆：直接取最近的
-        items = [
-            self._work_mem_store[mid]
-            for mid in reversed(self._work_mem_queue)
-            if mid in self._work_mem_store
-        ][:n]
+        # 1. 热记忆：直接取最近的（从队尾惰性取，不为整条队列建列表）
+        items = list(
+            islice(
+                (
+                    self._work_mem_store[mid]
+                    for mid in reversed(self._work_mem_queue)
+                    if mid in self._work_mem_store
+                ),
+                n,
+            )
+        )
 
         # 2. 冷记忆：如果有关联词，去长期记忆里捞旧事，占用预留名额
         if search_term and n > 0:
@@ -189,10 +223,9 @@ class MemoryManager:
             ids = {i.memory_id for i in items}
             extra = [i for i in long_items if i.memory_id not in ids][:reserve]
             items = items[: n - len(extra)] + extra
-
-        # 3. 结算访问热度
-        for item in items:
-            item.touch()
+            # 长期召回是真正的检索命中：结算热度
+            for item in extra:
+                item.touch()
 
         return items
 
@@ -340,12 +373,12 @@ class MemoryManager:
             if item.importance >= _CORE_IMPORTANCE_THRESHOLD:
                 continue
 
-            # 2. 访问增益：被检索过 5 次，说明是高频话题，多给分，使其不易忘
-            access_gain = item.access_count * 0.1
+            # 2. 访问增益：被检索命中越多越不易忘，但封顶 0.5——不封顶时几次命中
+            #    就压过整个重要性区间（0~1），淘汰退化成「被命中过没有」
+            access_gain = min(0.5, item.access_count * 0.1)
 
-            # 3. 时间衰减：超过 72 小时没被碰过，扣分（指数衰减，模拟艾宾浩斯）
+            # 3. 时间新鲜度：距上次被碰的小时数，从 1 线性降到 0（72 小时降完）
             hours_since_access = (now - item.last_accessed_at) / 3600.0
-            # 24小时内不衰减，之后线性减少，72小时彻底衰减完
             time_decay = max(0.0, 1.0 - (hours_since_access / 72.0))
 
             # 综合存活分值 = 基础重要性 + 访问增益 + 时间衰减
@@ -361,12 +394,19 @@ class MemoryManager:
         # 如果有一定价值（中等分值），扔给长期记忆 JSON 落盘
         if min_id:
             self._work_mem_store.pop(min_id)
-            self._work_vectors.pop(min_id, None)  # 向量同步清掉，不留孤儿
-            # 从队列里清理（FIFO 里可能有残留，但不影响正确性，访问时若不存在直接跳过）
+            vector = self._work_vectors.pop(min_id, None)  # 向量同步清掉，不留孤儿
+            # 队列同步清理：此前留着残留 ID，满容量后每次写入都让队列多长一格
+            self._work_mem_queue.remove(min_id)
             if min_item:  # 空检查
                 if min_item.importance > 0.3:
-                    # 有价值，转入长期记忆，异步落盘（登记强引用，避免被 GC 回收）
-                    self._tasks.spawn(self._long_mem_store.dump([min_item]), name="long-dump")
+                    # 有价值，转入长期记忆，异步落盘（登记强引用，避免被 GC 回收）；
+                    # 手上的向量一并交过去，不再为同一段文本重算 embedding
+                    self._tasks.spawn(
+                        self._long_mem_store.dump(
+                            [min_item], {min_id: vector} if vector is not None else None
+                        ),
+                        name="long-dump",
+                    )
                     self._logger.debug(f"记忆转存为长期记忆: {min_item.content[:30]}")
                 else:
                     self._logger.debug(f"记忆已彻底遗忘: {min_item.content[:30]} (fire and forget)")

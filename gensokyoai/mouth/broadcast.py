@@ -6,10 +6,14 @@
 - 流式帧（begin/delta/end）逐帧广播，天然支持多端同步「逐字蹦」
 """
 
+import asyncio
 from typing import Protocol, runtime_checkable
 
 from ..utils.logger import LoggerManager
 from .base import Mouth
+
+_DELIVER_TIMEOUT_S = 5.0
+""" 单帧投递超时：超过即视为该连接卡死并摘除（不让一个慢客户端拖住整个频道）"""
 
 
 @runtime_checkable
@@ -61,12 +65,23 @@ class BroadcastMouth(Mouth):
         return list(self._sinks)
 
     async def _broadcast(self, frame: dict) -> None:
-        """把一帧发给所有订阅者；投递失败的订阅者被摘除。"""
-        for sink in list(self._sinks):
-            try:
-                await sink.deliver(frame)
-            except Exception:
-                self._logger.warning("投递失败，摘除该订阅者")
+        """把一帧并发发给所有订阅者；投递失败或超时的订阅者被摘除。
+
+        此前逐个 await：一个不读数据的客户端（写缓冲满后 send 卡在 drain）会拖住
+        其余所有连接的逐字流式，连带卡住世界的回合，直到心跳把它踢掉（30~45 秒）。
+        """
+        sinks = list(self._sinks)
+        if not sinks:
+            return
+        results = await asyncio.gather(
+            *(asyncio.wait_for(sink.deliver(frame), _DELIVER_TIMEOUT_S) for sink in sinks),
+            return_exceptions=True,
+        )
+        for sink, result in zip(sinks, results, strict=True):
+            if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                self._logger.warning(f"投递失败（{type(result).__name__}），摘除该订阅者")
                 self._sinks.discard(sink)
 
     async def send(self, speaker: str, text: str) -> None:

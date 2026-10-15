@@ -4,6 +4,7 @@ import asyncio
 
 from gensokyoai.core.config import WorldSettings
 from gensokyoai.core.session_manager import SessionManager
+from gensokyoai.mouth import broadcast
 from gensokyoai.mouth.broadcast import BroadcastMouth
 from gensokyoai.roleplay.character import Character, CharacterCard
 from gensokyoai.roleplay.hub import ChannelHub
@@ -432,3 +433,20 @@ async def test_hub_run_reaper_reclaims_idle_channels():
     finally:
         reaper.cancel()
         await asyncio.gather(reaper, return_exceptions=True)
+
+
+async def test_broadcast_slow_sink_does_not_stall_others(monkeypatch):
+    """一个不读数据的连接卡住投递：其他连接照常收到，卡死的连接超时后被摘除"""
+    monkeypatch.setattr(broadcast, "_DELIVER_TIMEOUT_S", 0.05)
+
+    class _Stuck:
+        async def deliver(self, frame: dict) -> None:
+            await asyncio.sleep(10)
+
+    mouth = BroadcastMouth()
+    good, stuck = _Sink(), _Stuck()
+    mouth.attach(good)
+    mouth.attach(stuck)
+    await asyncio.wait_for(mouth.send("幽幽子", "你好"), timeout=1.0)
+    assert good.frames, "正常连接应收到"
+    assert mouth.subscriber_count == 1, "卡死的连接应被摘除"

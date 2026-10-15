@@ -231,7 +231,7 @@ class BrainEngine:
                 role="user",
                 content=prompt_mgr.render(
                     "brain.think.user",
-                    persona=self._persona or "（未提供）",
+                    persona=self._persona_brief or "（未提供）",
                     sender=snapshot.sender,
                     content=snapshot.content,
                     context=context_text,

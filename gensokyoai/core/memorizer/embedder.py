@@ -125,13 +125,41 @@ def cosine_rank(
         return []
     keys = list(candidates)
     matrix = np.array([candidates[k] for k in keys], dtype=np.float32)
+    return rank_matrix(query, keys, matrix, np.linalg.norm(matrix, axis=1), limit)
+
+
+def rank_matrix(
+    query: list[float],
+    keys: list[str],
+    matrix: np.ndarray,
+    norms: np.ndarray,
+    limit: int = 10,
+) -> list[tuple[str, float]]:
+    """对预先建好的候选矩阵做余弦排序（长期记忆缓存矩阵，免得每次查询重建 N×D）。
+
+    Args:
+        query: 查询向量
+        keys: 矩阵各行对应的键
+        matrix: 候选矩阵（float32，N×D）
+        norms: 各行范数
+        limit: 返回条数上限
+
+    Returns:
+        list[tuple[str, float]]: (键, 相似度) 按相似度降序；零范数向量得 0 分
+    """
+    if not keys:
+        return []
     q = np.asarray(query, dtype=np.float32)
     q_norm = float(np.linalg.norm(q))
     if q_norm == 0.0:
         return []
-    norms = np.linalg.norm(matrix, axis=1)
     valid = norms > 0
     scores = np.zeros(len(keys), dtype=np.float32)
     scores[valid] = (matrix[valid] @ q) / (norms[valid] * q_norm)
-    order = np.argsort(-scores, kind="stable")[:limit]
+    if limit < len(keys):
+        # 只要 top-k：argpartition 选出前 k 再排，N 大时省掉整列全排序
+        top = np.argpartition(-scores, limit)[:limit]
+        order = top[np.argsort(-scores[top], kind="stable")]
+    else:
+        order = np.argsort(-scores, kind="stable")
     return [(keys[i], float(scores[i])) for i in order]

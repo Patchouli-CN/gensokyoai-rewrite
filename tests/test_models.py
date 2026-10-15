@@ -3,6 +3,7 @@
 import msgspec
 
 from gensokyoai.core.registry import Registry
+from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.models.base import (
     ModelProvider,
     OpenAICompatProvider,
@@ -235,7 +236,7 @@ class _StubProvider(LlamaProvider):
         self._responses = list(responses)
         self.payloads: list[dict] = []
 
-    async def _post_json(self, http, url, payload, headers, started) -> dict:
+    async def _post_json(self, http, url, payload, headers, started, timeout=None) -> dict:
         self.payloads.append(payload)
         return self._responses.pop(0)
 
@@ -354,7 +355,7 @@ class _StreamingStub(OpenAICompatProvider):
         self._events = list(events)
         self.payloads: list[dict] = []
 
-    async def _iter_sse_events(self, http, url, payload, headers):
+    async def _iter_sse_events(self, http, url, payload, headers, timeout=None):
         self.payloads.append(payload)
         for ev in self._events:
             yield ev
@@ -412,7 +413,7 @@ async def test_chat_stream_llama_payload_keeps_think_switch():
             super().__init__()
             self.payloads = []
 
-        async def _iter_sse_events(self, http, url, payload, headers):
+        async def _iter_sse_events(self, http, url, payload, headers, timeout=None):
             self.payloads.append(payload)
             yield {"choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]}
 
@@ -504,3 +505,27 @@ def test_build_result_parses_cached_tokens():
     )
     assert result.usage.prompt_tokens == 50
     assert result.usage.cached_tokens == 40
+
+
+async def test_provider_reuses_http_session_and_closes():
+    """多次调用复用同一个 HTTP 会话（连接池，不再每次 TCP+TLS 握手）；aclose 释放后可重建"""
+    sessions_seen: list[object] = []
+
+    class _Recording(LlamaProvider):
+        async def _post_json(self, http, url, payload, headers, started, timeout=None):
+            sessions_seen.append(http)
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    provider = _Recording().config(ModelConfig())
+    await provider.chat([Message(role="user", content="a")])
+    await provider.chat([Message(role="user", content="b")])
+    assert sessions_seen[0] is sessions_seen[1], "应复用同一个会话"
+    first = sessions_seen[0]
+
+    sm = SessionManager()
+    sm.set_default_backend(provider)
+    await sm.aclose()
+    assert first.closed, "aclose 应关闭复用会话"
+    await provider.chat([Message(role="user", content="c")])
+    assert sessions_seen[-1] is not first and not sessions_seen[-1].closed, "关闭后应自动重建"
+    await provider.aclose()

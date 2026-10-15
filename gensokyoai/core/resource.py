@@ -351,6 +351,12 @@ class GatedBackend:
             return False
         return await probe()
 
+    async def aclose(self) -> None:
+        """透传资源释放（被包装的 provider 持有复用的 HTTP 会话）。"""
+        close = getattr(self._inner, "aclose", None)
+        if close is not None:
+            await close()
+
     async def chat(
         self,
         messages: list[Message],
