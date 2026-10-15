@@ -387,7 +387,8 @@ async def test_hub_replacement_channel_survives_old_world_exit():
     await asyncio.sleep(0)
     hub.submit("room", user="小明", text="我又回来了")  # 关闭窗口内重连
     await stopping
-    await asyncio.sleep(0.02)
+    # 轮询等新世界启动（固定 sleep 在机器繁忙时不够，会让断言偶发失败）
+    assert await _settle(lambda: "w1:start" in log), f"新世界应启动: {log}"
 
     assert hub.channel_ids() == ["room"], "旧世界退出不应摘掉顶替它的新频道"
     assert hub._channels["room"].world is made[1]
