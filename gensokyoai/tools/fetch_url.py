@@ -69,6 +69,31 @@ class _GuardedResolver(aiohttp.ThreadedResolver):
         return allowed
 
 
+async def _read_capped(stream, limit: int) -> bytes:
+    """读到 EOF 或上限为止。
+
+    `StreamReader.read(n)` 只返回**当前已缓冲**的数据（最多 n 字节），不会等满——
+    一次调用通常只拿到第一个网络分块（几 KB 的 <head> 与脚本），剥完 HTML 几乎
+    什么都不剩，知识站查询就这样无声地返回空页。
+
+    Args:
+        stream: 响应体流（aiohttp StreamReader）
+        limit: 最多读取的字节数
+
+    Returns:
+        bytes: 响应体（超过上限的部分丢弃）
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while total < limit:
+        chunk = await stream.read(limit - total)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
 def _strip_html(text: str) -> str:
     """粗粒度 HTML -> 纯文本（剥 script/style + 标签替空格 + 实体反转义）"""
     text = _SCRIPT_STYLE_PATTERN.sub(" ", text)
@@ -114,7 +139,7 @@ async def fetch_url(url: str) -> str:
                             current = urljoin(current, location)
                             continue
                         content_type = response.headers.get("Content-Type", "")
-                        raw = await response.content.read(_MAX_BYTES + 1)
+                        raw = await _read_capped(response.content, _MAX_BYTES)
                         break
                 except UnsafeUrlError:
                     raise

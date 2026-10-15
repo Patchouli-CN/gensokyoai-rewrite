@@ -1,5 +1,6 @@
 """文本处理工具"""
 
+import json
 import re
 
 import msgspec
@@ -115,10 +116,12 @@ def count_chars(text: str) -> dict[str, int]:
 
 
 def extract_json_object(text: str) -> dict:
-    """容错提取模型输出中的 JSON 对象（取第一个 { 到最后一个 } 的切片解码）。
+    """容错提取模型输出中的 JSON 对象。
 
-    小模型输出常见噪声——思考残留、```json 围栏、首尾废话——通常都落在
-    这个窗口之外。失败语义统一为 ValueError，降级策略由调用方决定。
+    快路径：取第一个 { 到最后一个 } 的切片解码——思考残留、```json 围栏、首尾
+    废话通常都落在这个窗口之外。切片失败（JSON 之后还有带花括号的补充说明、
+    两个对象背靠背、JSON 之前有 `{占位}` 噪声）时逐个 { 尝试 `raw_decode`，
+    取第一个能完整解出的对象。失败语义统一为 ValueError，降级策略由调用方决定。
 
     Args:
         text: 模型原始输出
@@ -134,8 +137,20 @@ def extract_json_object(text: str) -> dict:
         raise ValueError(f"输出不含 JSON 对象: {text[:80]!r}")
     try:
         return msgspec.json.decode(text[start : end + 1], type=dict)
-    except msgspec.DecodeError as err:
-        raise ValueError(f"JSON 解析失败: {text[:80]!r}") from err
+    except msgspec.DecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    index = start
+    while index != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, index)
+        except ValueError:
+            pass
+        else:
+            if isinstance(obj, dict):
+                return obj
+        index = text.find("{", index + 1)
+    raise ValueError(f"JSON 解析失败: {text[:80]!r}")
 
 
 def try_extract_json_object(text: str) -> dict | None:

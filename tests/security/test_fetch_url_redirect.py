@@ -13,7 +13,8 @@ class _FakeContent:
         self._data = data
 
     async def read(self, n: int = -1) -> bytes:
-        return self._data[:n]
+        out, self._data = (self._data, b"") if n < 0 else (self._data[:n], self._data[n:])
+        return out
 
 
 class _FakeResponse:

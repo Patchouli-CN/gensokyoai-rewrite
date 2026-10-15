@@ -1,5 +1,7 @@
 """原生 tool_calls 优先 / 文本喊话备胎：启发式探测、配置短路、接力统一执行"""
 
+import asyncio
+
 from gensokyoai.core.brain.engine import BrainEngine
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.models.llama_cpp import LlamaProvider
@@ -436,3 +438,31 @@ async def test_relay_lone_value_fill_uses_thought_not_json_keys():
     feed = "\n".join(m.content for m in calls[1])
     assert "ECHO:" in feed, "工具应被执行"
     assert "'thought'" not in feed, "字段名不应被当成参数值填进去"
+
+
+async def test_probe_transient_failure_is_not_cached():
+    """瞬时故障（超时 / 断连，如 llama-server 还在加载）不缓存：下次重探，恢复后认出原生支持"""
+    attempts = {"n": 0}
+
+    class _FlakyProvider(LlamaProvider):
+        async def _post_json(self, http, url, payload, headers, started):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise TimeoutError("模型还在加载")
+            return _tool_call_response("noop", "{}")
+
+    provider = _FlakyProvider()
+    provider.config(ModelConfig())
+    assert await provider.probe_native_tools() is False
+    assert await provider.probe_native_tools() is True, "瞬时故障后应重探"
+    assert await provider.probe_native_tools() is True
+    assert attempts["n"] == 2, "确定答案之后读缓存"
+
+
+async def test_probe_concurrent_first_calls_send_one_request():
+    """多个频道 / 步骤同时首调：只发一次探测请求"""
+    provider = _StubProvider([_tool_call_response("noop", "{}")])
+    provider.config(ModelConfig())
+    results = await asyncio.gather(*(provider.probe_native_tools() for _ in range(5)))
+    assert results == [True] * 5
+    assert len(provider.payloads) == 1

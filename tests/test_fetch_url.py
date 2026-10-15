@@ -13,11 +13,16 @@ from gensokyoai.tools.fetch_url import fetch_url
 
 
 class _FakeContent:
-    def __init__(self, data: bytes) -> None:
+    """像真 StreamReader 一样分块吐数据：每次 read 最多给一个分块，读完返回 b""。"""
+
+    def __init__(self, data: bytes, chunk: int = 1 << 20) -> None:
         self._data = data
+        self._chunk = chunk
 
     async def read(self, n: int = -1) -> bytes:
-        return self._data if n < 0 else self._data[:n]
+        take = self._chunk if n < 0 else min(n, self._chunk)
+        out, self._data = self._data[:take], self._data[take:]
+        return out
 
 
 class _FakeResponse:
@@ -118,3 +123,17 @@ def test_build_tool_directive_lists_sites():
     assert "thbwiki.cc：东方中文维基" in directive
     assert "- example.com" in directive
     assert "web_search" in directive
+
+
+async def test_fetch_url_reads_whole_body_across_chunks(fake_session):
+    """响应体分多个网络块到达：要读到 EOF，不能只拿第一块（StreamReader.read(n) 不等满）"""
+    page = (
+        "<html><head>"
+        + "<script>x</script>" * 200
+        + "</head><body><p>西行寺幽幽子</p></body></html>"
+    )
+    response = _FakeResponse(body=page.encode())
+    response.content = _FakeContent(page.encode(), chunk=512)
+    _FakeSession.response = response
+    output = await fetch_url("https://thbwiki.cc/test")
+    assert "西行寺幽幽子" in output

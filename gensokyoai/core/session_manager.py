@@ -266,7 +266,12 @@ class SessionManager:
         tools: list[ToolSpec] | None = None,
         execute_tools: bool = True,
     ) -> CompletionResult:
-        """模块统一调用入口：按 owner 路由到对应 backend -> 拼会话 -> 预算裁剪 -> 调模型 -> 回写历史。"""
+        """模块统一调用入口：按 owner 路由到对应 backend -> 拼会话 -> 预算裁剪 -> 调模型 -> 回写历史。
+
+        有状态调用**成功后才提交**本轮消息：模型调用失败（网络 / 配额 / 超时 / 取消）
+        时历史原样不动——此前先追加再调用，失败后下一回合会带着两条连续的 user
+        消息（外加残留的「继续…」/ 过渡语指令）去问模型。
+        """
         started = time.monotonic()
         backend = self._get_backend(owner)
 
@@ -292,10 +297,9 @@ class SessionManager:
 
         session = self._get_or_create(owner)
         history_before = len(session.messages)
-        session.messages.extend(messages)
-        session.messages = self._trim(session.messages, session.max_tokens - max_new_tokens)
+        pending = self._trim([*session.messages, *messages], session.max_tokens - max_new_tokens)
         result = await backend.chat(
-            session.messages,
+            pending,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             stop=stop,
@@ -304,9 +308,7 @@ class SessionManager:
         )
         self._accumulate(owner, result.usage)
         self._accumulate_cost(owner, backend, result)
-        if result.content:
-            session.messages.append(Message(role="assistant", content=result.content))
-        session.last_used_at = time.time()
+        self._commit(session, pending, result.content)
         self._logger.info(
             f"调用完成: owner={owner} 模式=有状态 历史={history_before}->{len(session.messages)}条 "
             f"占用≈{self.usage(owner)}tok 耗时={time.monotonic() - started:.2f}s"
@@ -341,6 +343,9 @@ class SessionManager:
         仅供投递层（给用户看的那一条）使用；内部模块（brain/ooc/压缩）仍走 `call()` 缓冲。
         后端若未实现 `chat_stream`，则回退到 `call()`/`chat()` 一次性产出（单块），保证兼容。
 
+        有状态流式：已经流出去的文本就是用户看到的话——中途出错或消费方提前停止，
+        也把「本轮输入 + 已产出的半截回复」提交进历史；一个字都没产出则历史不动。
+
         Yields:
             StreamEvent: 正文块 + 末块（含 finish_reason / usage）
         """
@@ -359,18 +364,17 @@ class SessionManager:
                 )
             else:
                 session = self._get_or_create(owner)
-                session.messages.extend(messages)
-                session.messages = self._trim(session.messages, session.max_tokens - max_new_tokens)
+                pending = self._trim(
+                    [*session.messages, *messages], session.max_tokens - max_new_tokens
+                )
                 result = await backend.chat(
-                    session.messages,
+                    pending,
                     max_new_tokens=max_new_tokens,
                     temperature=temperature,
                     stop=stop,
                     tools=tools,
                 )
-                if result.content:
-                    session.messages.append(Message(role="assistant", content=result.content))
-                session.last_used_at = time.time()
+                self._commit(session, pending, result.content)
             self._accumulate(owner, result.usage)
             self._accumulate_cost(owner, backend, result)
             yield StreamEvent(
@@ -386,29 +390,44 @@ class SessionManager:
                 stop=stop,
                 tools=tools,
             ):
+                if ev.usage is not None:
+                    self._accumulate(owner, ev.usage)
+                    self._accumulate_cost(owner, backend, CompletionResult(usage=ev.usage))
                 yield ev
             return
 
         session = self._get_or_create(owner)
-        session.messages.extend(messages)
-        session.messages = self._trim(session.messages, session.max_tokens - max_new_tokens)
+        pending = self._trim([*session.messages, *messages], session.max_tokens - max_new_tokens)
         parts: list[str] = []
-        async for ev in stream_fn(
-            session.messages,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            stop=stop,
-            tools=tools,
-        ):
-            if ev.delta:
-                parts.append(ev.delta)
-            if ev.usage is not None:
-                self._accumulate(owner, ev.usage)
-                self._accumulate_cost(owner, backend, CompletionResult(usage=ev.usage))
-            yield ev
-        content = "".join(parts)
-        if content:
-            session.messages.append(Message(role="assistant", content=content))
+        try:
+            async for ev in stream_fn(
+                pending,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                stop=stop,
+                tools=tools,
+            ):
+                if ev.delta:
+                    parts.append(ev.delta)
+                if ev.usage is not None:
+                    self._accumulate(owner, ev.usage)
+                    self._accumulate_cost(owner, backend, CompletionResult(usage=ev.usage))
+                yield ev
+        finally:
+            if parts:
+                self._commit(session, pending, "".join(parts))
+
+    def _commit(self, session: VirtualSession, pending: list[Message], reply: str) -> None:
+        """把一次成功调用的上下文（已裁剪的历史 + 本轮输入）与回复写回会话。
+
+        Args:
+            session: 目标会话
+            pending: 本次实际发给模型的消息
+            reply: 模型回复（空串不入历史）
+        """
+        session.messages = (
+            [*pending, Message(role="assistant", content=reply)] if reply else pending
+        )
         session.last_used_at = time.time()
 
     def normalize_tool_calls(

@@ -1,5 +1,6 @@
 """模型提供者基类 + OpenAI 兼容 HTTP 通用实现"""
 
+import asyncio
 import time
 from abc import ABC, abstractmethod
 from typing import Self
@@ -155,21 +156,42 @@ class OpenAICompatProvider(ModelProvider):
         self._logger = LoggerManager.get_logger(self.log_tag)
         self._conf: ModelConfig | None = None
         self._native_probe: bool | None = None
-        """ 原生 tool_calls 探测结果缓存（None = 未探测）"""
+        """ 原生 tool_calls 探测结果缓存（None = 未探测或上次只得到瞬时故障）"""
+        self._probe_lock = asyncio.Lock()
+        """ 探测单飞：多个频道 / 步骤同时首调时只发一次探测请求 """
 
     async def probe_native_tools(self) -> bool:
         """启发式探测原生 tool_calls 支持：一次性小请求，结果按实例缓存。
 
         配置 `tool_support` 显式指定时短路（True/False 都跳过探测）。
         探测发一个「必须调用 dummy 工具」的最小请求：返回带 tool_calls = 支持；
-        报错 / 超时 / 没调 = 不支持（落文本喊话备胎，行为与旧版一致）。
+        没调 / 4xx（服务端不认 tools 参数）= 不支持。这两种是**确定的答案**，缓存；
+        超时 / 断连 / 5xx / 429 是瞬时故障（llama-server 还在加载模型时很常见），
+        本次按不支持处理但**不缓存**——否则一次超时就把支持原生调用的模型永久
+        锁在文本喊话备胎上，直到重启。
         """
         if self._conf is not None and self._conf.tool_support is not None:
             return self._conf.tool_support
         if self._native_probe is not None:
             return self._native_probe
+        async with self._probe_lock:
+            if self._native_probe is not None:
+                return self._native_probe
+            supported, definite = await self._probe_once()
+            if definite:
+                self._native_probe = supported
+            self._logger.info(
+                f"原生 tool_calls 探测: {'支持（原生优先）' if supported else '不支持（文本喊话备胎）'}"
+                + ("" if definite else "（瞬时故障，下次重探）")
+            )
+            return supported
 
-        supported = False
+    async def _probe_once(self) -> tuple[bool, bool]:
+        """发一次探测请求。
+
+        Returns:
+            tuple[bool, bool]: (是否支持, 是否为确定答案——瞬时故障为 False)
+        """
         try:
             headers = {"Content-Type": "application/json"}
             if self._conf and self._conf.token:
@@ -195,15 +217,14 @@ class OpenAICompatProvider(ModelProvider):
             timeout = aiohttp.ClientTimeout(total=min(self._conf.timeout, 60.0))  # type: ignore[union-attr]
             async with aiohttp.ClientSession(timeout=timeout) as http:
                 data = await self._post_json(http, url, payload, headers, time.monotonic())
-            result = self._build_result(data)
-            supported = bool(result.tool_calls)
+            return bool(self._build_result(data).tool_calls), True
+        except aiohttp.ClientResponseError as err:
+            definite = 400 <= err.status < 500 and err.status not in (408, 429)
+            self._logger.warning(f"原生 tool_calls 探测被拒: HTTP {err.status}")
+            return False, definite
         except Exception:
             self._logger.exception("原生 tool_calls 探测失败，按不支持处理（文本喊话备胎）")
-        self._native_probe = supported
-        self._logger.info(
-            f"原生 tool_calls 探测: {'支持（原生优先）' if supported else '不支持（文本喊话备胎）'}"
-        )
-        return supported
+            return False, False
 
     def config(self, conf: ModelConfig) -> Self:
         """更新配置。"""
@@ -276,17 +297,15 @@ class OpenAICompatProvider(ModelProvider):
 
         assert result is not None
         if rounds:
-            result = CompletionResult(
-                content=result.content,
-                reasoning=result.reasoning,
-                finish_reason=result.finish_reason,
+            # replace 而非手搓构造：手搓漏掉了 tool_calls（超轮强制收尾时调用信息丢失）
+            result = msgspec.structs.replace(
+                result,
                 usage=Usage(
                     prompt_tokens=prompt_total,
                     completion_tokens=completion_total,
                     cached_tokens=cached_total,
                     cache_write_tokens=cache_write_total,
                 ),
-                model=result.model,
             )
 
         elapsed = time.monotonic() - started
@@ -341,7 +360,11 @@ class OpenAICompatProvider(ModelProvider):
             f"max_tokens={max_new_tokens} temperature={temperature} stop={stop} 工具={len(tools) if tools else 0}个"
         )
         started = time.monotonic()
-        timeout = aiohttp.ClientTimeout(total=self._conf.timeout)
+        # 流式不能用 total 超时：它覆盖整个响应体读取，本地模型 10 tok/s 吐 1024 token
+        # 就会在半句话处被掐断（前半句已经投递给用户了）。改为「两块之间」的空闲超时。
+        timeout = aiohttp.ClientTimeout(
+            total=None, sock_connect=self._conf.timeout, sock_read=self._conf.timeout
+        )
 
         payload = self._build_payload(
             messages,

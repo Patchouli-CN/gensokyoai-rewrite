@@ -1,6 +1,7 @@
 """utils/coerce 单元测试：模型 JSON 字段的宽松取值"""
 
 from gensokyoai.utils.coerce import as_bool, as_float, as_str, clamp01
+from gensokyoai.utils.text import try_extract_json_object
 
 
 def test_as_float_rejects_null_strings_and_bools():
@@ -34,3 +35,11 @@ def test_as_bool_reads_string_booleans():
     assert as_bool(True) is True
     assert as_bool(None) is False
     assert as_bool("maybe", default=True) is True
+
+
+def test_extract_json_object_with_trailing_braces():
+    """JSON 之后还有带花括号的补充 / 两个对象背靠背：取第一个完整对象，不整体失败"""
+    assert try_extract_json_object('{"thought": "a"}\n（补充：{x}）') == {"thought": "a"}
+    assert try_extract_json_object('{"a": 1}{"b": 2}') == {"a": 1}
+    assert try_extract_json_object('前缀 {占位} 正文 {"a": 1}') == {"a": 1}
+    assert try_extract_json_object("毫无 JSON") is None

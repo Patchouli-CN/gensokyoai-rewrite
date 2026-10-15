@@ -1,7 +1,9 @@
 """SessionManager 单元测试：双模式 / 裁剪 / 多模型路由"""
 
+import pytest
+
 from gensokyoai.core.session_manager import SessionManager
-from gensokyoai.schemas.model_schema import CompletionResult, Message, Usage
+from gensokyoai.schemas.model_schema import CompletionResult, Message, StreamEvent, Usage
 
 
 class FakeBackend:
@@ -220,3 +222,53 @@ async def test_scoped_views_share_routing_budget_and_roll_up_usage():
     a.reset_all()
     await a.call("responder", [Message(role="user", content="z")])
     assert a._sessions["responder"].max_tokens == 4096, "reset 后新建会话仍应沿用预算"
+
+
+async def test_failed_call_leaves_history_untouched():
+    """模型调用失败：本轮 user 消息不残留在历史里（否则下一回合两条 user 连发）"""
+
+    class _Boom(FakeBackend):
+        async def chat(self, messages, **kw):
+            raise ConnectionError("断网")
+
+    sm = _manager(FakeBackend())
+    await sm.call("responder", [Message(role="user", content="第一句")])
+    sm.set_default_backend(_Boom())
+    with pytest.raises(ConnectionError):
+        await sm.call("responder", [Message(role="user", content="没送达的一句")])
+    contents = [m.content for m in sm.export_messages("responder")]
+    assert "没送达的一句" not in contents, contents
+    assert [m.role for m in sm.export_messages("responder")] == ["user", "assistant"]
+
+
+async def test_stream_partial_reply_is_committed_on_error():
+    """流式中途断开：用户已看到的半截回复与本轮输入一起进历史"""
+
+    class _Streamer(FakeBackend):
+        async def chat_stream(self, messages, **kw):
+            yield StreamEvent(delta="啊啦，")
+            yield StreamEvent(delta="今天的")
+            raise ConnectionError("流断了")
+
+    sm = _manager(_Streamer())
+    got: list[str] = []
+    with pytest.raises(ConnectionError):
+        async for ev in sm.call_stream("responder", [Message(role="user", content="你好")]):
+            got.append(ev.delta)
+    history = sm.export_messages("responder")
+    assert [m.role for m in history] == ["user", "assistant"]
+    assert history[-1].content == "啊啦，今天的"
+
+
+async def test_stateless_stream_usage_is_metered():
+    """无状态流式的用量也要入账（此前直通不记，/quota 与健康指标漏算）"""
+
+    class _Streamer(FakeBackend):
+        async def chat_stream(self, messages, **kw):
+            yield StreamEvent(delta="x")
+            yield StreamEvent(delta="", usage=Usage(prompt_tokens=7, completion_tokens=3))
+
+    sm = _manager(_Streamer())
+    async for _ in sm.call_stream("stall", [Message(role="user", content="hi")], stateless=True):
+        pass
+    assert sm.token_usage("stall").prompt_tokens == 7
