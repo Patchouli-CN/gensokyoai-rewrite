@@ -38,6 +38,7 @@ class InitiativeSpeaker:
         urge_threshold: float = 0.35,
         idle_threshold: float = 180.0,
         is_stopping,
+        has_audience=lambda: True,
     ) -> None:
         """初始化。
 
@@ -50,6 +51,8 @@ class InitiativeSpeaker:
             urge_threshold: 对话欲阈值，达到才开口
             idle_threshold: 触发评估的最小空闲（秒）
             is_stopping: 关闭流程判定（读感知器的停止请求）
+            has_audience: 是否有人在听（读口层；没人在线时不对空屋子开口——
+                既费 token，又会把没人看见的话写进记忆）
         """
         self._logger = LoggerManager.get_logger("INITIATIVE")
         self._character = character
@@ -60,14 +63,15 @@ class InitiativeSpeaker:
         self._urge_threshold = urge_threshold
         self._idle_threshold = idle_threshold
         self._is_stopping = is_stopping
+        self._has_audience = has_audience
 
     async def tick(self) -> None:
         """一次节拍（生物钟周期调用）：空闲超阈值且值得说，才评估开口。
 
-        忙 / 关闭中 / 未达空闲门槛都直接返回；评估异常只记日志——
+        忙 / 关闭中 / 无人在听 / 未达空闲门槛都直接返回；评估异常只记日志——
         定时任务不该把心跳拖死。
         """
-        if self._runtime.busy or self._is_stopping():
+        if self._runtime.busy or self._is_stopping() or not self._has_audience():
             return
         idle = self._runtime.idle_for()
         if idle < self._idle_threshold:

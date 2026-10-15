@@ -322,9 +322,12 @@ async def run_server(
         token: 接入令牌
     """
     runner = await serve(hub, host=host, port=port, limiter=limiter, token=token, executor=executor)
+    reaper = asyncio.create_task(hub.run_reaper(), name="hub-reaper")
     try:
         await asyncio.Event().wait()
     finally:
+        reaper.cancel()
+        await asyncio.gather(reaper, return_exceptions=True)
         await hub.shutdown()
         await runner.cleanup()
 

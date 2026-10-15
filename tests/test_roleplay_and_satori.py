@@ -1,9 +1,12 @@
 """roleplay 角色与 satori 解析 单元测试"""
 
+import builtins
+
 import pytest
 
 from gensokyoai.roleplay.character import Character, CharacterCard, load_character
 from gensokyoai.satori.parser import build_snapshot, parse_message
+from gensokyoai.satori.perceiver import ConsolePerceiver
 from gensokyoai.schemas.scene_schema import SceneEvent
 
 
@@ -101,3 +104,11 @@ def test_build_snapshot_defaults_from_last_event():
     assert snapshot.content == "第二条"
     assert snapshot.participants == ["A", "B"]
     assert len(snapshot.context_snippet) == 2
+
+
+async def test_console_exit_words_stop_only_the_console_eye(monkeypatch):
+    """退出词属于控制台：控制台输入「q」停止感知器（主循环不再全局识别退出词）"""
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "q")
+    eye = ConsolePerceiver()
+    assert await eye.next_snapshot() is None
+    assert eye.stopping

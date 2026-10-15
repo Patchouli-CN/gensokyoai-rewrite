@@ -53,8 +53,6 @@ from .persistence import CharacterStateCodec, SessionPersister
 from .runtime import RuntimeState, WorldRuntimeCodec
 from .trace import ReasoningTrace
 
-EXIT_WORDS = {"exit", "quit", "q", "退出"}
-
 
 class TouhouWorld:
     """
@@ -263,6 +261,7 @@ class TouhouWorld:
             urge_threshold=s.urge_threshold,
             idle_threshold=s.idle_threshold,
             is_stopping=lambda: self.eye.stopping,
+            has_audience=lambda: self.mouth.has_audience,
         )
         """ 主动发言节拍（冷场时角色自己冒泡；见 components/initiative_speaker.py）"""
 
@@ -417,10 +416,6 @@ class TouhouWorld:
                     if self.eye.stopping:
                         break
                     continue
-
-                # 退出信号检查
-                if snapshot.content.lower() in EXIT_WORDS:
-                    break
 
                 # 忙时攒批：回合期间积压的输入一次性合并进本回合——多人同时 @ /
                 # 复读队形只开一回合、过一次门控、回一条（场景无关的合流语义；

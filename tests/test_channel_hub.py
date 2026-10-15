@@ -350,3 +350,85 @@ async def test_hub_default_world_isolates_sessions_across_channels(tmp_path):
     a_world_chars = {id(c.world.character) for c in hub._channels.values()}
     assert len(a_world_chars) == len(hub._channels)
     await hub.shutdown()
+
+
+class _SlowStopWorld:
+    """收到停止后还要「落盘」一会儿才退出的假世界（记录启动/退出时刻顺序）。"""
+
+    def __init__(self, perceiver: QueuePerceiver, log: list[str], name: str) -> None:
+        self._eye = perceiver
+        self._log = log
+        self._name = name
+
+    async def start(self) -> None:
+        self._log.append(f"{self._name}:start")
+        while await self._eye.next_snapshot() is not None:
+            pass
+        await asyncio.sleep(0.05)  # 模拟 flush
+        self._log.append(f"{self._name}:exit")
+
+
+async def test_hub_replacement_channel_survives_old_world_exit():
+    """关闭中的旧世界退出时不能把同名新频道摘掉；新世界等旧世界 flush 完才启动"""
+    log: list[str] = []
+    made: list[_SlowStopWorld] = []
+
+    def factory(channel_id, perceiver, mouth):
+        world = _SlowStopWorld(perceiver, log, f"w{len(made)}")
+        made.append(world)
+        return world
+
+    hub = ChannelHub(sessions=SessionManager(), character=_char(), world_factory=factory)
+    hub.attach("room", _Sink())
+    await asyncio.sleep(0.01)
+
+    stopping = asyncio.create_task(hub._stop_channel("room"))
+    await asyncio.sleep(0)
+    hub.submit("room", user="小明", text="我又回来了")  # 关闭窗口内重连
+    await stopping
+    await asyncio.sleep(0.02)
+
+    assert hub.channel_ids() == ["room"], "旧世界退出不应摘掉顶替它的新频道"
+    assert hub._channels["room"].world is made[1]
+    assert log.index("w0:exit") < log.index("w1:start"), f"新世界应等旧世界收尾: {log}"
+    await hub.shutdown()
+
+
+async def test_hub_crashed_world_hands_sinks_to_replacement():
+    """世界异常退出后，仍挂着的连接交接给下一个同名世界，回复不投进死口层"""
+    crash = {"on": True}
+
+    class _CrashOnce(_FakeWorld):
+        async def start(self) -> None:
+            if crash.pop("on", False):
+                raise RuntimeError("boom")
+            await super().start()
+
+    def factory(channel_id, perceiver, mouth):
+        return _CrashOnce(perceiver, mouth)
+
+    hub = ChannelHub(sessions=SessionManager(), character=_char(), world_factory=factory)
+    sink = _Sink()
+    hub.attach("room", sink)
+    assert await _settle(lambda: hub.channel_ids() == [])
+
+    hub.submit("room", user="小明", text="还在吗")
+    assert await _settle(lambda: any("回应:还在吗" in f.get("text", "") for f in sink.frames))
+    await hub.shutdown()
+
+
+async def test_hub_run_reaper_reclaims_idle_channels():
+    """常驻回收节拍：空闲频道会被周期性回收（此前只有测试调用 reap_idle）"""
+    clock = _Clock()
+    hub, _ = _build_hub(clock=clock)
+    sink = _Sink()
+    hub.attach("room", sink)
+    hub.detach("room", sink)
+    clock.advance(10_000)
+
+    reaper = asyncio.create_task(hub.run_reaper(interval=0.01))
+    try:
+        assert await _settle(lambda: hub.channel_ids() == [])
+    finally:
+        reaper.cancel()
+        await asyncio.gather(reaper, return_exceptions=True)

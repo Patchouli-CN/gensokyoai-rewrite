@@ -18,6 +18,11 @@ class Mouth(ABC):
     supports_streaming: bool = False
     """ 该平台是否支持流式投递（边生成边显示）。默认不支持。 """
 
+    @property
+    def has_audience(self) -> bool:
+        """当前是否有人在听（主动发言据此避免对空屋子说话）。默认恒有。"""
+        return True
+
     def __init__(self) -> None:
         self._logger = LoggerManager.get_logger("MOUTH")
         self._stream_speaker: str = ""

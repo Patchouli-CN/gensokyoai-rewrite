@@ -105,6 +105,10 @@ class ChannelHub:
         self._max_channels = max_channels
         self._merge_window = merge_window
         self._channels: dict[str, Channel] = {}
+        self._stopping: dict[str, asyncio.Task] = {}
+        """ 正在关闭（落盘中）的频道世界任务：同名新世界启动前先等它收尾 """
+        self._orphaned: dict[str, list[DeliverSink]] = {}
+        """ 世界意外退出时仍挂着的连接：交接给下一个同名世界，不让回复投进死口层 """
         self._factory: WorldFactory = world_factory or self._default_world
         # 默认工厂下全部频道共享同一个持久化后端：写锁表跨频道去重，
         # 且 prewarm 的暖缓存对所有频道生效（否则每世界一个实例，缓存是摆设）
@@ -161,6 +165,9 @@ class ChannelHub:
             channel_id: 频道标识
             sink: 订阅者
         """
+        orphans = self._orphaned.get(channel_id)
+        if orphans is not None and sink in orphans:
+            orphans.remove(sink)
         channel = self._channels.get(channel_id)
         if channel is None:
             return
@@ -223,22 +230,42 @@ class ChannelHub:
             self._logger.info(f"空闲回收频道: {reaped}")
         return reaped
 
+    async def run_reaper(self, interval: float | None = None) -> None:
+        """常驻回收节拍：周期调用 `reap_idle()`，直到被取消（服务入口起一个任务跑它）。
+
+        Args:
+            interval: 巡检周期秒数；None 时取 idle_ttl 的一半（夹在 1~60 秒）
+        """
+        period = interval if interval is not None else min(60.0, max(1.0, self._idle_ttl / 2))
+        while True:
+            await asyncio.sleep(period)
+            try:
+                await self.reap_idle()
+            except Exception:
+                self._logger.exception("空闲回收失败（下个周期重试）")
+
     async def _stop_channel(self, channel_id: str) -> None:
         """优雅停掉一个频道的世界：先请求停止，超时才强杀。"""
         channel = self._channels.pop(channel_id, None)
         if channel is None:
             return
-        channel.perceiver.request_stop()
-        _, pending = await asyncio.wait({channel.task}, timeout=self._stop_timeout)
-        if pending:
-            self._logger.warning(f"频道 {channel_id} 未在 {self._stop_timeout}s 内退出，强制取消")
-            channel.task.cancel()
-            await asyncio.gather(channel.task, return_exceptions=True)
+        self._stopping[channel_id] = channel.task
+        try:
+            channel.perceiver.request_stop()
+            _, pending = await asyncio.wait({channel.task}, timeout=self._stop_timeout)
+            if pending:
+                self._logger.warning(
+                    f"频道 {channel_id} 未在 {self._stop_timeout}s 内退出，强制取消"
+                )
+                channel.task.cancel()
+                await asyncio.gather(channel.task, return_exceptions=True)
+        finally:
+            if self._stopping.get(channel_id) is channel.task:
+                del self._stopping[channel_id]
 
     async def shutdown(self) -> None:
-        """停掉全部频道（进程退出时调用）。"""
-        for channel_id in list(self._channels):
-            await self._stop_channel(channel_id)
+        """停掉全部频道（进程退出时调用；各频道并行收尾）。"""
+        await asyncio.gather(*(self._stop_channel(cid) for cid in list(self._channels)))
 
     # ---------------------------------------------------------------- 查询
 
@@ -282,9 +309,13 @@ class ChannelHub:
 
         perceiver = QueuePerceiver(merge_window=self._merge_window)
         mouth = BroadcastMouth()
+        for sink in self._orphaned.pop(channel_id, []):
+            mouth.attach(sink)
         world = self._factory(channel_id, perceiver, mouth)
         now = self._clock()
-        task = asyncio.create_task(self._run_world(channel_id, world))
+        task = asyncio.create_task(
+            self._run_world(channel_id, world, self._stopping.get(channel_id))
+        )
         channel = Channel(
             channel_id=channel_id,
             world=world,
@@ -298,17 +329,33 @@ class ChannelHub:
         self._logger.info(f"创建频道: {channel_id}")
         return channel
 
-    async def _run_world(self, channel_id: str, world: TouhouWorld) -> None:
-        """频道世界的主循环：包在租户作用域里跑（配额据此记账）。"""
+    async def _run_world(
+        self, channel_id: str, world: TouhouWorld, previous: asyncio.Task | None = None
+    ) -> None:
+        """频道世界的主循环：包在租户作用域里跑（配额据此记账）。
+
+        Args:
+            channel_id: 频道标识
+            world: 本频道的世界
+            previous: 同名旧世界仍在关闭时的任务——先等它 flush 完再启动，
+                否则新世界 restore 读到旧存档、旧世界随后的 flush 又覆盖新状态
+        """
         with tenant_scope(channel_id):
             try:
+                if previous is not None:
+                    await asyncio.wait({previous})
                 await world.start()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self._logger.exception(f"频道 {channel_id} 的世界异常退出")
             finally:
-                self._channels.pop(channel_id, None)
+                # 只摘自己：关闭期间同名频道可能已被新世界顶替，不能把新的摘掉
+                channel = self._channels.get(channel_id)
+                if channel is not None and channel.world is world:
+                    del self._channels[channel_id]
+                    if channel.mouth.subscriber_count:
+                        self._orphaned[channel_id] = channel.mouth.subscribers()
                 self._logger.info(f"频道世界已退出: {channel_id}")
 
     def __repr__(self) -> str:

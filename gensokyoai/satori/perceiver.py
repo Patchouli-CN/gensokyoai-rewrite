@@ -10,6 +10,9 @@ import msgspec
 from ..schemas.scene_schema import SceneSnapshot
 from .base import Perceiver
 
+EXIT_WORDS = frozenset({"exit", "quit", "q", "退出"})
+""" 控制台退出指令（只属于控制台：群聊里有人发个「q」不该关掉整个频道的世界） """
+
 
 class ConsoleEyeSettings(msgspec.Struct, frozen=True):
     """控制台 eye 配置（`config/eyes/console.yaml`；缺失则全用默认值）"""
@@ -75,6 +78,9 @@ class ConsolePerceiver(Perceiver):
                 return None
 
             if not text:
+                return None
+            if text.lower() in EXIT_WORDS:
+                self._stop_requested = True
                 return None
 
             self._logger.debug(f"控制台输入: {text}")

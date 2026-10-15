@@ -51,6 +51,15 @@ class BroadcastMouth(Mouth):
         """当前订阅者数量。"""
         return len(self._sinks)
 
+    @property
+    def has_audience(self) -> bool:
+        """有订阅者才算有人在听。"""
+        return bool(self._sinks)
+
+    def subscribers(self) -> list[DeliverSink]:
+        """当前订阅者快照（频道世界意外退出时，交接给同名新世界用）。"""
+        return list(self._sinks)
+
     async def _broadcast(self, frame: dict) -> None:
         """把一帧发给所有订阅者；投递失败的订阅者被摘除。"""
         for sink in list(self._sinks):

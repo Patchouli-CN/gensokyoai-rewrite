@@ -70,6 +70,7 @@ def _speaker(
     idle_threshold: float = 100.0,
     idle_for=200.0,
     stopping=False,
+    audience=True,
 ):
     """组一个主动发言节拍器；返回 (speaker, mouth, memory, bus, runtime, character)"""
     backend = _StubBackend("……妾身还以为你忘了呢。")
@@ -106,6 +107,7 @@ def _speaker(
         urge_threshold=urge_threshold,
         idle_threshold=idle_threshold,
         is_stopping=lambda: stopping,
+        has_audience=lambda: audience,
     )
     return speaker, delivery._mouth, memory, bus, runtime, character
 
@@ -159,3 +161,10 @@ async def test_tick_skips_below_urge_threshold(tmp_path):
     await speaker.tick()
     assert mouth.sent == []
     assert character.status.motivation < 1.0
+
+
+async def test_tick_skips_without_audience(tmp_path):
+    """频道里没人在线 -> 不对空屋子开口（不费 token，也不写没人看见的记忆）"""
+    speaker, mouth, _, _, _, _ = _speaker(tmp_path, audience=False)
+    await speaker.tick()
+    assert mouth.sent == []
