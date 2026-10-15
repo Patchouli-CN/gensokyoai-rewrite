@@ -98,11 +98,13 @@ def _make_world(storage_dir, lines: list[str], mouth=None, **kwargs) -> TouhouWo
         storage_dir=storage_dir,
         session_id="e2e",
         settings=WorldSettings(
-            stall_probability=0.0,
-            ooc_retry=False,
-            ooc_audit=False,
-            distill_every=1000,  # 关掉蒸馏避免干扰断言
-            **kwargs,
+            **{
+                "stall_probability": 0.0,
+                "ooc_retry": False,
+                "ooc_audit": False,
+                "distill_every": 1000,  # 关掉蒸馏避免干扰断言
+                **kwargs,
+            }
         ),
     )
 
