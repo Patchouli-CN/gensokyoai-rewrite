@@ -1,5 +1,6 @@
 """角色人设卡 —— 领域数据与加载（字段兼容原版 GensokyoAI 角色卡）"""
 
+import copy
 import uuid
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,11 @@ class Character(msgspec.Struct):
     def card(self) -> CharacterCard:
         """暴露只读的人设卡引用"""
         return self._card
+
+    def fork(self) -> Character:
+        """派生一个共享人设卡、但运行时状态独立的副本（多频道各持一份，
+        情绪 / 出戏计数不跨频道串味）。"""
+        return msgspec.structs.replace(self, status=copy.deepcopy(self.status))
 
 
 def load_character(path: str | Path) -> Character:

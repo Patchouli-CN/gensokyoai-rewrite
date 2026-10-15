@@ -64,6 +64,10 @@ class SessionManager:
 
     多模型路由：每个 owner 可以绑定不同的 ChatBackend，
     Brain 用 DeepSeek，Responder 用 Kimi，OOC 用本地小模型等。
+
+    作用域视图：`scoped(scope)` 派生一个共享路由（backend / 预算）、但会话表与
+    用量账本各自独立的子管理器——多频道各拿一个，对话历史互不串味，单个
+    频道 `reset_all()` 不波及他人；子视图的用量/费用同时汇总进父管理器。
     """
 
     def __init__(self, default_context_window: int = 8192) -> None:
@@ -75,10 +79,32 @@ class SessionManager:
         """ 默认 backend，未指定 owner 时使用 """
         self._default_context_window = default_context_window
         """ 新建会话的默认上下文预算（装配层可用 set_context_window 逐 owner 覆盖）"""
+        self._budgets: dict[str, int] = {}
+        """ 逐 owner 的上下文预算（与会话对象解耦：reset 后新建的会话仍沿用）"""
         self._usage: dict[str, Usage] = {}
         """ 各 owner 的累计 token 用量（供健康监控计量）"""
         self._costs: dict[str, dict[str, float]] = {}
         """ 各 owner 的累计费用：owner -> 币种 -> 金额（本地/未收录模型为空） """
+        self._parent: SessionManager | None = None
+        """ 作用域视图的父管理器（路由与默认 backend 的来源、用量汇总的去处）"""
+        self.scope = ""
+        """ 作用域名（根管理器为空串）"""
+
+    def scoped(self, scope: str) -> SessionManager:
+        """派生一个作用域视图：共享 backend 路由与预算，会话与用量账本独立。
+
+        Args:
+            scope: 作用域名（如频道 ID）
+
+        Returns:
+            SessionManager: 子视图（其用量/费用同时累计进本管理器）
+        """
+        child = SessionManager(self._default_context_window)
+        child._backends = self._backends
+        child._budgets = self._budgets
+        child._parent = self
+        child.scope = scope
+        return child
 
     def token_usage(self, owner: str) -> Usage:
         """读取某 owner 的累计 token 用量。
@@ -139,10 +165,13 @@ class SessionManager:
         breakdown = pricing(result.usage, result.model)
         if not breakdown.priced:
             return
-        per_currency = self._costs.setdefault(owner, {})
-        per_currency[breakdown.currency] = (
-            per_currency.get(breakdown.currency, 0.0) + breakdown.total
-        )
+        manager: SessionManager | None = self
+        while manager is not None:
+            per_currency = manager._costs.setdefault(owner, {})
+            per_currency[breakdown.currency] = (
+                per_currency.get(breakdown.currency, 0.0) + breakdown.total
+            )
+            manager = manager._parent
 
     def owners(self) -> list[str]:
         """当前存在的虚拟会话 owner 列表。"""
@@ -167,13 +196,16 @@ class SessionManager:
         是成本观察的一手数据，丢了它 /quota 的缓存命中永远是 0）。"""
         if usage is None:
             return
-        current = self._usage.get(owner, Usage())
-        self._usage[owner] = Usage(
-            prompt_tokens=current.prompt_tokens + usage.prompt_tokens,
-            completion_tokens=current.completion_tokens + usage.completion_tokens,
-            cached_tokens=current.cached_tokens + usage.cached_tokens,
-            cache_write_tokens=current.cache_write_tokens + usage.cache_write_tokens,
-        )
+        manager: SessionManager | None = self
+        while manager is not None:
+            current = manager._usage.get(owner, Usage())
+            manager._usage[owner] = Usage(
+                prompt_tokens=current.prompt_tokens + usage.prompt_tokens,
+                completion_tokens=current.completion_tokens + usage.completion_tokens,
+                cached_tokens=current.cached_tokens + usage.cached_tokens,
+                cache_write_tokens=current.cache_write_tokens + usage.cache_write_tokens,
+            )
+            manager = manager._parent
 
     def register_backend(
         self, owner: str, backend: ChatBackend, *, context_window: int | None = None
@@ -197,11 +229,17 @@ class SessionManager:
         self._default_backend = backend
         self._logger.info(f"设置默认 backend: {type(backend).__name__}")
 
+    def _fallback_backend(self) -> ChatBackend | None:
+        """默认 backend：本管理器未设置时沿父链向上找。"""
+        if self._default_backend is not None or self._parent is None:
+            return self._default_backend
+        return self._parent._fallback_backend()
+
     def _get_backend(self, owner: str) -> ChatBackend:
         """获取 owner 对应的 backend，未注册则回退默认"""
         backend = self._backends.get(owner)
         if backend is None:
-            backend = self._default_backend
+            backend = self._fallback_backend()
             if backend is None:
                 raise ValueError(f"未注册 backend 且无默认 backend: {owner}")
             self._logger.debug(f"owner={owner} 使用默认 backend")
@@ -414,6 +452,7 @@ class SessionManager:
         """
         if tokens <= 0:
             return
+        self._budgets[owner] = tokens
         self._get_or_create(owner).max_tokens = tokens
         self._logger.debug(f"会话预算设置: owner={owner} max_tokens={tokens}")
 
@@ -436,13 +475,14 @@ class SessionManager:
         """取会话，不存在则创建（用管理器默认的上下文预算）"""
         if owner not in self._sessions:
             now = time.time()
+            budget = self._budgets.get(owner, self._default_context_window)
             self._sessions[owner] = VirtualSession(
                 session_id=f"{owner}-{uuid.uuid4().hex[:8]}",
                 owner=owner,
-                max_tokens=self._default_context_window,
+                max_tokens=budget,
                 created_at=now,
             )
-            self._logger.debug(f"创建虚拟会话: {owner} 预算={self._default_context_window}tok")
+            self._logger.debug(f"创建虚拟会话: {owner} 预算={budget}tok")
         return self._sessions[owner]
 
     def _trim(self, messages: list[Message], budget: int) -> list[Message]:

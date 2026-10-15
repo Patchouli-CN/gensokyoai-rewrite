@@ -80,8 +80,8 @@ class ChannelHub:
         """初始化。
 
         Args:
-            sessions: 多模型路由的会话管理器（所有频道共享）
-            character: 角色（所有频道共用同一个角色卡）
+            sessions: 多模型路由的会话管理器（默认工厂给每个频道派生 scoped 视图）
+            character: 角色（所有频道共用同一个角色卡，运行时状态每频道 fork 一份）
             world_factory: 世界的构造工厂；None 时用默认（TouhouWorld + 频道隔离持久化）
             storage_dir: 默认工厂使用的持久化根目录
             idle_ttl: 无订阅者后回收世界的空闲秒数
@@ -115,7 +115,12 @@ class ChannelHub:
     def _default_world(
         self, channel_id: str, perceiver: QueuePerceiver, mouth: BroadcastMouth
     ) -> TouhouWorld:
-        """默认世界工厂：每频道一个会话 ID，持久化天然隔离。"""
+        """默认世界工厂：每频道一个会话 ID，持久化天然隔离。
+
+        会话与角色状态也按频道隔离：共享的只有 backend 路由与人设卡——
+        共用一个 responder 会话会让 A 群的聊天进 B 群的上下文，且任一
+        频道回收时的 reset_all 会清空所有频道的历史与人设前缀。
+        """
         kwargs = dict(self._world_kwargs)
         if self._persistence is not None:
             # 共享后端（写锁表 / 暖缓存跨频道生效）；调用方自带后端时尊重之
@@ -123,8 +128,8 @@ class ChannelHub:
         return TouhouWorld(
             eye=perceiver,
             mouth=mouth,
-            sessions=self._sessions,
-            character=self._character,
+            sessions=self._sessions.scoped(channel_id),
+            character=self._character.fork(),
             session_id=channel_id,
             storage_dir=self._storage_dir,
             settings=self._world_settings,

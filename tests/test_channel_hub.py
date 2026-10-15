@@ -299,3 +299,54 @@ async def test_hub_prewarm_noop_with_custom_factory():
     """自定义 world_factory 没有共享后端，prewarm 安全无操作"""
     hub, _ = _build_hub()
     assert await hub.prewarm(["c1"]) == 0
+
+
+async def test_hub_default_world_isolates_sessions_across_channels(tmp_path):
+    """默认工厂：频道间 responder 历史不串，回收一个频道不清空其他频道的人设"""
+
+    class _Recording(_EchoBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.responder_calls: list[list] = []
+
+        async def chat(self, messages, **kw):
+            system_text = next((m.content for m in messages if m.role == "system"), "")
+            if "决策模块" not in system_text:
+                self.responder_calls.append(list(messages))
+            return await super().chat(messages, **kw)
+
+    backend = _Recording()
+    sessions = SessionManager()
+    sessions.set_default_backend(backend)
+    clock = _Clock()
+    hub = ChannelHub(
+        sessions=sessions,
+        character=_char(),
+        storage_dir=tmp_path,
+        clock=clock,
+        world_settings=WorldSettings(
+            ooc_audit=False, ooc_retry=False, stall_probability=0.0, initiative_interval=9999.0
+        ),
+    )
+    sink_a, sink_b = _Sink(), _Sink()
+    hub.attach("room-a", sink_a)
+    hub.attach("room-b", sink_b)
+
+    hub.submit("room-a", user="小明", text="A群的暗号是蓝莓")
+    assert await _settle(lambda: len(backend.responder_calls) >= 1, timeout=3.0)
+    hub.submit("room-b", user="小红", text="你好")
+    assert await _settle(lambda: len(backend.responder_calls) >= 2, timeout=3.0)
+    sent_b = " ".join(m.content for m in backend.responder_calls[-1])
+    assert "蓝莓" not in sent_b, "B 频道的上下文不应包含 A 频道的消息"
+
+    hub.detach("room-a", sink_a)
+    clock.advance(10_000)
+    assert await hub.reap_idle() == ["room-a"]
+
+    hub.submit("room-b", user="小红", text="还在吗")
+    assert await _settle(lambda: len(backend.responder_calls) >= 3, timeout=3.0)
+    assert backend.responder_calls[-1][0].role == "system", "回收他人频道后本频道人设前缀应仍在"
+
+    a_world_chars = {id(c.world.character) for c in hub._channels.values()}
+    assert len(a_world_chars) == len(hub._channels)
+    await hub.shutdown()

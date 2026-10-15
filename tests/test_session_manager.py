@@ -175,3 +175,48 @@ async def test_set_context_window_overrides_and_ignores_invalid():
 
     sm.set_context_window("responder", 0)
     assert sm._sessions["responder"].max_tokens == 4000, "非法值不应改动预算"
+
+
+async def test_scoped_views_isolate_history_and_reset():
+    """作用域视图：各自一份会话历史，一个视图 reset_all 不波及兄弟视图"""
+    backend = FakeBackend()
+    root = _manager(backend)
+    a, b = root.scoped("room-a"), root.scoped("room-b")
+    a.set_system("responder", "人设")
+    b.set_system("responder", "人设")
+    await a.call("responder", [Message(role="user", content="A群的秘密")])
+    await b.call("responder", [Message(role="user", content="B群你好")])
+
+    sent_by_b = [m.content for m in backend.calls[-1]]
+    assert "A群的秘密" not in sent_by_b, f"B 的上下文混进了 A 的消息: {sent_by_b}"
+
+    a.reset_all()
+    assert a.usage("responder") == 0
+    assert b.export_messages("responder")[0].content == "人设", "兄弟视图的人设前缀应保留"
+
+
+async def test_scoped_views_share_routing_budget_and_roll_up_usage():
+    """作用域视图共享路由与预算；用量各记一份并汇总进父管理器"""
+
+    class _Metered(FakeBackend):
+        async def chat(self, messages, **kw):
+            result = await super().chat(messages, **kw)
+            return CompletionResult(
+                content=result.content, usage=Usage(prompt_tokens=10, completion_tokens=5)
+            )
+
+    root = SessionManager()
+    root.set_default_backend(_Metered())
+    root.set_context_window("responder", 4096)
+    a, b = root.scoped("a"), root.scoped("b")
+    await a.call("responder", [Message(role="user", content="x")])
+    await b.call("brain.think", [Message(role="user", content="y")], stateless=True)
+
+    assert a._sessions["responder"].max_tokens == 4096, "子视图应沿用父级预算"
+    assert a.total_usage().prompt_tokens == 10
+    assert b.total_usage().prompt_tokens == 10
+    assert root.total_usage().prompt_tokens == 20, "父管理器应汇总全部子视图"
+
+    a.reset_all()
+    await a.call("responder", [Message(role="user", content="z")])
+    assert a._sessions["responder"].max_tokens == 4096, "reset 后新建会话仍应沿用预算"

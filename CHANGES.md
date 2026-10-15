@@ -130,6 +130,16 @@
     `.env` / `*.local.yaml` 已进 gitignore（模板 `.example` 提交）。
 
 ### 修复
+  - **多频道共用一份 responder 会话：A 群的聊天进 B 群的上下文**：ChannelHub
+    把同一个 `SessionManager` 交给所有频道世界，而 Responder 的 owner 恒为
+    `"responder"`——各频道往同一段历史里追加，任一频道回收时的 `reset_all()`
+    还会清空**所有**频道的历史与人设前缀（存活频道的 `_system_ready` 仍为
+    True，从此不带人设回复）。`Character.status`（情绪 / 出戏计数）与回合
+    token / 费用差值同样跨频道串账。修复：`SessionManager.scoped(scope)` 派生
+    作用域视图（共享 backend 路由与预算，会话表与用量账本独立、用量同时汇总
+    进父管理器——`/quota` 仍看全局，健康指标按频道）；默认世界工厂每频道
+    一个视图 + `Character.fork()` 一份运行时状态。逐 owner 预算从会话对象
+    挪到管理器（`reset` 后新建的会话不再丢预算）。
   - **`get_moon_phase` 单位 bug：`time.time()`（秒）直接对朔望月（天）取模**——
     输出的「月龄」其实是 0~29.5 秒内的随机数，月相全靠缘分。公式本身很准
     （锚定 2026-09-26 16:49 UTC 真实满月验证，误差 ~2 小时），修复为换算成天
