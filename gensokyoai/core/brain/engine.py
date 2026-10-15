@@ -7,6 +7,7 @@ from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort, Reasoning
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message, ToolCall, ToolSpec
 from ...schemas.scene_schema import SceneSnapshot
+from ...utils.coerce import as_bool, as_float, as_str
 from ...utils.logger import LoggerManager
 from ...utils.text import try_extract_json_object
 from ..config import KnowledgeSite
@@ -319,12 +320,12 @@ class BrainEngine:
                 # 为空）——那不是坏输出，不记步、直接执行工具。
                 step = ReasoningStep(
                     round=current_round,
-                    thought=str(parsed.get("thought", "")),
-                    need_continue_think=bool(parsed.get("need_continue_think", False)),
-                    action_hint=str(parsed.get("action_hint", "")) or None,
-                    intent=str(parsed.get("intent", "")),
-                    emotion=str(parsed.get("emotion", "")),
-                    confidence=float(parsed.get("confidence", 0.5)),
+                    thought=as_str(parsed.get("thought")),
+                    need_continue_think=as_bool(parsed.get("need_continue_think")),
+                    action_hint=as_str(parsed.get("action_hint")) or None,
+                    intent=as_str(parsed.get("intent")),
+                    emotion=as_str(parsed.get("emotion")),
+                    confidence=as_float(parsed.get("confidence"), 0.5),
                 )
                 steps.append(step)
                 self._logger.info(
@@ -343,7 +344,9 @@ class BrainEngine:
                 # days_until 收到 target_date='thought'）
                 tool_results = await self._execute_tool_calls(
                     result.tool_calls,
-                    source_text=f"{parsed.get('thought', '')}\n{parsed.get('action_hint', '')}",
+                    source_text=(
+                        f"{as_str(parsed.get('thought'))}\n{as_str(parsed.get('action_hint'))}"
+                    ),
                 )
 
             if tool_results:
@@ -353,11 +356,11 @@ class BrainEngine:
 
                 # 强制模型进入下一轮思考
                 need_continue = True
-                previous_thought = str(parsed.get("thought", previous_thought))
-                current_action_hint = str(parsed.get("action_hint", current_action_hint))
-                current_intent = str(parsed.get("intent", current_intent))
-                current_emotion = str(parsed.get("emotion", current_emotion))
-                current_confidence = float(parsed.get("confidence", 0.5))
+                previous_thought = as_str(parsed.get("thought"), previous_thought)
+                current_action_hint = as_str(parsed.get("action_hint"), current_action_hint)
+                current_intent = as_str(parsed.get("intent"), current_intent)
+                current_emotion = as_str(parsed.get("emotion"), current_emotion)
+                current_confidence = as_float(parsed.get("confidence"), 0.5)
                 final_reasoning = previous_thought
 
                 # 如果是最后一轮，直接使用工具结果
@@ -373,12 +376,12 @@ class BrainEngine:
                 continue
 
             # 正常解析和处理
-            previous_thought = str(parsed.get("thought", previous_thought))
-            current_action_hint = str(parsed.get("action_hint", current_action_hint))
-            current_intent = str(parsed.get("intent", current_intent))
-            current_emotion = str(parsed.get("emotion", current_emotion))
-            current_confidence = float(parsed.get("confidence", 0.5))
-            need_continue = bool(parsed.get("need_continue_think", False))
+            previous_thought = as_str(parsed.get("thought"), previous_thought)
+            current_action_hint = as_str(parsed.get("action_hint"), current_action_hint)
+            current_intent = as_str(parsed.get("intent"), current_intent)
+            current_emotion = as_str(parsed.get("emotion"), current_emotion)
+            current_confidence = as_float(parsed.get("confidence"), 0.5)
+            need_continue = as_bool(parsed.get("need_continue_think"))
 
             final_reasoning = previous_thought
 

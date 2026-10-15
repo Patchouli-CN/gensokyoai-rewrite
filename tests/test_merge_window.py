@@ -168,3 +168,15 @@ async def test_drain_flushes_pending_window_batch():
     # 定时器已取消：之后不会再来一条重复的合并快照
     assert perceiver._flush_handle is None
     perceiver.request_stop()
+
+
+def test_merge_snapshots_all_empty_does_not_raise():
+    """整批都是空内容（纯控制字符清洗后）：合并不抛 IndexError，产出空内容快照"""
+    merged = merge_snapshots(
+        [
+            SceneSnapshot(sender="小明", content=""),
+            SceneSnapshot(sender="小红", content=""),
+        ]
+    )
+    assert merged.content == ""
+    assert merged.sender == "小红"

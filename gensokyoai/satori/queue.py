@@ -45,7 +45,10 @@ def merge_snapshots(snaps: Sequence[SceneSnapshot]) -> SceneSnapshot:
 
     senders = [sender for sender, _, _ in flat]
     unique = list(dict.fromkeys(senders))
-    primary = next((s.sender for s in reversed(snaps) if s.is_direct), senders[-1])
+    # 默认值不能直接写 senders[-1]：next() 的默认值会被立即求值，整批都是空内容时
+    # senders 为空就地 IndexError（合并发生在主循环里，等于把世界带走）
+    fallback = senders[-1] if senders else snaps[-1].sender
+    primary = next((s.sender for s in reversed(snaps) if s.is_direct), fallback)
     if len(unique) == 1:
         content = "\n".join(c for _, c, _ in flat)
         sender = unique[0]

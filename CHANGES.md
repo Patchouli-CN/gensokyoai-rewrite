@@ -154,6 +154,18 @@
       `shutdown()` 各频道并行收尾。
     - **群聊里发「q」/「退出」会关掉整个频道的世界**：退出词检查在主循环里
       对所有感知器生效。挪进 ConsolePerceiver（退出词只属于控制台）。
+  - **单回合异常把整个频道的世界带走**：主循环只接 `CancelledError` /
+    `KeyboardInterrupt`，任何一处未接住的异常都让 `start()` 退出。实际可触发：
+    缓冲投递路径（QQ 群聊 / OOC blocking）上的网络错误或 `QuotaExceeded`——
+    刷到限流的用户能打挂自己的频道；小模型写 `"confidence": null` 时接力
+    思考里的裸 `float(None)`；忙时连发两条纯控制字符消息，`merge_snapshots`
+    的 `next(..., senders[-1])` 默认值被立即求值而 IndexError（WS 入口在
+    `strip_control_chars` **之前**判空）。修复：回合体抽成 `_run_turn()`，
+    外面一圈 `except Exception` 只作废本回合；新增 `utils/coerce.py`
+    （`as_float` / `clamp01` / `as_str` / `as_bool`）统一模型 JSON 字段取值，
+    engine / ooc_detector 改用它，judge / gate / pipeline 的四份同款实现收编；
+    顺带修掉 `action_hint: null` 变成字符串 "None" 初稿、`"false"` 被读作
+    续轮。合并兜底空批次，WS 入口先清洗再判空，空快照不开回合。
   - **`get_moon_phase` 单位 bug：`time.time()`（秒）直接对朔望月（天）取模**——
     输出的「月龄」其实是 0~29.5 秒内的随机数，月相全靠缘分。公式本身很准
     （锚定 2026-09-26 16:49 UTC 真实满月验证，误差 ~2 小时），修复为换算成天

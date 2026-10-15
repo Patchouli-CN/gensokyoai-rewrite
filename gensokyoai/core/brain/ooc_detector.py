@@ -5,6 +5,7 @@ import time
 from ...prompts import prompt_mgr
 from ...schemas.brain_schema import OOCVerdict
 from ...schemas.model_schema import Message
+from ...utils.coerce import as_bool, as_float, as_str
 from ...utils.logger import LoggerManager
 from ...utils.text import try_extract_json_object
 from ..session_manager import SessionManager
@@ -76,9 +77,9 @@ class OOCDetector:
             return OOCVerdict()
 
         verdict = OOCVerdict(
-            is_ooc=bool(parsed.get("is_ooc", False)),
-            confidence=float(parsed.get("confidence", 0.5)),
-            reason=str(parsed.get("reason", "")),
+            is_ooc=as_bool(parsed.get("is_ooc")),
+            confidence=as_float(parsed.get("confidence"), 0.5),
+            reason=as_str(parsed.get("reason")),
         )
         if verdict.is_ooc:
             self._logger.warning(f"OOC 深审判定出戏: {verdict.reason}")

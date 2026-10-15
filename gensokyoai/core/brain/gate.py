@@ -21,6 +21,7 @@ import msgspec
 
 from ...schemas.brain_schema import BrainThinkEffort
 from ...schemas.scene_schema import SceneSnapshot
+from ...utils.coerce import clamp01
 
 type GateSource = Literal["rule", "judge", "fallback"]
 """ 决定来源：规则直判 / 裁判打分 / 兜底 """
@@ -313,10 +314,7 @@ def _fallback(snapshot: SceneSnapshot, bot_name: str, recent: list[str], why: st
 
 def _probability(answers: dict[str, float], name: str, default: float = 0.0) -> float:
     """从裁判答案里取一个 0~1 的概率，缺失/非法给默认值。"""
-    value = answers.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    return min(1.0, max(0.0, float(value)))
+    return clamp01(answers.get(name, default), default)
 
 
 def _optional_probability(answers: dict[str, float], name: str) -> float | None:
@@ -326,4 +324,4 @@ def _optional_probability(answers: dict[str, float], name: str) -> float | None:
     value = answers[name]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return min(1.0, max(0.0, float(value)))
+    return clamp01(value)

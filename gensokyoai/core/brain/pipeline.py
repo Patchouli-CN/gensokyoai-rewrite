@@ -29,6 +29,7 @@ from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort, Reasoning
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import CompletionResult, Message, ToolCall, ToolSpec
 from ...schemas.scene_schema import SceneSnapshot
+from ...utils.coerce import as_float
 from ...utils.fluent import FluentAPI
 from ...utils.logger import LoggerManager
 from ...utils.text import extract_json_object, try_extract_json_object
@@ -248,7 +249,7 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
                     thought=note,
                     intent=str(parsed.get("intent", "")),
                     emotion=str(parsed.get("emotion", "")),
-                    confidence=_as_float(parsed.get("confidence"), 0.5),
+                    confidence=as_float(parsed.get("confidence"), 0.5),
                 )
             )
             digests = _render_digests(executed)
@@ -425,7 +426,7 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
             intent=str(parsed.get("intent", "")),
             emotion=str(parsed.get("emotion", "")),
             draft=draft or None,
-            confidence=_as_float(parsed.get("confidence"), 0.5),
+            confidence=as_float(parsed.get("confidence"), 0.5),
             effort=effort,
             _reasoning=digests or None,
             reasoning_steps=steps,
@@ -484,10 +485,3 @@ def _parse_step_json(text: str) -> dict:
     if "note" not in data:
         raise ValueError(f"输出缺少 note 字段: {text[:80]!r}")
     return data
-
-
-def _as_float(value: object, default: float) -> float:
-    """宽松取浮点（布尔/非数值回落默认值）。"""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    return float(value)

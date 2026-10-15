@@ -378,3 +378,17 @@ async def test_force_tools_nudge_fires_once_when_model_continues_anyway():
     assert len(backend.calls) == 2, "与模型自续节奏合一，不多加轮"
     assert any("调用工具" in m.content for m in backend.calls[1])
     assert conclusion.draft == "收尾"
+
+
+async def test_relay_think_survives_null_and_string_fields():
+    """小模型写 null / "false" / 非数值置信度：不抛异常、不产出 "None" 初稿、不白续一轮"""
+    sm = _manager(
+        '{"thought": null, "intent": "回应", "emotion": null, "action_hint": null, '
+        '"confidence": "high", "need_continue_think": "false"}'
+    )
+    engine = BrainEngine(sm)
+    conclusion = await engine.think(_snapshot("你好"), [], BrainThinkEffort.MID)
+    assert conclusion.verdict == "pass_through", "action_hint 为 null 不该变成字符串 'None' 初稿"
+    assert conclusion.draft is None
+    assert conclusion.confidence == 0.5
+    assert len(sm._get_backend("brain.think").calls) == 1, '"false" 应读作不续轮'

@@ -14,18 +14,12 @@ import json
 
 from ...prompts import prompt_mgr
 from ...schemas.model_schema import Message
+from ...utils.coerce import clamp01
 from ...utils.logger import LoggerManager
 from ...utils.text import extract_json_object
 from ..config import GateSettings, OOCJudgeSettings
 from ..session_manager import SessionManager
 from .gate import Judge, Question
-
-
-def _clamp01(value: object) -> float:
-    """把任意值夹到 0~1；布尔/非数值按 0 处理（宁可保守不接话）。"""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0.0
-    return min(1.0, max(0.0, float(value)))
 
 
 def parse_probabilities(text: str, questions: dict[str, Question]) -> dict[str, float]:
@@ -44,7 +38,7 @@ def parse_probabilities(text: str, questions: dict[str, Question]) -> dict[str, 
     data = extract_json_object(text)
 
     answers = {
-        name: _clamp01(data.get(name))
+        name: clamp01(data.get(name))
         for name in questions
         if isinstance(data.get(name), (int, float)) and not isinstance(data.get(name), bool)
     }
@@ -186,7 +180,7 @@ class TypeSafeJudge:
             if value is None:
                 value = getattr(answer, "probability", None)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                out[name] = _clamp01(value)
+                out[name] = clamp01(value)
         if not out:
             raise ValueError(f"TypeSafe 未返回可用概率: {answers!r}")
         self._logger.debug(f"typesafe 裁判: {out}")

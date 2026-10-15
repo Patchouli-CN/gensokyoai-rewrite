@@ -181,6 +181,8 @@ def build_app(
                             msg_direct = conn_direct or envelope.get("direct") is True
                             if trusted_peer and isinstance(envelope.get("role"), str):
                                 msg_role = envelope["role"]
+                # 先清洗再判空：纯控制字符的消息清洗后是空串，不该进世界
+                text = strip_control_chars(text).strip()
                 if not text:
                     continue
                 if len(text) > _MAX_TEXT_LEN:
@@ -219,7 +221,7 @@ def build_app(
                 hub.submit(
                     channel_id,
                     user=msg_user,
-                    text=strip_control_chars(text),
+                    text=text,
                     scene_type=scene_type,
                     is_direct=msg_direct,
                 )

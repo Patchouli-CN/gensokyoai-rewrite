@@ -69,7 +69,20 @@ class _EchoBackend:
         return result
 
 
-def _make_world(storage_dir, lines: list[str], **kwargs) -> TouhouWorld:
+class _BufferMouth:
+    """不支持流式的口层（QQ 群聊式缓冲投递）：记录完整消息"""
+
+    supports_streaming = False
+    has_audience = True
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, speaker: str, text: str) -> None:
+        self.sent.append(text)
+
+
+def _make_world(storage_dir, lines: list[str], mouth=None, **kwargs) -> TouhouWorld:
     sessions = SessionManager()
     sessions.set_default_backend(_EchoBackend())
     eye = _ScriptedEye(lines)
@@ -80,6 +93,7 @@ def _make_world(storage_dir, lines: list[str], **kwargs) -> TouhouWorld:
         eye=eye,
         character=character,
         sessions=sessions,
+        mouth=mouth,
         storage_dir=storage_dir,
         session_id="e2e",
         settings=WorldSettings(
@@ -207,3 +221,31 @@ async def test_world_trace_can_be_disabled(tmp_path):
 
     assert world.trace.enabled is False
     assert not world.trace.path.exists()
+
+
+async def test_turn_exception_does_not_kill_world(tmp_path):
+    """单回合异常（如缓冲投递时网络错误 / 配额超限）只作废本回合，世界继续处理下一条"""
+
+    class _FlakyBackend(_EchoBackend):
+        async def chat(self, messages, **kwargs):
+            sys_text = next((m.content for m in messages if m.role == "system"), "")
+            if "决策模块" not in sys_text and self.reply_n == 0:
+                self.reply_n += 1
+                raise ConnectionError("responder 网络抖动")
+            return await super().chat(messages, **kwargs)
+
+    mouth = _BufferMouth()
+    world = _make_world(tmp_path, ["第一句（会炸）", "第二句"], mouth=mouth)
+    world.sessions.set_default_backend(_FlakyBackend())
+    await _run(world)
+    assert any("回复2" in text for text in mouth.sent), (
+        f"炸掉的回合之后，下一条消息仍应得到回复: {mouth.sent}"
+    )
+
+
+async def test_blank_snapshot_does_not_open_turn(tmp_path):
+    """清洗后为空的快照不开回合（不调模型、不计回合）"""
+    world = _make_world(tmp_path, ["   "])
+    backend = world.sessions._get_backend("responder")
+    await _run(world)
+    assert backend.calls == 0

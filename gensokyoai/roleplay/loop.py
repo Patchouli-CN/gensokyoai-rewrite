@@ -424,68 +424,16 @@ class TouhouWorld:
                 if backlog:
                     snapshot = merge_snapshots([snapshot, *backlog])
 
+                if not snapshot.content.strip():
+                    continue  # 纯控制字符/空白清洗后为空：不开回合
+
                 turn += 1
-                t_start = time.monotonic()
-                self._runtime.note_activity()
-                self._presence.record(from_bot=False)
-                with self._runtime.begin_busy():
-                    # 2. System-1 层：一次裁判调用回答「该不该发言」+「该想多深」
-                    proceed, judged, force_tools = await self._system1_turn(snapshot, turn)
-                    if not proceed:
-                        continue
-
-                    # 3. 决策阶段 (Brain)；深思考前先垫一句角色过渡语遮延迟
-                    # 以当前消息为关联词，顺带把长期记忆里的相关旧事捞进来（语义检索）
-                    memories = await self.memory.recent(5, search_term=snapshot.content)
-                    effort = self._effort.floor(judged if judged is not None else route(snapshot))
-                    effort = self._effort.floor_for_injection(snapshot, effort)
-                    await self._stall.maybe_stall(snapshot, effort, turn)
-                    conclusion = await self.brain.think(
-                        snapshot, memories, effort, force_tools=force_tools
-                    )
-
-                    # 4. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
-                    reply = await self._delivery.deliver(snapshot, conclusion, memories)
-
-                # 5. 记录（投递已在 _delivery 内完成）
-                self._remember_turn(snapshot, reply)
-                if self.trace.enabled:
-                    # 一次小追加（走线程池），保证本回合轨迹已落盘、便于复盘与测试
-                    await self.trace.record(
-                        turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
-                    )
-                if self._ooc_guard.audit_enabled and not self._ooc_guard.blocking:
-                    # 传 snapshot：System-1 审查需要诱发消息当上下文（旧 audit 只用 reply）。
-                    # blocking 模式已在 _delivery 里审过并记账，侧链不重复跑
-                    self._tasks.spawn(self._ooc_guard.audit(snapshot, reply), name="ooc-audit")
-
-                # 6. 角色状态跟踪 + 健康喂食
-                if conclusion.emotion:
-                    self.character.status.update(emotion=conclusion.emotion)
-                turn_cost = await self._health_report.record(effort, t_start)
-
-                # 7. 记忆蒸馏（后台侧链，不阻塞回合）
-                self._runtime.distill_counter += 1
-                if self._runtime.distill_counter >= self._distill_every:
-                    self._runtime.distill_counter = 0
-                    self._tasks.spawn(self._distill(), name="distill")
-
-                latency = time.monotonic() - t_start
-                cost_text = (
-                    " | 花费: " + ", ".join(f"{c} {a:.6f}" for c, a in turn_cost.items())
-                    if turn_cost
-                    else ""
-                )
-                self._logger.info(
-                    f"回合 {turn} 完成 | 延迟: {latency:.2f}s | 档位: {effort.value}{cost_text}"
-                )
-                await self.bus.publish(
-                    EventBus.new(
-                        EventTopic.TURN_END,
-                        source="loop",
-                        payload=TurnEndPayload(turn=turn, effort=effort.value, latency_s=latency),
-                    )
-                )
+                try:
+                    await self._run_turn(snapshot, turn)
+                except Exception:
+                    # 回合边界：一回合的异常（网络错误 / 配额超限 / 模型乱写）只作废
+                    # 本回合，不能把整个频道的世界带走（取消仍向上穿透）
+                    self._logger.exception(f"回合 {turn} 异常，本回合作废，世界继续")
 
         except asyncio.CancelledError:
             self._logger.info("主循环被取消，开始优雅关闭...")
@@ -502,6 +450,73 @@ class TouhouWorld:
                 await self._tasks.drain(timeout=self._shutdown_drain_timeout)
             if not self.lifecycle._stopped:
                 await self.lifecycle.shutdown()
+
+    async def _run_turn(self, snapshot: SceneSnapshot, turn: int) -> None:
+        """跑一个回合：System-1 门控 -> 决策 -> 表达投递 -> 记录 -> 健康 / 蒸馏。
+
+        Args:
+            snapshot: 本回合的（可能已合并的）场景快照
+            turn: 回合号
+        """
+        t_start = time.monotonic()
+        self._runtime.note_activity()
+        self._presence.record(from_bot=False)
+        with self._runtime.begin_busy():
+            # 2. System-1 层：一次裁判调用回答「该不该发言」+「该想多深」
+            proceed, judged, force_tools = await self._system1_turn(snapshot, turn)
+            if not proceed:
+                return
+
+            # 3. 决策阶段 (Brain)；深思考前先垫一句角色过渡语遮延迟
+            # 以当前消息为关联词，顺带把长期记忆里的相关旧事捞进来（语义检索）
+            memories = await self.memory.recent(5, search_term=snapshot.content)
+            effort = self._effort.floor(judged if judged is not None else route(snapshot))
+            effort = self._effort.floor_for_injection(snapshot, effort)
+            await self._stall.maybe_stall(snapshot, effort, turn)
+            conclusion = await self.brain.think(snapshot, memories, effort, force_tools=force_tools)
+
+            # 4. 表达 + 投递：口层支持流式则逐块显示，否则缓冲投递（流式下跳过 OOC 预审）
+            reply = await self._delivery.deliver(snapshot, conclusion, memories)
+
+        # 5. 记录（投递已在 _delivery 内完成）
+        self._remember_turn(snapshot, reply)
+        if self.trace.enabled:
+            # 一次小追加（走线程池），保证本回合轨迹已落盘、便于复盘与测试
+            await self.trace.record(
+                turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
+            )
+        if self._ooc_guard.audit_enabled and not self._ooc_guard.blocking:
+            # 传 snapshot：System-1 审查需要诱发消息当上下文（旧 audit 只用 reply）。
+            # blocking 模式已在 _delivery 里审过并记账，侧链不重复跑
+            self._tasks.spawn(self._ooc_guard.audit(snapshot, reply), name="ooc-audit")
+
+        # 6. 角色状态跟踪 + 健康喂食
+        if conclusion.emotion:
+            self.character.status.update(emotion=conclusion.emotion)
+        turn_cost = await self._health_report.record(effort, t_start)
+
+        # 7. 记忆蒸馏（后台侧链，不阻塞回合）
+        self._runtime.distill_counter += 1
+        if self._runtime.distill_counter >= self._distill_every:
+            self._runtime.distill_counter = 0
+            self._tasks.spawn(self._distill(), name="distill")
+
+        latency = time.monotonic() - t_start
+        cost_text = (
+            " | 花费: " + ", ".join(f"{c} {a:.6f}" for c, a in turn_cost.items())
+            if turn_cost
+            else ""
+        )
+        self._logger.info(
+            f"回合 {turn} 完成 | 延迟: {latency:.2f}s | 档位: {effort.value}{cost_text}"
+        )
+        await self.bus.publish(
+            EventBus.new(
+                EventTopic.TURN_END,
+                source="loop",
+                payload=TurnEndPayload(turn=turn, effort=effort.value, latency_s=latency),
+            )
+        )
 
     async def _greet(self) -> None:
         """打出角色开场白（若有）"""
