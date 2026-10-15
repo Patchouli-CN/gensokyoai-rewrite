@@ -101,6 +101,8 @@ python -m gensokyoai.backends.ws_server.server   # 或安装后：gensokyoai-ws
 
 多频道 = 多角色会话（各自记忆/快照隔离），空闲 10 分钟自动回收。
 
+浏览器跨站握手默认拒绝（带 `Origin` 头的握手不在白名单即 403，防任意网页连上本机服务冒充 owner）；自己的网页前端用 `--allow-origin http://localhost:5173`（可重复）显式放行。nb2 桥接等非浏览器客户端不带 `Origin`，不受影响。
+
 ### 4.3 真机验证（强烈推荐跑一次）
 
 ```bash

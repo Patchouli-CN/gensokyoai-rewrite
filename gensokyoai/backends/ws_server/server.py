@@ -57,6 +57,9 @@ _MAX_TEXT_LEN = 2000
 
 _LOOPBACK_IPS = frozenset({"127.0.0.1", "::1"})
 
+_FORWARDING_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Real-IP")
+""" 反向代理转发头：带了它说明请求经过代理，来源地址的回环性不再可信 """
+
 
 def _check_token(query_token: str | None, expected: str | None) -> bool:
     """接入令牌校验：未配置（expected=None）时放行；配置了必须精确匹配
@@ -66,6 +69,16 @@ def _check_token(query_token: str | None, expected: str | None) -> bool:
     if query_token is None:
         return False
     return hmac.compare_digest(query_token.encode(), expected.encode())
+
+
+def _is_trusted_peer(request: web.Request) -> bool:
+    """role 自报的信任边界：直连的本机进程（回环来源、且未经反向代理）。
+
+    经本机反代进来的公网请求 `remote` 也是回环——带转发头的一律不信。
+    """
+    if any(name in request.headers for name in _FORWARDING_HEADERS):
+        return False
+    return _is_loopback(request.remote)
 
 
 def _is_loopback(remote: str | None) -> bool:
@@ -107,6 +120,7 @@ def build_app(
     heartbeat: float = 30.0,
     token: str | None = None,
     executor: CommandExecutor | None = None,
+    allowed_origins: frozenset[str] = frozenset(),
 ) -> web.Application:
     """构建 aiohttp 应用（路由 `/ws/{channel}` 与 `/ws`）。
 
@@ -117,6 +131,10 @@ def build_app(
         heartbeat: WS 心跳秒数
         token: 接入令牌；非 None 时客户端必须带 `?token=` 才能握手
         executor: 斜杠指令执行器；None 时 / 消息按普通聊天处理
+        allowed_origins: 放行的浏览器 Origin（精确匹配）。带 Origin 头的握手不在
+            名单里一律拒绝——浏览器跨站发起的 WS 握手总会带 Origin，不拦的话
+            操作者浏览器里任何网页都能连上本机服务（CSWSH）；nb2 桥接等非浏览器
+            客户端不带 Origin，不受影响
 
     Returns:
         web.Application: 可直接交给 `web.run_app` / `AppRunner`
@@ -131,6 +149,10 @@ def build_app(
             raise web.HTTPBadRequest(text="非法频道名（仅允许字母/数字/_/-，1~64 字符）")
         if token is not None and not _check_token(request.query.get("token"), token):
             raise web.HTTPForbidden(text="token 无效")
+        origin = request.headers.get("Origin")
+        if origin is not None and origin not in allowed_origins:
+            _logger.warning(f"拒绝跨站 WS 握手: origin={origin!r} channel={channel_id}")
+            raise web.HTTPForbidden(text="不允许的 Origin")
 
         user = strip_control_chars(request.query.get("user", "访客"))[:_MAX_USER_LEN] or "访客"
         scene_type: SceneType = (
@@ -152,8 +174,9 @@ def build_app(
 
         # 私聊必直通；群场景里客户端可用 ?direct=1 在连接级标记「直接针对角色」
         conn_direct = scene_type == "private_chat" or request.query.get("direct") == "1"
-        # role 自报只信回环连接：本机插件（nb2 桥接等）可信，公网客户端一律 VISITOR
-        trusted_peer = _is_loopback(request.remote)
+        # role 自报只信直连的本机进程：本机插件（nb2 桥接等）可信，公网客户端
+        # 与经反代进来的请求一律 VISITOR
+        trusted_peer = _is_trusted_peer(request)
         # 限流键用来源 IP 而不是自报昵称——昵称换个值就是新桶，限速形同虚设
         peer_key = request.remote or user
         try:
@@ -245,6 +268,7 @@ async def serve(
     limiter: IngressLimiter | None = None,
     token: str | None = None,
     executor: CommandExecutor | None = None,
+    allowed_origins: frozenset[str] = frozenset(),
 ) -> web.AppRunner:
     """启动 WS 服务（非阻塞），返回 runner 以便调用方控制生命周期。
 
@@ -255,11 +279,18 @@ async def serve(
         limiter: 入口令牌桶
         token: 接入令牌（非回环监听时强烈建议设置）
         executor: 斜杠指令执行器；None 时 / 消息按普通聊天处理
+        allowed_origins: 放行的浏览器 Origin（见 build_app）
 
     Returns:
         web.AppRunner: 已 setup + start 的 runner（调用方负责 cleanup）
     """
-    app = build_app(hub=hub, limiter=limiter, token=token, executor=executor)
+    app = build_app(
+        hub=hub,
+        limiter=limiter,
+        token=token,
+        executor=executor,
+        allowed_origins=allowed_origins,
+    )
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
@@ -308,11 +339,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="主动发言评估周期秒数（默认取 settings.yaml 的 ws 节）；调巨大即关碎碎念",
     )
     parser.add_argument("--token", default=None, help="接入令牌（非回环监听时强烈建议设置）")
+    parser.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        help="放行的浏览器 Origin（可重复；默认拒绝一切带 Origin 的握手，网页前端需显式放行）",
+    )
     return parser
 
 
 async def run_server(
-    hub: ChannelHub, *, host: str, port: int, limiter=None, token=None, executor=None
+    hub: ChannelHub,
+    *,
+    host: str,
+    port: int,
+    limiter=None,
+    token=None,
+    executor=None,
+    allowed_origins: frozenset[str] = frozenset(),
 ) -> None:
     """起服务并常驻，直到被取消（关闭时回收频道与 runner）。
 
@@ -322,8 +366,18 @@ async def run_server(
         port: 监听端口
         limiter: 入口令牌桶
         token: 接入令牌
+        executor: 斜杠指令执行器
+        allowed_origins: 放行的浏览器 Origin
     """
-    runner = await serve(hub, host=host, port=port, limiter=limiter, token=token, executor=executor)
+    runner = await serve(
+        hub,
+        host=host,
+        port=port,
+        limiter=limiter,
+        token=token,
+        executor=executor,
+        allowed_origins=allowed_origins,
+    )
     reaper = asyncio.create_task(hub.run_reaper(), name="hub-reaper")
     try:
         await asyncio.Event().wait()
@@ -428,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
                 limiter=IngressLimiter(rate=1.0, burst=3),
                 token=args.token,
                 executor=executor,
+                allowed_origins=frozenset(args.allow_origin),
             )
         )
     except KeyboardInterrupt:

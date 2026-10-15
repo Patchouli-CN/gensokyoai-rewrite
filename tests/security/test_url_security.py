@@ -1,12 +1,19 @@
 """SSRF 门禁攻击测试：fetch_url 等工具抓取外部地址前的 URL 校验。
 
 攻击面覆盖：经典内网地址、inet_aton 数字变体、尾部点 / 大小写 / 百分号编码、
-userinfo 欺骗、IPv6 及其 IPv4 嵌套形式、协议走私。
+userinfo 欺骗、IPv6 及其 IPv4 嵌套形式、协议走私、Unicode 主机名折叠、
+DNS 解析结果复检。
 """
 
+import aiohttp
 import pytest
 
-from gensokyoai.utils.url_security import UnsafeUrlError, validate_external_url
+from gensokyoai.tools.fetch_url import _GuardedResolver
+from gensokyoai.utils.url_security import (
+    UnsafeUrlError,
+    is_forbidden_address,
+    validate_external_url,
+)
 
 
 def _blocked(urls: list[str]) -> None:
@@ -128,3 +135,69 @@ def test_validate_allows_normal_sites():
     validate_external_url("https://thbwiki.cc/西行寺幽幽子")
     validate_external_url("http://example.com:8080/page?a=1")
     validate_external_url("http://8.8.8.8/dns")
+
+
+def test_validate_blocks_unicode_host_folding():
+    """Unicode 主机名绕过：yarl/aiohttp 做 IDNA（NFKC）编码后会落到回环 / 元数据，
+    只校验 urlparse 字面主机名会被放行"""
+    _blocked(
+        [
+            "http://127。0。0。1/",  # 表意句号
+            "http://１２７.０.０.１/",  # 全角数字
+            "http://①②⑦.0.0.1/",  # 圈号数字
+            "http://ｌｏｃａｌｈｏｓｔ/",  # 全角 localhost
+            "http://169.254.169.254。/latest/meta-data/",  # 元数据 + 尾部表意句号
+        ]
+    )
+
+
+def test_validate_allows_internationalized_domains():
+    """正常的国际化域名放行（IDNA 编码后是普通公网域名）"""
+    validate_external_url("http://例子.测试/")
+    validate_external_url("https://xn--fsqu00a.xn--0zwm56d/")
+
+
+def test_is_forbidden_address_for_resolved_ips():
+    """连接层复检：DNS 解析结果落在内网 / 元数据即禁止，公网放行"""
+    assert is_forbidden_address("127.0.0.1")
+    assert is_forbidden_address("169.254.169.254")
+    assert is_forbidden_address("fe80::1%eth0")
+    assert is_forbidden_address("::ffff:10.0.0.1")
+    assert not is_forbidden_address("8.8.8.8")
+    assert not is_forbidden_address("2606:4700:4700::1111")
+
+
+async def test_guarded_resolver_drops_internal_results(monkeypatch):
+    """公网域名解析到内网（泛解析 / DNS rebinding）：连接层丢弃，全被丢则拦截"""
+
+    async def _fake_resolve(self, host, port=0, family=0):
+        return [
+            {
+                "hostname": host,
+                "host": "127.0.0.1",
+                "port": port,
+                "family": family,
+                "proto": 0,
+                "flags": 0,
+            },
+        ] + (
+            [
+                {
+                    "hostname": host,
+                    "host": "93.184.216.34",
+                    "port": port,
+                    "family": family,
+                    "proto": 0,
+                    "flags": 0,
+                }
+            ]
+            if host == "mixed.example"
+            else []
+        )
+
+    monkeypatch.setattr(aiohttp.ThreadedResolver, "resolve", _fake_resolve)
+    resolver = _GuardedResolver()
+    with pytest.raises(UnsafeUrlError):
+        await resolver.resolve("evil.example", 80)
+    mixed = await resolver.resolve("mixed.example", 80)
+    assert [r["host"] for r in mixed] == ["93.184.216.34"]

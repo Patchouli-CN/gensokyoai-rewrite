@@ -61,6 +61,20 @@
     顺带修掉旧实现不检查 write 返回值的大文件截断隐患。
 
 ### 安全
+  - **SSRF 门禁可被 Unicode 主机名绕过**：校验只看 `urlparse` 的字面主机名，
+    而 aiohttp/yarl 建连前会做 IDNA 编码（含 NFKC 折叠）——`127。0。0。1`
+    （表意句号）、`１２７.０.０.１`（全角）、`①②⑦.0.0.1`（圈号）、
+    `ｌｏｃａｌｈｏｓｔ`、`169.254.169.254。` 全部放行，实际连的是回环 / 云
+    元数据。现在字面主机名与 `yarl.URL(...).raw_host` 都要过关，归一化补 NFKC。
+    同时补上 docstring 里原先交给部署方的 **DNS rebinding**：fetch_url 的连接器
+    挂 `_GuardedResolver`，对**建连用的那次**解析结果复检
+    （`is_forbidden_address`），没有检查与使用的时间差。
+  - **跨站 WebSocket 劫持（CSWSH）**：握手不查 `Origin`，默认回环监听不要
+    token，回环连接又可自报 role——操作者浏览器里任何网页都能连
+    `ws://127.0.0.1:8081/ws/lobby?role=owner` 拿到 OWNER 指令、看费用、刷
+    token。现在带 `Origin` 的握手不在白名单（`--allow-origin`，默认空）一律
+    403。role 自报的信任边界再收紧：带 `Forwarded` / `X-Forwarded-For` /
+    `X-Real-IP` 的请求不再视为本机直连（经本机反代进来的公网请求 remote 也是回环）。
   - **SSRF 门禁加固（`utils/url_security.py`）**：补 inet_aton 数字变体解析
     （纯 Python 实现，十进制 `2130706433` / 十六进制 `0x7f000001` / 八进制
     `0177.0.0.1` / 少段缩写 `127.1`——Windows 的 socket.inet_aton 会把

@@ -9,13 +9,14 @@
 
 import html
 import re
+import socket
 from urllib.parse import urljoin
 
 import aiohttp
 
 from ..core.registry import ToolRegistry
 from ..utils.logger import LoggerManager
-from ..utils.url_security import UnsafeUrlError, validate_external_url
+from ..utils.url_security import UnsafeUrlError, is_forbidden_address, validate_external_url
 
 _logger = LoggerManager.get_logger("FETCH")
 
@@ -36,6 +37,36 @@ _USER_AGENT = {"User-Agent": "gensokyoai fetch_url/1.0"}
 _SCRIPT_STYLE_PATTERN = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
 _TAG_PATTERN = re.compile(r"<[^>]+>")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+class _GuardedResolver(aiohttp.ThreadedResolver):
+    """连接层 SSRF 复检：DNS 解析结果落在禁止网段的一律丢弃。
+
+    URL 门禁只看字面主机名；公网域名解析到 127.0.0.1 / 云元数据（泛解析域、
+    DNS rebinding）要在这里拦——这是实际建连用的那次解析，没有检查与使用的时间差。
+    """
+
+    async def resolve(
+        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+    ) -> list:
+        """解析并过滤禁止地址；全部被过滤时抛 UnsafeUrlError。
+
+        Args:
+            host: 主机名
+            port: 端口
+            family: 地址族
+
+        Returns:
+            list: 过滤后的解析结果
+
+        Raises:
+            UnsafeUrlError: 解析结果全部落在禁止网段
+        """
+        results = await super().resolve(host, port, family)
+        allowed = [r for r in results if not is_forbidden_address(r["host"])]
+        if not allowed:
+            raise UnsafeUrlError(host, "域名解析到了不允许访问的地址")
+        return allowed
 
 
 def _strip_html(text: str) -> str:
@@ -62,7 +93,10 @@ async def fetch_url(url: str) -> str:
     # 手动跟随重定向：每一跳都重新过 SSRF 门禁（302 到内网 / 云元数据是经典绕过）
     current = url
     try:
-        async with aiohttp.ClientSession(timeout=_FETCH_TIMEOUT, headers=_USER_AGENT) as session:
+        connector = aiohttp.TCPConnector(resolver=_GuardedResolver())
+        async with aiohttp.ClientSession(
+            timeout=_FETCH_TIMEOUT, headers=_USER_AGENT, connector=connector
+        ) as session:
             for _ in range(_MAX_REDIRECTS + 1):
                 try:
                     validate_external_url(current)
@@ -82,6 +116,8 @@ async def fetch_url(url: str) -> str:
                         content_type = response.headers.get("Content-Type", "")
                         raw = await response.content.read(_MAX_BYTES + 1)
                         break
+                except UnsafeUrlError:
+                    raise
                 except Exception as err:
                     _logger.debug(f"fetch_url 抓取失败（{current[:80]}）: {err}")
                     return f"抓取失败（{type(err).__name__}），稍后再试"

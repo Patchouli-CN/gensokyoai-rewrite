@@ -6,12 +6,20 @@ userinfo 欺骗、内网域后缀。
 **不解析 DNS**（避免在校验路径引入网络调用），但覆盖 inet_aton 语义的
 数字变体（十进制 `2130706433`、十六进制 `0x7f000001`、八进制 `0177.0.0.1`、
 缩写 `127.1`——这些在系统解析器眼里都是 127.0.0.1）。
-「域名解析后指向内网」（DNS rebinding / 泛解析域）由部署方网络层兜底。
+
+**校验的是 HTTP 客户端真正会连的主机**：aiohttp/yarl 会对主机名做 IDNA 编码
+（含 NFKC 折叠），全角数字 `１２７.０.０.１`、表意句号 `127。0。0。1`、圈号数字、
+全角 `ｌｏｃａｌｈｏｓｔ` 都会被它归一成真回环地址——只校验 urlparse 的字面主机名
+会被这些写法绕过。「域名解析后指向内网」（DNS rebinding / 泛解析域）由调用方
+在连接层用 `is_forbidden_address` 对解析结果复检（见 tools/fetch_url.py）。
 """
 
 import re
+import unicodedata
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from urllib.parse import unquote, urlparse
+
+import yarl
 
 
 class UnsafeUrlError(ValueError):
@@ -36,8 +44,10 @@ _BLOCKED_SUFFIXES = (".internal", ".local", ".lan", ".home.arpa")
 
 
 def _normalize_host(hostname: str) -> str:
-    """归一化主机名：解百分号编码、去尾部点（`localhost.`）、小写。"""
-    return unquote(hostname).rstrip(".").lower()
+    """归一化主机名：解百分号编码、NFKC 折叠（全角 / 圈号 / 表意句号）、
+    去尾部点（`localhost.`）、小写。"""
+    folded = unicodedata.normalize("NFKC", unquote(hostname)).replace("。", ".")
+    return folded.rstrip(".").lower()
 
 
 _INET_ATON_CHARS = re.compile(r"[0-9a-fA-FxX.]+")
@@ -89,6 +99,19 @@ def _as_ip(host: str) -> IPv4Address | IPv6Address | None:
     return _parse_inet_aton(host)
 
 
+def is_forbidden_address(address: str) -> bool:
+    """连接层复检：解析出的 IP 字面量是否落在禁止网段（非 IP 字面量返回 False）。
+
+    Args:
+        address: DNS 解析结果中的地址字符串
+
+    Returns:
+        bool: True 表示禁止连接
+    """
+    ip = _as_ip(address.split("%", 1)[0])  # 去掉 IPv6 zone id（fe80::1%eth0）
+    return ip is not None and _is_forbidden_ip(ip)
+
+
 def _is_forbidden_ip(ip: IPv4Address | IPv6Address) -> bool:
     if (
         ip.is_loopback
@@ -127,18 +150,21 @@ def validate_external_url(url: str) -> None:
 
     if not parsed.hostname:
         raise UnsafeUrlError(url, "无法解析主机名")
-    hostname = _normalize_host(parsed.hostname)
-    if not hostname:
-        raise UnsafeUrlError(url, "无法解析主机名")
+    try:
+        client_host = yarl.URL(url.strip()).raw_host or ""
+    except ValueError as err:
+        raise UnsafeUrlError(url, "主机名无法编码") from err
 
-    if hostname in _BLOCKED_HOSTNAMES or hostname.endswith(_BLOCKED_SUFFIXES):
-        raise UnsafeUrlError(url, f"内网主机名: {hostname}")
+    # 字面主机名与客户端实际会连的主机名都要过关（两者不一致正是绕过的来源）
+    for candidate in {parsed.hostname, client_host}:
+        hostname = _normalize_host(candidate)
+        if not hostname:
+            raise UnsafeUrlError(url, "无法解析主机名")
+        if hostname in _BLOCKED_HOSTNAMES or hostname.endswith(_BLOCKED_SUFFIXES):
+            raise UnsafeUrlError(url, f"内网主机名: {hostname}")
+        ip = _as_ip(hostname)
+        if ip is not None and _is_forbidden_ip(ip):
+            raise UnsafeUrlError(url, f"不允许访问的地址: {hostname}")
 
-    ip = _as_ip(hostname)
-    if ip is None:
-        return  # 普通域名：字面校验通过（不解析 DNS，见模块 docstring）
-    if _is_forbidden_ip(ip):
-        raise UnsafeUrlError(url, f"不允许访问的地址: {hostname}")
 
-
-__all__ = ["UnsafeUrlError", "validate_external_url"]
+__all__ = ["UnsafeUrlError", "is_forbidden_address", "validate_external_url"]

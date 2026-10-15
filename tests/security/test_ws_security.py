@@ -109,6 +109,7 @@ class _NullSink:
 
 import asyncio
 
+import aiohttp
 from aiohttp.test_utils import TestClient, TestServer
 
 from gensokyoai.backends.ws_server import build_app
@@ -128,7 +129,7 @@ class _EchoBackend:
         return result
 
 
-def _build(tmp_path, limiter=None):
+def _build(tmp_path, limiter=None, allowed_origins=frozenset()):
     sessions = SessionManager()
     sessions.set_default_backend(_EchoBackend())
     hub = ChannelHub(
@@ -141,7 +142,9 @@ def _build(tmp_path, limiter=None):
     executor = build_executor(
         WsCommandState(sessions=sessions, hub=hub, config=GensokyoConfig(), version="0.0.19")
     )
-    return hub, build_app(hub=hub, limiter=limiter, executor=executor)
+    return hub, build_app(
+        hub=hub, limiter=limiter, executor=executor, allowed_origins=allowed_origins
+    )
 
 
 async def _collect(ws, seconds=0.4) -> list[dict]:
@@ -260,3 +263,54 @@ def test_main_refuses_public_bind_without_token(capsys):
     rc = main(["--host", "0.0.0.0", "--port", "0"])  # noqa: S104 —— 测的就是它拒绑公网
     assert rc == 2
     assert "--token" in capsys.readouterr().err
+
+
+async def test_cross_site_browser_handshake_rejected(tmp_path):
+    """浏览器跨站握手（带 Origin）一律拒绝：任意网页都能连本机服务冒充 owner 是 CSWSH"""
+    hub, app = _build(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        with pytest.raises(aiohttp.WSServerHandshakeError) as exc:
+            await client.ws_connect(
+                "/ws/g1?user=甲&role=owner", headers={"Origin": "https://evil.example"}
+            )
+        assert exc.value.status == 403
+        # 不带 Origin 的非浏览器客户端（nb2 桥接）不受影响
+        ws = await client.ws_connect("/ws/g1?user=甲")
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+async def test_allowed_origin_handshake_accepted(tmp_path):
+    """显式放行的前端 Origin 可以握手"""
+    hub, app = _build(tmp_path, allowed_origins=frozenset({"http://localhost:5173"}))
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1", headers={"Origin": "http://localhost:5173"})
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+async def test_role_ignored_when_proxied(tmp_path, monkeypatch):
+    """经本机反代进来的请求 remote 也是回环：带转发头的 role 自报一律不信"""
+    monkeypatch.setattr(server_module, "_is_loopback", lambda remote: True)
+    hub, app = _build(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect(
+            "/ws/g1?user=甲&role=owner", headers={"X-Forwarded-For": "203.0.113.7"}
+        )
+        await ws.send_str("/status")
+        frames = await _collect(ws)
+        assert not any("已运行" in f.get("text", "") for f in frames), frames
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
