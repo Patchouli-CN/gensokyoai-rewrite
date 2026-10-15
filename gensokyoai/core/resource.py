@@ -246,19 +246,23 @@ class IngressLimiter:
     还没变成一次模型调用之前就被挡掉。
     """
 
-    def __init__(self, *, rate: float, burst: int, clock=time.time) -> None:
+    def __init__(self, *, rate: float, burst: int, clock=time.monotonic) -> None:
         """初始化。
 
         Args:
             rate: 令牌补充速率（个/秒）
             burst: 桶容量（允许的突发条数）
-            clock: 时钟函数（可注入以便测试）
+            clock: 时钟函数（可注入以便测试；默认单调时钟——墙钟往回拨会让
+                「距上次刷新」变负、把桶抽干）
         """
         self._rate = max(0.0, rate)
         self._burst = max(1, burst)
         self._clock = clock
         self._buckets: dict[str, tuple[float, float]] = {}
         """ user -> (剩余令牌, 上次刷新时刻) """
+        self._full_after = self._burst / self._rate if self._rate > 0 else 0.0
+        """ 闲置这么久桶必然回满：回满的桶与新桶等价，可以直接丢掉 """
+        self._next_sweep = 0.0
 
     def check(self, user: str) -> float:
         """尝试取一个令牌。
@@ -272,6 +276,7 @@ class IngressLimiter:
         if self._rate <= 0:
             return 0.0
         now = self._clock()
+        self._sweep(now)
         tokens, last = self._buckets.get(user, (float(self._burst), now))
         tokens = min(float(self._burst), tokens + (now - last) * self._rate)
         if tokens >= 1.0:
@@ -279,6 +284,19 @@ class IngressLimiter:
             return 0.0
         self._buckets[user] = (tokens, now)
         return (1.0 - tokens) / self._rate
+
+    def _sweep(self, now: float) -> None:
+        """定期清掉已回满的闲置桶（键是来源地址，不清的话只增不减）。
+
+        Args:
+            now: 当前时刻
+        """
+        if now < self._next_sweep:
+            return
+        self._next_sweep = now + max(self._full_after, 60.0)
+        stale = [key for key, (_, last) in self._buckets.items() if now - last >= self._full_after]
+        for key in stale:
+            del self._buckets[key]
 
 
 class GatedBackend:

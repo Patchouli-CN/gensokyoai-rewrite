@@ -52,7 +52,7 @@ class ToolRegistry:
     _tools: dict[str, ToolSpec] = {}
 
     @classmethod
-    def tool(cls, tool_func: ToolFunc, *, desc: str = "", name: str = ""):
+    def tool(cls, tool_func: ToolFunc | None = None, *, desc: str = "", name: str = ""):
         """装饰器：注册一个工具函数，自动包装为 ToolSpec
 
         用法：
@@ -72,8 +72,9 @@ class ToolRegistry:
             if tool_name in cls._tools:
                 raise ValueError(f"工具重复注册: {tool_name}")
 
-            # 自动包装为 ToolSpec
-            spec = ToolSpec(tool_func=func, desc=desc)
+            # 自动包装为 ToolSpec（name 要进 spec：模型看到的、执行器查表用的都是
+            # spec.tool_name，只当注册表键用的话 name= 形同虚设）
+            spec = ToolSpec(tool_func=func, desc=desc, name=name)
             cls._tools[tool_name] = spec
             return func  # 返回原函数，保持可用
 
@@ -96,10 +97,10 @@ class ToolRegistry:
 
     @classmethod
     def register_external(cls, tool: ToolSpec) -> None:
-        """注册外部传入的 ToolSpec（不走装饰器）"""
-        if tool.tool_func.__name__ in cls._tools:
-            raise ValueError(f"工具重复注册: {tool.tool_func.__name__}")
-        cls._tools[tool.tool_func.__name__] = tool
+        """注册外部传入的 ToolSpec（不走装饰器；按对外名 tool_name 登记）"""
+        if tool.tool_name in cls._tools:
+            raise ValueError(f"工具重复注册: {tool.tool_name}")
+        cls._tools[tool.tool_name] = tool
 
     @classmethod
     def clear(cls) -> None:

@@ -240,6 +240,9 @@ async def test_long_store_dump_during_write_is_not_lost(tmp_path, monkeypatch):
             await asyncio.sleep(0.02)
             return await self._handle.write(data)
 
+        async def flush(self):
+            return await self._handle.flush()
+
     class _Embedder:
         async def embed(self, texts):
             if "后到" in texts[0]:

@@ -157,6 +157,7 @@ class LongMemoryStore:
             self._file_path.parent.mkdir(parents=True, exist_ok=True)
             async with ayafileio.open(temp_file, "wb") as handle:
                 await handle.write(content)
+                await handle.flush()  # 真 fsync：不刷就 rename，掉电后主文件可能是空的
             temp_file.replace(self._file_path)  # 原子替换，防止写一半崩溃
             self._written_version = version
         except Exception:
@@ -174,6 +175,7 @@ class LongMemoryStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             async with ayafileio.open(temp_file, "wb") as handle:
                 await handle.write(content)
+                await handle.flush()
             temp_file.replace(path)
             self._vectors_written_version = version
         except Exception:

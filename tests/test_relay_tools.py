@@ -5,6 +5,7 @@ from gensokyoai.core.brain.engine import BrainEngine
 from gensokyoai.core.brain.gate import _fallback
 from gensokyoai.core.brain.ooc_detector import OOCDetector
 from gensokyoai.core.brain.pipeline import ThinkPipeline, ThinkStep
+from gensokyoai.core.registry import ToolRegistry
 from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.core.toolkit import known_calls
 from gensokyoai.models.llama_cpp import extract_text_tool_calls
@@ -206,3 +207,20 @@ def test_gate_fallback_ignores_own_utterances():
     assert decision.reply is False
     named = _fallback(snapshot, "幽幽子", ["魔理沙: 幽幽子呢？"], "裁判异常")
     assert named.reply is True
+
+
+def test_tool_registry_decorator_with_kwargs_and_name():
+    """@ToolRegistry.tool(desc=..., name=...) 可用，name 进到 spec（模型看到的名字）"""
+    saved = dict(ToolRegistry._tools)
+    try:
+
+        @ToolRegistry.tool(desc="检索", name="search_memory")
+        def _impl(query: str) -> str:
+            return query
+
+        spec = ToolRegistry.get("search_memory")
+        assert spec.tool_name == "search_memory"
+        assert spec.desc == "检索"
+    finally:
+        ToolRegistry._tools.clear()
+        ToolRegistry._tools.update(saved)

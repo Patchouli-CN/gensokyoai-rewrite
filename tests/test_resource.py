@@ -1,6 +1,7 @@
 """资源闸门与限流单元测试：速率 / 用量预算 / 并发 / 租户归属"""
 
 import asyncio
+import time
 
 import pytest
 
@@ -247,3 +248,19 @@ async def test_gated_backend_forwards_execute_tools_and_probe():
     assert await gated.probe_native_tools() is True, "探测应透传到内层"
     await gated.chat(_msg(), execute_tools=False)
     assert inner.seen_kw.get("execute_tools") is False, "execute_tools 应透传到内层"
+
+
+def test_ingress_limiter_evicts_idle_full_buckets():
+    """闲置到回满的桶会被清掉（键是来源地址，不清只增不减），清完行为不变"""
+    clock = _Clock()
+    limiter = IngressLimiter(rate=1.0, burst=2, clock=clock)
+    for i in range(100):
+        limiter.check(f"10.0.0.{i}")
+    clock.advance(120)
+    assert limiter.check("新用户") == 0.0
+    assert len(limiter._buckets) == 1, "回满的闲置桶应被清理"
+
+
+def test_ingress_limiter_defaults_to_monotonic_clock():
+    """默认单调时钟：墙钟往回拨不会把桶抽干"""
+    assert IngressLimiter(rate=1.0, burst=1)._clock is time.monotonic

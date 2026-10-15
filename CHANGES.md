@@ -260,6 +260,19 @@
       0.5），而任意一次正常审查就撤销抬起的下限（只活一回合）。改为最近 20 次的
       窗口率，窗口率低于 0.2 才撤销；规则纠偏改记 `ooc_rule_fixes`（此前混在
       System-1 的 `ooc_flags` 里），两条审查路径的记账收编为 `_note_audit()`。
+  - **落盘耐久性 / 注册表 / 限流器**：
+    - **写盘不 fsync 就 rename**：会话存档与长期记忆都是写 tmp → rename，没刷盘；
+      ayafileio 的 `flush()` 是真 fsync（FlushFileBuffers / IORING_OP_FSYNC），
+      close 不会自动做——掉电后可能 rename 已落盘、数据还在页缓存，主文件变空。
+      现在 rename 前 `await handle.flush()`。保存被取消时 tmp 残留（只接
+      `Exception`），改接 `BaseException`。`.bak` 从整文件复制改为 rename，
+      每次保存少一趟全量 IO（两次 rename 之间崩溃只剩 .bak，`load()` 本就会恢复）。
+    - **`ToolRegistry.tool` 文档里的两种写法都不能用**：`tool_func` 没默认值，
+      `@ToolRegistry.tool(desc=...)` 直接 TypeError；`name=` 只当注册表键、没进
+      `ToolSpec`，模型看到的仍是函数名。`register_external` 与世界的工具去重也改按
+      `tool_name`（同一函数、不同对外名不再被并成一个）。
+    - **入口限流器**：墙钟 `time.time` 往回拨会把桶抽干，改单调时钟；按来源地址
+      建的桶只增不减，现在定期清掉已回满的闲置桶。
   - **`get_moon_phase` 单位 bug：`time.time()`（秒）直接对朔望月（天）取模**——
     输出的「月龄」其实是 0~29.5 秒内的随机数，月相全靠缘分。公式本身很准
     （锚定 2026-09-26 16:49 UTC 真实满月验证，误差 ~2 小时），修复为换算成天

@@ -362,9 +362,7 @@ class TouhouWorld:
             registered_tools = ToolRegistry.all()
             if registered_tools:
                 tools.extend(registered_tools)
-                self._logger.info(
-                    f"加载全局注册工具: {[t.tool_func.__name__ for t in registered_tools]}"
-                )
+                self._logger.info(f"加载全局注册工具: {[t.tool_name for t in registered_tools]}")
         except Exception as err:
             self._logger.warning(f"加载全局注册工具失败: {err}")
 
@@ -374,13 +372,13 @@ class TouhouWorld:
                 try:
                     ToolRegistry.register_external(tool)
                 except ValueError:
-                    self._logger.debug(f"工具已存在: {tool.tool_func.__name__}")
-            self._logger.info(f"加载外部工具: {[t.tool_func.__name__ for t in external_tools]}")
+                    self._logger.debug(f"工具已存在: {tool.tool_name}")
+            self._logger.info(f"加载外部工具: {[t.tool_name for t in external_tools]}")
 
         seen = set()
         unique_tools = []
         for tool in tools:
-            name = tool.tool_func.__name__
+            name = tool.tool_name
             if name not in seen:
                 unique_tools.append(tool)
                 seen.add(name)
@@ -388,7 +386,7 @@ class TouhouWorld:
         # 联网工具套知识缓存（L1 TTL + L2 落长期记忆；对工具链路透明）
         unique_tools = self._knowledge.wrap_all(unique_tools)
 
-        self._logger.info(f"最终工具列表: {[t.tool_func.__name__ for t in unique_tools]}")
+        self._logger.info(f"最终工具列表: {[t.tool_name for t in unique_tools]}")
         return unique_tools
 
     async def _handle_memory_write(self, event: BaseEvent) -> None:

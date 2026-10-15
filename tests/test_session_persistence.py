@@ -2,6 +2,7 @@
 
 import asyncio
 
+import ayafileio
 import msgspec
 import pytest
 
@@ -586,3 +587,61 @@ async def test_warm_cache_does_not_mask_new_writes(tmp_path):
     await backend.save("s/a", {"v": 2})
     assert await backend.load("s/a") == {"v": 1}, "预载早于写入，第一次 load 拿到预载值"
     assert await backend.load("s/a") == {"v": 2}, "缓存已被消费，第二次必须读盘拿新值"
+
+
+async def test_save_fsyncs_before_rename(tmp_path, monkeypatch):
+    """写 tmp 后先 fsync（flush）再 rename：不刷就换名，掉电后主文件可能是空的"""
+    real_open = ayafileio.open
+    events: list[str] = []
+
+    class _Recording:
+        def __init__(self, *args, **kwargs) -> None:
+            self._ctx = real_open(*args, **kwargs)
+
+        async def __aenter__(self):
+            self._handle = await self._ctx.__aenter__()
+            return self
+
+        async def __aexit__(self, *exc):
+            events.append("close")
+            return await self._ctx.__aexit__(*exc)
+
+        async def write(self, data):
+            events.append("write")
+            return await self._handle.write(data)
+
+        async def flush(self):
+            events.append("flush")
+            return await self._handle.flush()
+
+    monkeypatch.setattr(ayafileio, "open", _Recording)
+    await JsonFilePersistence(tmp_path).save("s/key", {"v": 1})
+    assert events == ["write", "flush", "close"]
+
+
+async def test_cancelled_save_leaves_no_temp_file(tmp_path, monkeypatch):
+    """保存被取消（flush 主动取消在途保存）：临时文件也要清掉"""
+    real_open = ayafileio.open
+
+    class _Hang:
+        def __init__(self, *args, **kwargs) -> None:
+            self._ctx = real_open(*args, **kwargs)
+
+        async def __aenter__(self):
+            self._handle = await self._ctx.__aenter__()
+            return self
+
+        async def __aexit__(self, *exc):
+            return await self._ctx.__aexit__(*exc)
+
+        async def write(self, data):
+            await self._handle.write(data)
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(ayafileio, "open", _Hang)
+    task = asyncio.create_task(JsonFilePersistence(tmp_path).save("s/key", {"v": 1}))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert list((tmp_path / "s").glob("*.tmp")) == []

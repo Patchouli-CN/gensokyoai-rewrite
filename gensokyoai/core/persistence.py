@@ -109,8 +109,13 @@ class JsonFilePersistence:
     async def _save_async(self, key: str, data: Any) -> None:
         """真异步落盘（内核级完成，不经线程池）
 
-        崩溃安全三件套不变：先写 tmp、旧文件复制为 .bak、 rename 替换。
-        `tmp.replace(path)` 是同目录 rename（元数据操作，无数据 IO），保持同步。
+        崩溃安全三件套：写 tmp 并 **fsync**、旧主文件 rename 成 .bak、tmp rename
+        成主文件。
+        - 不 fsync 就 rename：掉电后 rename 落了盘、数据还在页缓存里，主文件变成
+          空的 / 截断的（ayafileio 的 flush() 是真 fsync，close 不会自动做）；
+        - .bak 用 rename 而非整文件复制：每次保存不再多一趟全量 IO。两次 rename
+          之间崩溃只会剩下 .bak，`load()` 本就会从 .bak 恢复；
+        - 取消（如 flush() 主动取消在途保存）也要清掉 tmp，故接 BaseException。
         """
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,10 +124,11 @@ class JsonFilePersistence:
         try:
             async with ayafileio.open(tmp, "wb") as handle:
                 await handle.write(content)
+                await handle.flush()
             if path.exists():
-                await self._copy_file(path, path.with_suffix(".json.bak"))
+                path.replace(path.with_suffix(".json.bak"))
             tmp.replace(path)
-        except Exception:
+        except BaseException:
             self._logger.exception(f"写入失败: {key}")
             tmp.unlink(missing_ok=True)
             raise
