@@ -7,6 +7,7 @@ from gensokyoai.core.session_manager import SessionManager
 from gensokyoai.roleplay.character import Character, CharacterCard
 from gensokyoai.roleplay.loop import TouhouWorld
 from gensokyoai.schemas.brain_schema import BrainThinkEffort
+from gensokyoai.schemas.memory_schema import MemoryItem
 from gensokyoai.schemas.model_schema import CompletionResult
 from gensokyoai.schemas.scene_schema import SceneSnapshot
 
@@ -249,3 +250,23 @@ async def test_blank_snapshot_does_not_open_turn(tmp_path):
     backend = world.sessions._get_backend("responder")
     await _run(world)
     assert backend.calls == 0
+
+
+async def test_distill_is_single_flight(tmp_path):
+    """周期蒸馏与告警干预同时触发：只跑一次，不产出两份重复摘要"""
+
+    class _SlowCompressor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def compress(self, entries):
+            self.calls += 1
+            await asyncio.sleep(0.05)
+            return "摘要"
+
+    world = _make_world(tmp_path, [])
+    for i in range(4):
+        await world.memory.store(MemoryItem(content=f"旧事{i}"))
+    world.compressor = _SlowCompressor()
+    await asyncio.gather(world._distill(), world._distill())
+    assert world.compressor.calls == 1

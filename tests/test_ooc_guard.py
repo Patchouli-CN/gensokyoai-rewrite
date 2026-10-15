@@ -112,7 +112,8 @@ async def test_guard_rules_corrects_ai_exposure():
     assert len(guard._responder.calls) == 1, "只应有一次纠偏调用"
     bad, _reason = guard._responder.calls[0]
     assert "作为一个AI语言模型" in bad, "纠偏指令应引用坏回复"
-    assert guard._character.status.extra["ooc_flags"] == 1
+    assert guard._character.status.extra["ooc_rule_fixes"] == 1
+    assert "ooc_flags" not in guard._character.status.extra, "规则纠偏不混进 System-1 flag 计数"
 
 
 async def test_guard_rules_keeps_original_when_retry_still_bad():
@@ -344,3 +345,35 @@ async def test_note_suspicious_ignores_normal_reply():
     await guard.note_suspicious("啊啦～你好呀")
     await guard.note_suspicious("答案是四个团子哦")
     assert "ooc_suspicious" not in guard._character.status.extra
+
+
+async def test_ooc_rate_uses_recent_window_not_lifetime():
+    """长期健康之后的一段集中出戏：窗口出戏率推得过阈值（全时段累计率会被稀释）"""
+    guard = _guard()
+    outcomes = iter([False] * 100 + [True] * 12)
+
+    async def _audit(reply: str, persona: str) -> OOCVerdict:
+        return OOCVerdict(is_ooc=next(outcomes))
+
+    guard._ooc = types.SimpleNamespace(audit=_audit)
+    for _ in range(112):
+        await guard.audit(_snapshot(), "回复")
+    history = await guard._health.get_metric_history("ooc.rate")
+    assert history[-1].value >= 0.5, f"窗口率应反映近况: {history[-1].value}"
+    assert guard._character.status.extra["ooc_hits"] == 12, "累计计数照旧"
+
+
+async def test_effort_floor_survives_single_healthy_audit():
+    """出戏飙升抬了下限后，一次正常审查不该立刻撤销（窗口率仍高）"""
+    guard = _guard()
+    hits = iter([True] * 5 + [False])
+
+    async def _audit(reply: str, persona: str) -> OOCVerdict:
+        return OOCVerdict(is_ooc=next(hits))
+
+    guard._ooc = types.SimpleNamespace(audit=_audit)
+    for _ in range(5):
+        await guard.audit(_snapshot(), "出戏")
+    guard._effort.raise_floor(BrainThinkEffort.HIGH)
+    await guard.audit(_snapshot(), "正常")
+    assert guard._effort.floor(BrainThinkEffort.LOW) is BrainThinkEffort.HIGH

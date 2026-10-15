@@ -4,8 +4,8 @@
 职责组件都会造成反向依赖，继续摊在世界对象上又会把 `_` 前缀的私有状态撒成
 一张谁都改得的网。它们共同的特点是**回路接缝**：
 
-- `busy`：主循环置位 / 复位，主动发言节拍读取（避免两者并发抢同一个
-  responder 会话）
+- `speaking`：「正在开口」的锁——主循环**等**它、主动发言节拍**抢不到就跳过**
+  （两者并发抢同一个 responder 会话会让历史顺序错乱、流式帧交错）
 - `generation`：主循环退出时 +1，蒸馏 / OOC 审计 / 主动发言在回写前校验
   （关闭后的迟到写入不许污染新会话）
 - `last_activity`：主循环与主动发言更新，主动发言节拍读取（空闲判定）
@@ -15,9 +15,10 @@
 主循环与各组件注入同一个 `RuntimeState` 实例，状态私有、访问走方法。
 """
 
+import asyncio
 import contextlib
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,8 +30,9 @@ class RuntimeState:
     """世界的跨回合运行时状态（busy / generation / last_activity / 蒸馏计数）。"""
 
     def __init__(self) -> None:
-        self._busy = False
-        """ 主链路生成中标志 """
+        self._speaking = asyncio.Lock()
+        """ 开口锁：主循环回合与主动发言互斥（此前是布尔标志，主循环从不看它——
+        两者并发；且先结束的一方会把标志清掉，另一方还在生成） """
         self.generation = 0
         """ 代际令牌：后台任务持发起时的代际，回写前校验 """
         self.last_activity = time.monotonic()
@@ -40,25 +42,22 @@ class RuntimeState:
 
     @property
     def busy(self) -> bool:
-        """主链路是否正在生成（主动发言节拍据此避让）。
+        """是否有人正在开口（主循环回合或主动发言）。
 
         Returns:
-            bool: True 表示主循环正在本回合内生成，主动发言应跳过
+            bool: True 表示开口锁被占用
         """
-        return self._busy
+        return self._speaking.locked()
 
-    @contextlib.contextmanager
-    def begin_busy(self) -> Iterator[None]:
-        """把主链路标记为忙，退出时自动复位（异常安全）。
+    @contextlib.asynccontextmanager
+    async def begin_busy(self) -> AsyncIterator[None]:
+        """占住开口锁直到退出（被占用时等待；异常安全）。
 
         Yields:
             None
         """
-        self._busy = True
-        try:
+        async with self._speaking:
             yield
-        finally:
-            self._busy = False
 
     def note_activity(self) -> None:
         """记一次用户互动（刷新空闲判定的起点）。"""

@@ -8,13 +8,14 @@
    出戏审查，revise 才纠偏、flag 放行——「说出口的话都过了审」；
 3. **后置深审**（`audit`，异步侧链）：System-1 多问概率（state 带诱发
    消息，冷面接梗不被一刀切）或旧单点 audit 降级。只记账不撤回；
-4. **闭环干预**：`ooc.rate` 超限 -> `on_spike` 抬推理档位下限；审计恢复
-   健康 -> 自愈撤销（不长期烧算力）。
+4. **闭环干预**：`ooc.rate`（最近 N 次审查的出戏率）超限 -> `on_spike` 抬推理
+   档位下限；窗口出戏率回落到恢复线以下 -> 自愈撤销（不长期烧算力）。
 
 所有故障路径都是**放行**：防御不是裁判，一次误拦比一次漏判更伤 RP 体验。
 """
 
 import re
+from collections import deque
 from collections.abc import Callable
 
 from ...core.brain.gate import Judge
@@ -33,6 +34,13 @@ from .effort import EffortGovernor
 _SUSPICIOUS_BARE = re.compile(r"^[0-9+\-*/().=\s]+$")
 """ 纯数字/符号短回复：疑似被用户消息夹带的指令带跑（也可能是冷面接梗——
     只标记不阻断，定夺交给带上下文的 System-1 出戏审查）"""
+
+_RATE_WINDOW = 20
+""" 出戏率的滑动窗口（最近 N 次审查）：全时段累计率在长期健康之后被稀释，
+    一段集中出戏推不过阈值，干预永远不触发 """
+
+_RECOVER_RATE = 0.2
+""" 窗口出戏率低于此值才撤销干预下限（此前任意一次正常审查就撤，下限只活一回合）"""
 
 
 class OOCGuard:
@@ -83,6 +91,8 @@ class OOCGuard:
         self._retry = retry
         self._audit = audit
         self._generation = generation
+        self._recent_hits: deque[bool] = deque(maxlen=_RATE_WINDOW)
+        """ 最近 N 次审查是否出戏（不持久化：重启后从零开始攒窗口）"""
 
     # ---------------------------------------------------------------- 属性
 
@@ -127,8 +137,9 @@ class OOCGuard:
             self._logger.exception("OOC 纠偏重生成失败，原样输出")
             return reply
         if corrected and not self._ooc.pre_filter(corrected).is_ooc:
-            flags = int(self._character.status.extra.get("ooc_flags", 0)) + 1
-            self._character.status.update(ooc_flags=flags)
+            # 单独计数：此前记在 ooc_flags 上，和 System-1 的 flag 判定混成一本账
+            fixes = int(self._character.status.extra.get("ooc_rule_fixes", 0)) + 1
+            self._character.status.update(ooc_rule_fixes=fixes)
             return corrected
         self._logger.error(f"纠偏后仍命中 OOC，原样输出: {corrected[:60]!r}")
         return reply
@@ -264,19 +275,12 @@ class OOCGuard:
         gen = self._generation()
         try:
             verdict = await self._ooc.audit(reply, self._character.prompt)
-            if gen != self._generation():
-                return
-            audited = int(self._character.status.extra.get("ooc_audited", 0)) + 1
-            hits = int(self._character.status.extra.get("ooc_hits", 0)) + (
-                1 if verdict.is_ooc else 0
-            )
-            self._character.status.update(ooc_audited=audited, ooc_hits=hits)
-            await self._health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
-            if not verdict.is_ooc:
-                # 审计恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
-                self._effort.recover()
         except Exception:
             self._logger.exception("OOC 深审失败（不影响主链路）")
+            return
+        if gen != self._generation():
+            return
+        await self._note_audit(hit=verdict.is_ooc)
 
     async def _record_check(self, check: OOCCheck) -> None:
         """System-1 审查结论记账（blocking 与侧链共用）：ooc_hits/ooc_flags/ooc.rate +
@@ -286,17 +290,27 @@ class OOCGuard:
         Args:
             check: 审查结论（含三档 decision 与原始概率）
         """
+        if check.decision == "flag":
+            flags = int(self._character.status.extra.get("ooc_flags", 0)) + 1
+            self._character.status.update(ooc_flags=flags)
+        await self._note_audit(hit=check.decision == "revise")
+
+    async def _note_audit(self, *, hit: bool) -> None:
+        """一次审查结论入账（两条审查路径共用）：累计计数 + 窗口出戏率 + 干预自愈。
+
+        `ooc_audited` / `ooc_hits` 仍是全时段累计（持久化、看总账）；喂给告警的
+        `ooc.rate` 是最近 N 次的窗口率；窗口率回落到恢复线以下才撤销下限。
+
+        Args:
+            hit: 本次是否判定出戏
+        """
         audited = int(self._character.status.extra.get("ooc_audited", 0)) + 1
-        hits = int(self._character.status.extra.get("ooc_hits", 0)) + (
-            1 if check.decision == "revise" else 0
-        )
-        flags = int(self._character.status.extra.get("ooc_flags", 0)) + (
-            1 if check.decision == "flag" else 0
-        )
-        self._character.status.update(ooc_audited=audited, ooc_hits=hits, ooc_flags=flags)
-        await self._health.record_metric("ooc.rate", hits / max(audited, 1), unit="ratio")
-        if check.decision != "revise":
-            # 审查恢复健康 -> 撤销干预抬高的档位下限（自愈，不长期烧算力）
+        hits = int(self._character.status.extra.get("ooc_hits", 0)) + (1 if hit else 0)
+        self._character.status.update(ooc_audited=audited, ooc_hits=hits)
+        self._recent_hits.append(hit)
+        rate = sum(self._recent_hits) / len(self._recent_hits)
+        await self._health.record_metric("ooc.rate", rate, unit="ratio")
+        if rate < _RECOVER_RATE:
             self._effort.recover()
 
     # ---------------------------------------------------------------- 闭环干预

@@ -105,7 +105,11 @@ class InitiativeSpeaker:
             return
 
         self._logger.info(f"主动发言触发: 对话欲={urge:.2f} 空闲={idle:.0f}s")
-        with self._runtime.begin_busy():
+        # 评估期间（有 await）主循环可能已开始新回合：上面的 busy 检查与这里之间
+        # 有时间窗，以锁为准——抢不到就让给用户的回合，不排队
+        if self._runtime.busy:
+            return
+        async with self._runtime.begin_busy():
             snapshot = SceneSnapshot(
                 scene_type="group_chat",
                 sender="环境",

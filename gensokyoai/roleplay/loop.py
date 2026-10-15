@@ -206,6 +206,8 @@ class TouhouWorld:
         # --- 蒸馏 / 主动发言旋钮 ---
         self._distill_every = s.distill_every
         self._distill_batch = s.distill_batch
+        self._distilling = False
+        """ 蒸馏单飞标志（周期触发与告警干预不并发蒸馏同一批记忆） """
         self._initiative_interval = s.initiative_interval
 
         self._ooc_guard = OOCGuard(
@@ -461,7 +463,7 @@ class TouhouWorld:
         t_start = time.monotonic()
         self._runtime.note_activity()
         self._presence.record(from_bot=False)
-        with self._runtime.begin_busy():
+        async with self._runtime.begin_busy():
             # 2. System-1 层：一次裁判调用回答「该不该发言」+「该想多深」
             proceed, judged, force_tools = await self._system1_turn(snapshot, turn)
             if not proceed:
@@ -603,17 +605,25 @@ class TouhouWorld:
         }
 
     async def _on_context_pressure(self, alert) -> None:
-        """干预：上下文占用过高 → 立刻做一次记忆蒸馏，给窗口腾地方。"""
+        """干预：上下文占用过高 → 后台做一次记忆蒸馏（不阻塞回合）。
+
+        告警是在回合末的健康喂食里同步触发的：此前在这里直接 await 蒸馏，
+        等于把一次压缩模型调用塞进回合，用户的下一条消息要等它跑完。
+        """
         value = alert.metric.value if alert.metric else 0.0
         self._logger.warning(f"上下文占用过高（{value:.0%}），触发记忆蒸馏")
-        await self._distill()
+        self._tasks.spawn(self._distill(), name="distill")
 
     async def _distill(self) -> None:
         """记忆蒸馏：把最早一批工作记忆压缩成摘要条目，然后遗忘原文。
 
         摘要 importance=0.7，入库即自动落长期记忆；代际令牌校验防止
-        关闭后的迟到写入。
+        关闭后的迟到写入。单飞：周期蒸馏与告警干预可能同时触发，两路读到同一批
+        `oldest()` 会产出两份重复摘要——已有一次在跑就直接跳过。
         """
+        if self._distilling:
+            return
+        self._distilling = True
         gen = self._runtime.generation
         try:
             old = self.memory.oldest(self._distill_batch)
@@ -633,3 +643,5 @@ class TouhouWorld:
             self._logger.info(f"记忆蒸馏: {removed} 条 -> 摘要 {len(summary)} 字")
         except Exception:
             self._logger.exception("记忆蒸馏失败（不影响主链路）")
+        finally:
+            self._distilling = False

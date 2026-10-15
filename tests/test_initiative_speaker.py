@@ -4,6 +4,8 @@
 只假后端与口层——开口这条链路组件级可复现。
 """
 
+import asyncio
+
 from gensokyoai.core.brain.gate import PresenceTracker
 from gensokyoai.core.brain.ooc_detector import OOCDetector
 from gensokyoai.core.config import StyleSettings
@@ -136,7 +138,7 @@ async def test_tick_speaks_when_idle_and_urge_reached(tmp_path):
 async def test_tick_skips_when_busy(tmp_path):
     """主链路忙着（生成中）-> 避让，不抢 responder 会话"""
     speaker, mouth, _, _, runtime, _ = _speaker(tmp_path)
-    with runtime.begin_busy():
+    async with runtime.begin_busy():
         await speaker.tick()
     assert mouth.sent == []
 
@@ -168,3 +170,23 @@ async def test_tick_skips_without_audience(tmp_path):
     speaker, mouth, _, _, _, _ = _speaker(tmp_path, audience=False)
     await speaker.tick()
     assert mouth.sent == []
+
+
+async def test_main_turn_waits_for_initiative_to_finish(tmp_path):
+    """开口锁：主动发言在生成时主循环回合要等它说完，不并发抢 responder 会话"""
+    runtime = RuntimeState()
+    order: list[str] = []
+
+    async def _initiative():
+        async with runtime.begin_busy():
+            order.append("initiative:start")
+            await asyncio.sleep(0.05)
+            order.append("initiative:end")
+
+    async def _turn():
+        await asyncio.sleep(0.01)
+        async with runtime.begin_busy():
+            order.append("turn")
+
+    await asyncio.gather(_initiative(), _turn())
+    assert order == ["initiative:start", "initiative:end", "turn"]
