@@ -649,3 +649,11 @@ async def test_world_search_flag_stays_calm_for_banter(tmp_path):
 
     assert ok is True
     assert force is False
+
+
+def test_judge_error_reason_names_empty_exceptions():
+    """TimeoutError 之类 str 为空的异常：门控原因里写出异常类型，不留「裁判异常: 」空白"""
+    from gensokyoai.core.brain.gate import _describe
+
+    assert _describe(TimeoutError()) == "TimeoutError"
+    assert _describe(ValueError("坏 JSON")) == "坏 JSON"

@@ -270,3 +270,28 @@ async def test_distill_is_single_flight(tmp_path):
     world.compressor = _SlowCompressor()
     await asyncio.gather(world._distill(), world._distill())
     assert world.compressor.calls == 1
+
+
+async def test_empty_reply_is_not_remembered_or_audited(tmp_path):
+    """模型全挂、回复为空：不记「角色名: 」空发言，也不拿空文本跑出戏审查"""
+
+    class _DeadResponder(_EchoBackend):
+        async def chat(self, messages, **kwargs):
+            sys_text = next((m.content for m in messages if m.role == "system"), "")
+            if "决策模块" in sys_text:
+                return await super().chat(messages, **kwargs)
+            return CompletionResult(content="")
+
+    world = _make_world(tmp_path, ["你好"], mouth=_BufferMouth(), ooc_audit=True)
+    world.sessions.set_default_backend(_DeadResponder())
+    audited: list[str] = []
+
+    async def _audit(snapshot, reply):
+        audited.append(reply)
+
+    world._ooc_guard.audit = _audit
+    await _run(world)
+    contents = [m.content for m in await world.memory.recent(10)]
+    assert "幽幽子: " not in contents, contents
+    assert "灵梦: 你好" in contents, "用户的话照记"
+    assert audited == []

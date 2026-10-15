@@ -125,6 +125,8 @@ class InitiativeSpeaker:
             )
             # 与主循环同一套投递：口层支持流式则逐块显示，否则缓冲投递（主动发言不做 OOC 守门）
             reply = await self._delivery.deliver(snapshot, conclusion, recent, ooc_guard=False)
+        if not reply.strip():
+            return  # 生成失败：没开口就不记记忆、不刷新活跃度
 
         char_mem = MemoryItem(
             topic="对话",

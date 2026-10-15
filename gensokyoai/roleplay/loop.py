@@ -485,7 +485,7 @@ class TouhouWorld:
             await self.trace.record(
                 turn=turn, effort=effort.value, conclusion=conclusion, reply=reply
             )
-        if self._ooc_guard.audit_enabled and not self._ooc_guard.blocking:
+        if reply and self._ooc_guard.audit_enabled and not self._ooc_guard.blocking:
             # 传 snapshot：System-1 审查需要诱发消息当上下文（旧 audit 只用 reply）。
             # blocking 模式已在 _delivery 里审过并记账，侧链不重复跑
             self._tasks.spawn(self._ooc_guard.audit(snapshot, reply), name="ooc-audit")
@@ -535,13 +535,18 @@ class TouhouWorld:
             content=f"{snapshot.sender}: {snapshot.content}",
             memory_type=MemoryType.DIALOGUE,
         )
-        char_mem = MemoryItem(
-            topic="对话",
-            content=f"{self.character.name}: {reply}",
-            memory_type=MemoryType.DIALOGUE,
-            relate_ids={user_mem.memory_id},
-        )
-        for item in [user_mem, char_mem]:
+        items = [user_mem]
+        # 模型全挂时回复为空：角色没开口，就不记一条「角色名: 」空发言
+        if reply.strip():
+            items.append(
+                MemoryItem(
+                    topic="对话",
+                    content=f"{self.character.name}: {reply}",
+                    memory_type=MemoryType.DIALOGUE,
+                    relate_ids={user_mem.memory_id},
+                )
+            )
+        for item in items:
             self._tasks.spawn(
                 self.bus.publish(
                     EventBus.new(EventTopic.MEMORY_WRITE, source="loop", payload=item)

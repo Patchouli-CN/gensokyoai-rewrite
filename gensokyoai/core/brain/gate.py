@@ -263,9 +263,9 @@ async def decide(
         except Exception as err:  # 裁判故障不拖死主链路，退化为规则
             if forced_reply:
                 return GateDecision(
-                    reply=True, source="rule", reason=f"裁判异常，直连信号优先: {err}"
+                    reply=True, source="rule", reason=f"裁判异常，直连信号优先: {_describe(err)}"
                 )
-            return _fallback(snapshot, bot_name, recent, f"裁判异常: {err}")
+            return _fallback(snapshot, bot_name, recent, f"裁判异常: {_describe(err)}")
 
         reply_score = _probability(answers, "should_reply")
         search_score = _probability(answers, "needs_search")
@@ -298,6 +298,11 @@ async def decide(
             reason="私聊消息" if snapshot.scene_type == "private_chat" else "被 @ 或被回复",
         )
     return _fallback(snapshot, bot_name, recent, "无裁判")
+
+
+def _describe(err: Exception) -> str:
+    """异常的可读描述：`TimeoutError()` 这类异常 str 是空串，日志里只剩「裁判异常: 」。"""
+    return str(err) or type(err).__name__
 
 
 def _fallback(snapshot: SceneSnapshot, bot_name: str, recent: list[str], why: str) -> GateDecision:
