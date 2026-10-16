@@ -17,9 +17,11 @@
 
 from ...core.brain.energy import EnergyModel
 from ...core.brain.gate import PresenceTracker
+from ...core.event_bus import EventBus
 from ...core.responder.generator import Responder
 from ...mouth.base import Mouth
 from ...schemas.brain_schema import BrainConclusion
+from ...schemas.event_schema import EventTopic, ReplyPayload
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.scene_schema import SceneSnapshot
 from ...utils.logger import LoggerManager
@@ -40,6 +42,7 @@ class DeliveryService:
         energy: EnergyModel | None,
         parrot: ParrotGuard,
         ooc: OOCGuard,
+        bus: EventBus | None = None,
     ) -> None:
         """初始化。
 
@@ -51,6 +54,7 @@ class DeliveryService:
             energy: 精力模型（None = 不跟踪；低精力注入简短提示）
             parrot: 防复读守门（事前提示 / 出口纠偏 / 收尾去重 / 文风窗口）
             ooc: 出戏守门（blocking 审查 / 硬规则 / 可疑标记）
+            bus: 事件总线（None = 不发 REPLY 事件；语音渲染等旁路需要时传入）
         """
         self._logger = LoggerManager.get_logger("DELIVERY")
         self._responder = responder
@@ -60,6 +64,7 @@ class DeliveryService:
         self._energy = energy
         self._parrot = parrot
         self._ooc = ooc
+        self._bus = bus
 
     async def deliver(
         self,
@@ -94,6 +99,7 @@ class DeliveryService:
             )
             await self._ooc.note_suspicious(reply)
             self._parrot.note_reply(reply)
+            await self._publish_reply(reply)
             return reply
         reply = await self._responder.respond(
             conclusion, snapshot, memories, avoid, state_hint=state_hint
@@ -110,7 +116,20 @@ class DeliveryService:
         if self._energy is not None:
             self._energy.note_reply()
         self._parrot.note_reply(reply)
+        await self._publish_reply(final)
         return final
+
+    async def _publish_reply(self, reply: str) -> None:
+        """往总线发 REPLY 事件（语音渲染等旁路消费；空回复或未挂总线则不发）。"""
+        if self._bus is None or not reply.strip():
+            return
+        await self._bus.publish(
+            EventBus.new(
+                EventTopic.REPLY,
+                source="delivery",
+                payload=ReplyPayload(character=self._character_name, text=reply),
+            )
+        )
 
     async def _deliver_stream(
         self,

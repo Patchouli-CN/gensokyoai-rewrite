@@ -37,6 +37,15 @@ class TurnEndPayload(msgspec.Struct, frozen=True):
     """ 本回合总耗时（秒）"""
 
 
+class ReplyPayload(msgspec.Struct, frozen=True):
+    """REPLY 事件载荷：一句最终回复（语音渲染等旁路消费）"""
+
+    character: str = ""
+    """ 说话的角色名（与角色卡 name 一致，语音按它选声线）"""
+    text: str = ""
+    """ 完整回复文本 """
+
+
 class BaseEvent(msgspec.Struct, frozen=True):
     """事件信封：payload 按 topic 对应 schemas 中的具体类型"""
 

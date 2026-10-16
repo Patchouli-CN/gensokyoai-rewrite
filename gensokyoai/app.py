@@ -27,6 +27,7 @@ from .roleplay.loop import TouhouWorld
 from .satori.base import Perceiver
 from .satori.perceiver import ConsoleEyeSettings, ConsolePerceiver
 from .utils.logger import LoggerManager, setup_logging
+from .voice import attach_voice, load_voice_config
 
 DEFAULT_CONFIG = "config/settings.yaml"
 """ 默认配置文件（相对路径）"""
@@ -152,7 +153,7 @@ def build_world(
     world_kwargs = build_world_kwargs(config, sessions)
     if storage_dir is not None:
         world_kwargs["storage_dir"] = storage_dir
-    return TouhouWorld(
+    world = TouhouWorld(
         eye=eye
         if eye is not None
         else ConsolePerceiver(load_eye_config("console", ConsoleEyeSettings)),
@@ -162,6 +163,11 @@ def build_world(
         session_id=session_id,
         **world_kwargs,
     )
+    # 嗓音旁路（可选）：config/voice/gsvits.yaml 存在且 enabled 才装配
+    voice = load_voice_config()
+    if voice is not None and voice.enabled:
+        attach_voice(world, voice, world.mouth)
+    return world
 
 
 def build_parser() -> argparse.ArgumentParser:

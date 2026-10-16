@@ -252,6 +252,7 @@ class TouhouWorld:
             self._energy,
             self._parrot,
             self._ooc_guard,
+            bus=self.bus,
         )
         """ 表达 + 投递管线（主循环与主动发言共用的「说话」通道；见 components/delivery.py）"""
         self._initiative = InitiativeSpeaker(

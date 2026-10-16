@@ -52,3 +52,15 @@ class Mouth(ABC):
     async def end(self) -> None:
         """结束一条流式消息：刷新/换行（仅流式场景调用）。基类默认一次性 send。"""
         await self.send(self._stream_speaker, "".join(self._stream_buf))
+
+    async def send_voice(self, speaker: str, audio: bytes) -> None:
+        """投递一条语音（嗓音层渲染完成后的补发通道）。
+
+        与文本的 `send` 并列但语义独立：平台能放语音就放（控制台本机播放、
+        QQ 发语音消息），不能放的平台默认丢弃——语音是文本的增强，不是必需。
+
+        Args:
+            speaker: 说话者名字（角色名）
+            audio: wav 音频字节流
+        """
+        self._logger.debug(f"该平台不支持语音投递，丢弃 {speaker} 的 {len(audio)} 字节音频")
