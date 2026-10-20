@@ -296,6 +296,10 @@ class ChannelHub:
         """当前活跃频道 ID 列表。"""
         return list(self._channels)
 
+    def worlds(self) -> dict[str, TouhouWorld]:
+        """当前活跃频道 -> 世界（只读诊断用，如 /doctor 体检报告）。"""
+        return {cid: channel.world for cid, channel in self._channels.items()}
+
     def online_count(self, channel_id: str) -> int:
         """某频道的在线连接数。"""
         channel = self._channels.get(channel_id)

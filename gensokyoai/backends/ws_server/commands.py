@@ -7,6 +7,7 @@
 | /help | /帮助 | VISITOR | 按调用者权限列出可用指令 |
 | /status | /状态 | USER | 版本/uptime/频道/门控/记忆向量化/费用与 token 统计 |
 | /quota | /额度 | USER | 分模块消耗报表 + 账户余额（Moonshot）/ 滚动窗口额度（供应商响应头自报） |
+| /doctor | /体检 | USER | 体检报告：前缀缓存命中率/稳定段漂移/健康指标/近期告警/诊断建议 |
 
 权限来自客户端自报的 role（逐条信封 > 连接 query > 默认 VISITOR），但
 **只信回环连接**（server.py 分流层把关）：本机插件可信，公网客户端一律
@@ -173,6 +174,90 @@ async def cmd_quota(ctx) -> CommandResult:
 
     await ctx.metadata["send"]("\n".join(lines))
     return CommandResult.success("quota")
+
+
+@command(
+    name="doctor",
+    aliases=["体检"],
+    description="体检报告：缓存命中率/健康指标/告警/诊断建议",
+    permission=PermissionLevel.USER,
+    registry=WS_COMMANDS,
+)
+async def cmd_doctor(ctx) -> CommandResult:
+    state: WsCommandState = ctx.metadata["state"]
+    worlds = state.hub.worlds()
+    findings: list[str] = []
+    lines = [
+        f"体检报告（{len(worlds)} 频道，已运行 {_format_uptime(time.monotonic() - state.started_at)}）"
+    ]
+
+    # --- 前缀缓存科：逐频道 brain.think 的命中率与稳定段漂移 ---
+    lines.append("【前缀缓存】")
+    if not worlds:
+        lines.append("  （无活跃频道）")
+    for cid, world in worlds.items():
+        stats = world.brain.prompt_cache_stats()
+        if stats.calls <= 0:
+            lines.append(f"  {cid}: 尚无 think 调用")
+            continue
+        drift_text = f" 漂移: {stats.drifts}" if stats.drifts else ""
+        lines.append(
+            f"  {cid}: 命中率 {stats.hit_rate:.0%}"
+            f"（{_fmt_tokens(stats.cached_tokens)}/{_fmt_tokens(stats.prompt_tokens)} tok，"
+            f"{stats.calls} 次调用）{drift_text}"
+        )
+        if stats.calls >= 5 and stats.hit_rate < 0.3:
+            findings.append(
+                f"{cid} 缓存命中率 {stats.hit_rate:.0%} 偏低："
+                "检查稳定段是否混入动态内容（时间戳/计数器）"
+            )
+        if stats.drifts:
+            findings.append(f"{cid} 稳定段漂移 {stats.drifts}：若非预期改动，前缀缓存会反复作废")
+    total = state.sessions.total_usage()
+    if total.prompt_tokens > 0:
+        lines.append(
+            f"  全局: 输入 {_fmt_tokens(total.prompt_tokens)} tok，"
+            f"缓存命中 {_fmt_tokens(total.cached_tokens)} tok"
+        )
+
+    # --- 健康指标科：逐频道关键指标摘要 + 近期告警 ---
+    lines.append("【健康指标】")
+    any_alerts = False
+    for cid, world in worlds.items():
+        health = world.health
+        latency = health.summary("turn.latency_s")
+        context = health.summary("session.context_usage")
+        skip = health.summary("gate.skip")
+        dist = health.reasoning_distribution()
+        parts = [f"记忆 {world.memory.work_mem_size}/{world.memory.long_mem_size}"]
+        if latency.count:
+            parts.append(f"延迟 avg {latency.avg:.1f}s p95 {latency.p95:.1f}s")
+        if context.count:
+            parts.append(f"上下文 {context.last:.0%}")
+            if context.last > 0.8:
+                findings.append(f"{cid} 上下文占用 {context.last:.0%} 偏高：关注记忆蒸馏是否跟上")
+        if skip.count:
+            parts.append(f"门控跳过 {int(skip.count)} 次")
+        if dist:
+            parts.append("档位 " + "/".join(f"{k}:{int(v)}" for k, v in sorted(dist.items())))
+        lines.append(f"  {cid}: " + " | ".join(parts))
+        for alert in world.health.alerts(3):
+            any_alerts = True
+            lines.append(f"  ⚠ [{cid}] {alert.message}")
+        if world.memory.work_mem_size > 500:
+            findings.append(f"{cid} 工作记忆 {world.memory.work_mem_size} 条超阈值：检查蒸馏节奏")
+    if not any_alerts:
+        lines.append("  （近期无告警）")
+
+    # --- 诊断 ---
+    lines.append("【诊断】")
+    if findings:
+        lines.extend(f"  ⚠ {f}" for f in findings)
+    else:
+        lines.append("  ✓ 各项指标正常")
+
+    await ctx.metadata["send"]("\n".join(lines))
+    return CommandResult.success("doctor")
 
 
 _OWNER_LABELS = {

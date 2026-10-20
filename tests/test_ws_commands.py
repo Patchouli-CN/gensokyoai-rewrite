@@ -228,3 +228,48 @@ async def test_quota_shows_rate_limit_windows(tmp_path, monkeypatch):
         await client.close()
         await hub.shutdown()
         RATE_LIMITS.reset()
+
+
+async def test_doctor_report_structure(tmp_path):
+    """/doctor：体检报告四科齐全（缓存/健康/告警/诊断），聊过一轮后缓存科有数据"""
+    hub, app = _build(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1?user=甲&role=member")
+        await ws.send_str("你好")
+        await _collect(ws, seconds=3.0)
+
+        await ws.send_str("/doctor")
+        frames = await _collect(ws)
+        text = next((f.get("text", "") for f in frames if "体检报告" in f.get("text", "")), "")
+        assert "体检报告" in text
+        assert "【前缀缓存】" in text and "g1" in text, text
+        assert "命中率" in text or "尚无 think 调用" in text, text
+        assert "【健康指标】" in text and "记忆" in text, text
+        assert "【诊断】" in text, text
+        assert "各项指标正常" in text, text
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()
+
+
+async def test_doctor_alias_and_permission(tmp_path):
+    """/体检 别名可用；guest（VISITOR）调用静默（需 USER）"""
+    hub, app = _build(tmp_path)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws/g1?user=甲&role=guest")
+        await ws.send_str("/体检")
+        frames = await _collect(ws)
+        assert not any("体检报告" in f.get("text", "") for f in frames), "权限不足应静默"
+
+        await ws.send_str('{"text": "/体检", "role": "member"}')
+        frames = await _collect(ws)
+        assert any("体检报告" in f.get("text", "") for f in frames), frames
+        await ws.close()
+    finally:
+        await client.close()
+        await hub.shutdown()

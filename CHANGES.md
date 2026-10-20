@@ -8,6 +8,46 @@
 
 ## [Unreleased]
 
+### 新增
+  - **`/doctor` 体检指令（ws_server 斜杠指令，别名 /体检，USER 权限）**：
+    四科体检报告——【前缀缓存】逐频道 brain.think 命中率（cached/prompt tok、
+    调用次数）与稳定段漂移计数 + 全局输入/命中合计；【健康指标】逐频道记忆
+    规模、回合延迟 avg/p95、上下文占用、门控跳过次数、推理档位分布 + 近期
+    告警；【诊断】规则化建议（命中率 <30% 且调用 ≥5 次提示检查稳定段是否
+    混入动态内容、漂移非零提示前缀反复作废、上下文占用 >0.8 提示关注蒸馏、
+    工作记忆超阈值提示检查蒸馏节奏），无异常给「✓ 各项指标正常」。
+    `ChannelHub` 新增 `worlds()` 只读访问器（频道 -> 世界）支撑诊断取数。
+    新增 2 例测试（报告结构 / 别名与权限静默）。
+  - **前缀缓存管理器 `PromptCache`（`prompts/cache.py`）**：厂商/服务端前缀缓存
+    按最长公共前缀匹配，本类把「版面纪律」从散在各模板里的隐式约定变成显式
+    契约——`static_msg`（声明稳定段，同名内容变了 = 漂移 warning + 计数）、
+    `volatile_msg` / `append` / `extend`（尾部增量）、`reset_tail`（每轮重编译
+    尾部、保留稳定段）、`retract(n)`（**消息回退语义**：撤回最后一问一答从尾部
+    静默弹消息，截尾点之前逐字节不变、缓存继续命中；绝不往历史插「撤回」注解
+    ——注解改字节 = 前缀报废）、`record_usage` / `stats`（cached/prompt 命中率
+    与漂移计数遥测，health / 将来的 /doctor 素材）。尾部已有内容后再登记稳定段
+    直接 ValueError（排版错误早暴露）。接力思考（`brain.think`）首个接线：
+    system 为稳定段（tool_style 切换会如实记一次漂移）、user 为挥发性尾部，
+    渲染产物与旧 base_messages 逐字节一致；`BrainEngine.prompt_cache_stats()`
+    对外暴露遥测快照。新增 `tests/test_prompt_cache.py` 12 例。
+  - **显著性分层过滤（丘脑门控，`core/brain/salience.py`）**：过了平台侧群卫生
+    （复读冷却 / 已答覆盖，钦定在 nb2 插件，core 不重复造）之后，残余附和碎片
+    不再与重点消息同价消耗资源。零成本规则打分（直连恒 1.0；`is_bare_reaction`
+    恒 0.05；长度 / 问句 / 情感剧情词阶梯加分），一处打分三处生效：
+    - **合并折叠**（`satori/queue.py`）：攒批 / 忙时合并时，连续低分消息折叠成
+      「（K 条附和）」计数标记，积压有 token 上界；直连消息与末尾
+      `keep_verbatim` 条永不折叠，`event_queue` 留痕不受影响。satori 侧只依赖
+      `FoldScorer` Protocol（结构式注入），分层测试照旧守得住；
+    - **记忆分级**（`roleplay/loop.py`）：用户消息 importance 按显著性分档——
+      附和 0.2（淘汰时物理删除、不进长期记忆、低于 `assoc_min_importance`
+      不做 embedding 语义关联）、直连 0.6（写入即归档长期）、其余 0.5（旧默认）；
+    - **精力调制**：绑定 `EnergyModel` 后折叠阈值随精力下降上浮（累了只听重点，
+      只抬不压，与门控阈值调制同哲学）。
+    行为变更：`attention.enabled` 默认 False（`config/settings.yaml` 显式开启），
+    关闭时全链路行为与旧版逐字节一致。情感/剧情词表收编进 salience.py，
+    `engine.route` 改为共享引用（消除两处漂移）。新增 `tests/test_salience.py`
+    20 例（打分 / 阈值调制 / 分级 / 折叠 / 关联门槛 / 淘汰 / 世界装配接线）。
+
 ### 变更
   - **重复实现收编**（对外行为不变）：
     - `Responder`：`respond` / `respond_stream` / `stall` 三处的 system 前缀设置与
