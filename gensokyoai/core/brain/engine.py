@@ -2,7 +2,7 @@
 
 import time
 
-from ...prompts import prompt_mgr
+from ...prompts import CacheStats, PromptCache, prompt_mgr
 from ...schemas.brain_schema import BrainConclusion, BrainThinkEffort, ReasoningStep
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message, ToolSpec
@@ -20,14 +20,16 @@ from ..toolkit import (
 )
 from .ooc_detector import OOCDetector
 from .pipeline import JSON_CORRECTION, PipelineAbort, ThinkPipeline, build_context
+from .salience import EMOTION_WORDS, PLOT_WORDS
 
 _logger = LoggerManager.get_logger("BRAIN")
 
 _TOOL_RESULT_MARK = "\n【工具结果】"
 """ 行动指令里工具结果的起始标记：OOC 规则预筛只看它之前的模型自写部分 """
 
-_EMOTION_WORDS = ("难过", "开心", "生气", "伤心", "喜欢", "讨厌", "害怕", "哭", "笑", "感动")
-_PLOT_WORDS = ("世界", "本质", "为什么", "记得", "过去", "未来", "剧情", "故事", "命运", "秘密")
+# 情感/剧情词表集中在 salience.py（显著性打分与档位路由共用）
+_EMOTION_WORDS = EMOTION_WORDS
+_PLOT_WORDS = PLOT_WORDS
 
 
 def route(snapshot: SceneSnapshot) -> BrainThinkEffort:
@@ -108,6 +110,12 @@ class BrainEngine:
             完整人设只留给开口的 Responder（那里一个字都省不得） """
         self._tool_directive = tool_directive
         """ 工具使用指令（如可信知识站表），拼进【可用工具】块尾部 """
+        self._prompt_cache = PromptCache(owner="brain.think")
+        """ 前缀缓存管理：system 段漂移检测 + 命中率遥测（跨调用持有） """
+
+    def prompt_cache_stats(self) -> CacheStats:
+        """brain.think 的前缀缓存遥测快照（health / 将来的 /doctor 素材）。"""
+        return self._prompt_cache.stats()
 
     async def think(
         self,
@@ -224,21 +232,22 @@ class BrainEngine:
         if self._tool_directive:
             tool_block += f"\n{self._tool_directive}"
 
-        base_messages = [
-            Message(role="system", content=prompt_mgr.render("brain.think", tool_style=tool_style)),
-            Message(
-                role="user",
-                content=prompt_mgr.render(
-                    "brain.think.user",
-                    persona=material.persona,
-                    sender=snapshot.sender,
-                    content=snapshot.content,
-                    context=material.context,
-                    memory=material.memory,
-                    tools=tool_block,
-                ),
-            ),
-        ]
+        system_prompt = prompt_mgr.render("brain.think", tool_style=tool_style)
+        user_prompt = prompt_mgr.render(
+            "brain.think.user",
+            persona=material.persona,
+            sender=snapshot.sender,
+            content=snapshot.content,
+            context=material.context,
+            memory=material.memory,
+            tools=tool_block,
+        )
+        # 前缀缓存管理：system 为稳定段（跨调用持有，漂移检测 + 命中率遥测），
+        # user 为每轮编译的挥发性尾部。渲染产物与旧 base_messages 逐字节一致。
+        # 先 reset_tail 清掉上一次 think 的尾部，稳定段才能重新登记（no-op）。
+        pc = self._prompt_cache
+        pc.reset_tail()
+        pc.static_msg("system", system_prompt, name="think.system")
 
         current_round = 0
         previous_thought = ""
@@ -266,16 +275,18 @@ class BrainEngine:
             current_round += 1
             self._logger.debug(f"思考接力第 {current_round}/{max_rounds} 轮")
 
-            # 拼接当前 Prompt
-            messages = list(base_messages)
+            # 拼接当前 Prompt：尾部每轮重编译（user 基底 + 接力增量），
+            # 稳定段（system）不动 —— 渲染序与旧 list(base_messages) + append 一致
+            pc.reset_tail()
+            pc.volatile_msg("user", user_prompt)
             if previous_thought:
-                messages.append(
+                pc.append(
                     Message(
                         role="assistant",
                         content=f"【第{current_round - 1}轮思考】\n{previous_thought}",
                     )
                 )
-                messages.append(
+                pc.append(
                     Message(
                         role="user",
                         content="请继续推理，无需重复已得结论，给出进一步推演或最终结论。",
@@ -284,7 +295,7 @@ class BrainEngine:
 
             # 如果有工具结果，补充给模型
             if tool_result_cache:
-                messages.append(
+                pc.append(
                     Message(
                         role="user",
                         content=f"【工具执行结果】\n{tool_result_cache}\n请基于以上结果继续思考。",
@@ -293,9 +304,10 @@ class BrainEngine:
 
             # 查证兜底提示（首轮没碰工具就想收尾时，由循环层注入）
             if nudge_cache:
-                messages.append(Message(role="user", content=nudge_cache))
+                pc.append(Message(role="user", content=nudge_cache))
             if json_correction:
-                messages.append(Message(role="user", content=json_correction))
+                pc.append(Message(role="user", content=json_correction))
+            messages = pc.render()
 
             try:
                 result = await self._sessions.call(
@@ -316,6 +328,7 @@ class BrainEngine:
                 self._logger.exception("推理调用失败，降级为快速路径")
                 return self._fast_path(snapshot, effort)
 
+            pc.record_usage(result.usage)  # 命中率遥测入账（cached/prompt 口径）
             self._logger.debug(f"模型原始输出: {result.content}")
 
             # 收集模型原生 thinking（think=true 时由服务端分离或 split_think 剥离而来）
