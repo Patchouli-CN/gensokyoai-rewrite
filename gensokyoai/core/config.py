@@ -122,6 +122,32 @@ class EnergySettings(msgspec.Struct, frozen=True):
     """ 精力低于该值时给 Responder 注入「回复简短」状态提示 """
 
 
+class AttentionSettings(msgspec.Struct, frozen=True):
+    """显著性分层过滤配置（丘脑门控，见 core/brain/salience.py）
+
+    过了平台侧群卫生（复读冷却 / 已答覆盖，钦定在 nb2 插件）之后，残余噪音
+    （不同人花样附和、短反应）仍与重点消息同价消耗资源。本层做零成本规则
+    显著性打分，三处生效：合并时附和折叠成计数标记（积压 token 上界）、
+    记忆按显著性分级写入（附和低 importance，淘汰时物理删除、不进长期记忆、
+    不做 embedding 语义关联）、精力低时孔径收窄（阈值上浮）。
+
+    行为变更：代码默认 `enabled=False`；`config/settings.yaml` 显式打开。
+    """
+
+    enabled: bool = False
+    """ 是否启用显著性分层（直连信号：私聊/被 @ 永不折叠、importance 上浮） """
+    fold_threshold: float = 0.3
+    """ 显著性低于该值的事件在合并时折叠成「（K 条附和）」计数标记 """
+    assoc_min_importance: float = 0.3
+    """ 记忆语义关联（embedding 建边）的 importance 下限：低分条目不 embed、不上图 """
+    keep_verbatim: int = 5
+    """ 合并时末尾强制保留全文的事件数（最新鲜的不折叠） """
+    energy_modulate: bool = True
+    """ 精力联动：精力低时折叠阈值上浮（累了只听重点，只抬不压） """
+    energy_span: float = 0.2
+    """ 精力归零时折叠阈值最多上浮这么多 """
+
+
 class StyleSettings(msgspec.Struct, frozen=True):
     """文风防复读配置（治小模型「重复自己的模板/口头禅」）
 
@@ -315,6 +341,9 @@ class GensokyoConfig(msgspec.Struct, frozen=True):
 
     energy: EnergySettings = EnergySettings()
     """ 精力模型配置 """
+
+    attention: AttentionSettings = AttentionSettings()
+    """ 显著性分层过滤配置 """
 
     ooc_judge: OOCJudgeSettings = OOCJudgeSettings()
     """ System-1 出戏审查配置 """

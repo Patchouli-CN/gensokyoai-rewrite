@@ -87,6 +87,20 @@ energy:
   threshold_cap: 0.95
   brief_below: 0.4            # 精力低于此值提示 Responder 长话短说
 
+# 显著性分层过滤（丘脑门控，core/brain/salience.py）：过了平台侧群卫生
+# （复读冷却 / 已答覆盖，钦定在 nb2 插件）之后，残余附和碎片仍与重点消息
+# 同价消耗资源。开启后：合并时连续低分消息折叠成「（K 条附和）」计数标记
+# （积压有 token 上界）；记忆按显著性分级（附和 importance 0.2——淘汰时物理
+# 删除、不进长期记忆、不做 embedding 关联；直连 0.6——写入即归档长期记忆）。
+# 私聊 / 被 @ 永不折叠。
+attention:
+  enabled: false              # 行为变更，显式打开
+  fold_threshold: 0.3         # 显著性低于此值的消息在合并时折叠
+  assoc_min_importance: 0.3   # 语义关联（embedding 建边）的 importance 下限
+  keep_verbatim: 5            # 合并时末尾强制保留全文的消息数
+  energy_modulate: true       # 精力低时折叠阈值上浮（累了只听重点）
+  energy_span: 0.2            # 精力归零时阈值最多上浮 0.2
+
 # System-1 出戏审查（core/brain/ooc_judge.py）：一次裁判调用五问概率 +
 # 应用层接受规则。state 带诱发消息（旧 audit 看不到，冷面接梗会被误判）；
 # side_chain=异步记账不阻塞（默认）；blocking=最终缓冲区审查通过才放行。

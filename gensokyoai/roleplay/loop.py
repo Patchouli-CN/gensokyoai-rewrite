@@ -9,8 +9,10 @@ from ..core.brain.engine import BrainEngine, build_tool_directive, route
 from ..core.brain.gate import Judge, PresenceTracker, tier_from_deep_score
 from ..core.brain.ooc_detector import OOCDetector
 from ..core.brain.pipeline import ThinkPipeline
+from ..core.brain.salience import SalienceScorer
 from ..core.clock import BiologicalClock
 from ..core.config import (
+    AttentionSettings,
     EnergySettings,
     GateSettings,
     OOCJudgeSettings,
@@ -32,7 +34,7 @@ from ..core.session_manager import SessionManager
 from ..mouth.base import Mouth
 from ..mouth.console import ConsoleMouth
 from ..satori.perceiver import Perceiver
-from ..satori.queue import merge_snapshots
+from ..satori.queue import QueuePerceiver, merge_snapshots
 from ..schemas.brain_schema import BrainThinkEffort
 from ..schemas.event_schema import BaseEvent, EventTopic, TurnEndPayload
 from ..schemas.memory_schema import MemoryItem, MemoryType
@@ -78,6 +80,7 @@ class TouhouWorld:
         style: StyleSettings | None = None,
         energy: EnergySettings | None = None,
         search: SearchSettings | None = None,
+        attention: AttentionSettings | None = None,
         session_id: str = "default",
         storage_dir: str | Path = "data",
         persistence=None,
@@ -107,6 +110,8 @@ class TouhouWorld:
             style: 文风防复读配置（None = StyleSettings() 默认）
             energy: 精力模型配置（None = EnergySettings() 默认；enabled=False 不跟踪精力）
             search: 联网工具配置（可信知识站表 -> 脑内工具指令；None = 无指令）
+            attention: 显著性分层过滤配置（None = AttentionSettings() 默认；
+                enabled=False 全链路旧行为；见 core/brain/salience.py）
             session_id: 会话标识，记忆与会话快照按它隔离（多群/多用户各自一个 id）
             storage_dir: 持久化根目录
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
@@ -134,12 +139,19 @@ class TouhouWorld:
         关闭时也靠它统一取消并等在途任务收尾 """
         self._runtime = RuntimeState()
         """ 跨回合运行时状态（busy / generation / last_activity；组件与主循环注入同一实例）"""
+        self._attention = attention or AttentionSettings()
+        """ 显著性分层过滤配置（丘脑门控；enabled=False 时 scorer 为 None，全链路旧行为）"""
+        self._salience = SalienceScorer(self._attention) if self._attention.enabled else None
+        """ 显著性打分器：合并折叠与记忆分级共用（None = 关闭）"""
         self.memory = MemoryManager(
             storage_dir=storage_dir,
             session_id=session_id,
             tasks=self._tasks,
             embedder=embedder,
             min_score=memory_min_score,
+            assoc_min_importance=(
+                self._attention.assoc_min_importance if self._salience is not None else 0.0
+            ),
         )
         self._knowledge = KnowledgeCache(
             self.memory, ttl_s=(search or SearchSettings()).cache_ttl_s
@@ -202,6 +214,13 @@ class TouhouWorld:
             self.memory,
         )
         """ System-1 发言门控（该不该接话 + 该想多深；纯判决见 core/brain/gate.py）"""
+
+        # --- 显著性分层接线：精力回调绑定 + 感知器注入（合并折叠生效）---
+        if self._salience is not None:
+            if self._energy is not None and self._attention.energy_modulate:
+                self._salience.bind_energy(self._energy.energy)
+            if isinstance(self.eye, QueuePerceiver):
+                self.eye.scorer = self._salience
 
         # --- 蒸馏 / 主动发言旋钮 ---
         self._distill_every = s.distill_every
@@ -423,7 +442,7 @@ class TouhouWorld:
                 # 无积压时 drain 返回空，零开销）
                 backlog = self.eye.drain()
                 if backlog:
-                    snapshot = merge_snapshots([snapshot, *backlog])
+                    snapshot = merge_snapshots([snapshot, *backlog], scorer=self._salience)
 
                 if not snapshot.content.strip():
                     continue  # 纯控制字符/空白清洗后为空：不开回合
@@ -525,6 +544,13 @@ class TouhouWorld:
         if greeting:
             await self.mouth.send(self.character.name, greeting)
 
+    def _user_importance(self, snapshot: SceneSnapshot) -> float:
+        """用户消息的记忆 importance：显著性分层开启时按打分分级（附和 0.2 /
+        直连 0.6 / 其余 0.5），关闭时恒 0.5（旧行为）。"""
+        if self._salience is None:
+            return 0.5
+        return self._salience.importance(snapshot.content, is_direct=snapshot.is_direct)
+
     def _remember_turn(self, snapshot: SceneSnapshot, reply: str) -> None:
         """把本回合的用户输入与角色回复投递到记忆总线（异步侧链）。
 
@@ -535,6 +561,7 @@ class TouhouWorld:
             topic="对话",
             content=f"{snapshot.sender}: {snapshot.content}",
             memory_type=MemoryType.DIALOGUE,
+            importance=self._user_importance(snapshot),
         )
         items = [user_mem]
         # 模型全挂时回复为空：角色没开口，就不记一条「角色名: 」空发言
@@ -595,6 +622,7 @@ class TouhouWorld:
             topic="对话",
             content=f"{snapshot.sender}: {snapshot.content}",
             memory_type=MemoryType.DIALOGUE,
+            importance=self._user_importance(snapshot),
         )
         self._tasks.spawn(
             self.bus.publish(EventBus.new(EventTopic.MEMORY_WRITE, source="gate", payload=item)),

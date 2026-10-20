@@ -117,6 +117,7 @@ def build_world_kwargs(config: GensokyoConfig, sessions: SessionManager) -> dict
         "style": config.style,
         "energy": config.energy,
         "search": config.search,
+        "attention": config.attention,
         "embedder": build_embedder(config.embedding),
         "memory_min_score": config.embedding.min_score,
     }

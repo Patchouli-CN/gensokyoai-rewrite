@@ -16,12 +16,62 @@
 
 import asyncio
 from collections.abc import Sequence
+from typing import Protocol
 
 from ..schemas.scene_schema import SceneEvent, SceneSnapshot
 from .base import Perceiver
 
 
-def merge_snapshots(snaps: Sequence[SceneSnapshot]) -> SceneSnapshot:
+class FoldScorer(Protocol):
+    """合并折叠打分协议 —— satori 是边缘层，不 import core/brain（分层测试守门）。
+
+    具体实现见 `core/brain/salience.py::SalienceScorer`，由 roleplay 装配层注入；
+    结构式匹配（鸭子类型），任何满足三件套的打分器都可挂上。
+    """
+
+    @property
+    def keep_verbatim(self) -> int:
+        """合并时末尾强制保留全文的事件数"""
+        ...
+
+    def fold_threshold(self) -> float:
+        """当前折叠阈值（实现方可做精力调制）"""
+        ...
+
+    def score(self, content: str, *, is_direct: bool = False) -> float:
+        """单条消息的显著性（0~1）"""
+        ...
+
+
+def _fold_lines(
+    flat: list[tuple[str, str, float, bool]], scorer: FoldScorer, *, multi: bool
+) -> list[str]:
+    """显著性折叠：连续低分事件折叠成「（K 条附和）」，高分 / 直连 / 末尾保留原文。
+
+    末尾 `keep_verbatim` 条强制全文（最新鲜的不折叠）；直连事件永不折叠。
+    """
+    n = len(flat)
+    threshold = scorer.fold_threshold()
+    keep_from = max(0, n - scorer.keep_verbatim)
+    lines: list[str] = []
+    run = 0
+    for idx, (sender, content, _ts, is_direct) in enumerate(flat):
+        keep = is_direct or idx >= keep_from or scorer.score(content) >= threshold
+        if not keep:
+            run += 1
+            continue
+        if run:
+            lines.append(f"（{run} 条附和）")
+            run = 0
+        lines.append(f"{sender}: {content}" if multi else content)
+    if run:
+        lines.append(f"（{run} 条附和）")
+    return lines
+
+
+def merge_snapshots(
+    snaps: Sequence[SceneSnapshot], *, scorer: FoldScorer | None = None
+) -> SceneSnapshot:
     """把一批快照合并成一个（单条原样返回）。
 
     - 同一发送者：内容按行拼接，sender 不变（「话没说完」情形）
@@ -32,28 +82,35 @@ def merge_snapshots(snaps: Sequence[SceneSnapshot]) -> SceneSnapshot:
     - context_snippet 取最后一条的（最新鲜）；timestamp 取最后一条的
     - **嵌套拍平**：输入里混着已合并过的批次快照时（忙时攒批会二次合并），
       按 event_queue 展开回原始消息，避免「发送者: 发送者: 内容」套娃前缀
+    - **显著性折叠**（scorer 非 None 时）：连续低分事件折叠成「（K 条附和）」
+      计数标记，积压有 token 上界；event_queue 留痕不受影响
     """
     if len(snaps) == 1:
         return snaps[0]
 
-    flat: list[tuple[str, str, float]] = []
+    flat: list[tuple[str, str, float, bool]] = []
     for s in snaps:
         if len(s.event_queue) > 1:
-            flat.extend((e.sender, e.content, s.timestamp) for e in s.event_queue if e.content)
+            flat.extend(
+                (e.sender, e.content, s.timestamp, s.is_direct) for e in s.event_queue if e.content
+            )
         elif s.content:
-            flat.append((s.sender, s.content, s.timestamp))
+            flat.append((s.sender, s.content, s.timestamp, s.is_direct))
 
-    senders = [sender for sender, _, _ in flat]
+    senders = [sender for sender, _, _, _ in flat]
     unique = list(dict.fromkeys(senders))
     # 默认值不能直接写 senders[-1]：next() 的默认值会被立即求值，整批都是空内容时
     # senders 为空就地 IndexError（合并发生在主循环里，等于把世界带走）
     fallback = senders[-1] if senders else snaps[-1].sender
     primary = next((s.sender for s in reversed(snaps) if s.is_direct), fallback)
-    if len(unique) == 1:
-        content = "\n".join(c for _, c, _ in flat)
+    if scorer is not None:
+        content = "\n".join(_fold_lines(flat, scorer, multi=len(unique) > 1))
+        sender = primary
+    elif len(unique) == 1:
+        content = "\n".join(c for _, c, _, _ in flat)
         sender = unique[0]
     else:
-        content = "\n".join(f"{sender}: {c}" for sender, c, _ in flat)
+        content = "\n".join(f"{sender}: {c}" for sender, c, _, _ in flat)
         sender = primary
 
     return SceneSnapshot(
@@ -65,7 +122,7 @@ def merge_snapshots(snaps: Sequence[SceneSnapshot]) -> SceneSnapshot:
         participants=unique,
         event_queue=[
             SceneEvent(kind="message", sender=sender, content=c, timestamp=ts)
-            for sender, c, ts in flat
+            for sender, c, ts, _ in flat
         ],
         timestamp=snaps[-1].timestamp,
     )
@@ -83,6 +140,7 @@ class QueuePerceiver(Perceiver):
         *,
         maxsize: int = 0,
         merge_window: float = 0.0,
+        scorer: FoldScorer | None = None,
     ) -> None:
         """初始化。
 
@@ -91,10 +149,14 @@ class QueuePerceiver(Perceiver):
             maxsize: 自建队列的容量上限（0 表示不限）；队列满时新输入被丢弃并告警
             merge_window: 合并窗口秒数；>0 时窗内消息攒批合并成一条快照
                 （见模块 docstring），0 = 逐条直接进队（旧行为）
+            scorer: 显著性打分器（合并时低分事件折叠成计数标记）；
+                None = 不折叠（旧行为）。世界装配时也可事后赋值
         """
         super().__init__()
         self.queue: asyncio.Queue[SceneSnapshot] = queue or asyncio.Queue(maxsize)
         self._merge_window = merge_window
+        self.scorer = scorer
+        """ 显著性打分器（世界装配时注入；None = 合并不折叠） """
         self._pending: list[SceneSnapshot] = []
         self._flush_handle: asyncio.TimerHandle | None = None
         self._stop = asyncio.Event()
@@ -127,7 +189,7 @@ class QueuePerceiver(Perceiver):
         if not self._pending:
             return
         batch, self._pending = self._pending, []
-        merged = merge_snapshots(batch)
+        merged = merge_snapshots(batch, scorer=self.scorer)
         if len(batch) > 1:
             self._logger.info(f"合并窗口聚合 {len(batch)} 条消息: {merged.participants}")
         self._put(merged)

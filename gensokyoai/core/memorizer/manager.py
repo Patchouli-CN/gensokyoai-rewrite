@@ -48,6 +48,7 @@ class MemoryManager:
         tasks: TaskManager | None = None,
         embedder: Embedder | None = None,
         min_score: float = 0.0,
+        assoc_min_importance: float = 0.0,
     ) -> None:
         """初始化。
 
@@ -59,6 +60,8 @@ class MemoryManager:
             tasks: 后台任务管理器；None 时自建。调用方（如 TouhouWorld）传入自己的
                 管理器，可让淘汰转存的任务与其侧链一起被 drain
             embedder: 向量化器；None 时长期记忆检索退回子串匹配
+            assoc_min_importance: 语义自动关联的 importance 下限：低分条目不 embed、
+                不建边（显著性分层用；0 = 不过滤，旧行为）
         """
         self._logger = LoggerManager.get_logger("MEMORY")
         self._tasks = tasks if tasks is not None else TaskManager("MEMORY")
@@ -68,6 +71,7 @@ class MemoryManager:
         self._work_mem_queue: deque[str] = deque()
         self._work_max = max_capacity  # 工作记忆上限（超出淘汰）
         self._embedder = embedder
+        self._assoc_min_importance = assoc_min_importance
         self._work_vectors: dict[str, list[float]] = {}
         """ 工作记忆向量（语义自动关联用；仅内存，重启后由 restore 标脏重建）"""
         self._vectors_stale = False
@@ -117,9 +121,14 @@ class MemoryManager:
 
         关联图因此从「谁挨着谁」（线性时间链）升级为「谁在讲同一件事」——
         cascade_retrieve 的顺藤摸瓜才算真正启动。embedding 未配置 / 失败时
-        静默跳过，行为与旧版一致（单边时间链）。
+        静默跳过，行为与旧版一致（单边时间链）。低 importance 条目（显著性
+        分层判定的附和碎片）不 embed、不上图。
         """
-        if self._embedder is None or len(item.content) < _ASSOC_MIN_CONTENT_CHARS:
+        if (
+            self._embedder is None
+            or len(item.content) < _ASSOC_MIN_CONTENT_CHARS
+            or item.importance < self._assoc_min_importance
+        ):
             return
         try:
             if self._vectors_stale:
