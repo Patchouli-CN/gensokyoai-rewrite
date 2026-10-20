@@ -10,8 +10,8 @@
 
 ### 新增
   - **`/doctor` 体检指令（ws_server 斜杠指令，别名 /体检，USER 权限）**：
-    四科体检报告——【前缀缓存】逐频道 brain.think 命中率（cached/prompt tok、
-    调用次数）与稳定段漂移计数 + 全局输入/命中合计；【健康指标】逐频道记忆
+    四科体检报告——【前缀缓存】逐频道逐 owner（brain.think / responder）的
+    命中率（cached/prompt tok、调用次数）与稳定段漂移计数 + 全局输入/命中合计；【健康指标】逐频道记忆
     规模、回合延迟 avg/p95、上下文占用、门控跳过次数、推理档位分布 + 近期
     告警；【诊断】规则化建议（命中率 <30% 且调用 ≥5 次提示检查稳定段是否
     混入动态内容、漂移非零提示前缀反复作废、上下文占用 >0.8 提示关注蒸馏、
@@ -26,10 +26,13 @@
     静默弹消息，截尾点之前逐字节不变、缓存继续命中；绝不往历史插「撤回」注解
     ——注解改字节 = 前缀报废）、`record_usage` / `stats`（cached/prompt 命中率
     与漂移计数遥测，health / 将来的 /doctor 素材）。尾部已有内容后再登记稳定段
-    直接 ValueError（排版错误早暴露）。接力思考（`brain.think`）首个接线：
-    system 为稳定段（tool_style 切换会如实记一次漂移）、user 为挥发性尾部，
-    渲染产物与旧 base_messages 逐字节一致；`BrainEngine.prompt_cache_stats()`
-    对外暴露遥测快照。新增 `tests/test_prompt_cache.py` 12 例。
+    直接 ValueError（排版错误早暴露）。四处生产接线（渲染产物均与旧手工拼装
+    逐字节一致）：接力思考 `brain.think`（system 稳定段 / user 挥发性尾部）、
+    `LocalJudge`（门控 gate.think 与出戏审查 brain.ooc 同体接线）、旧单点
+    `OOCDetector.audit`、`Responder`（有状态会话只做记账：人设首次登记为
+    稳定段、每轮调用 record_usage，装配仍归 SessionManager）。`BrainEngine` /
+    `Responder` / `LocalJudge` 均暴露 `prompt_cache_stats()` 遥测快照。
+    新增 `tests/test_prompt_cache.py` 14 例（含两处生产接线用例）。
   - **显著性分层过滤（丘脑门控，`core/brain/salience.py`）**：过了平台侧群卫生
     （复读冷却 / 已答覆盖，钦定在 nb2 插件，core 不重复造）之后，残余附和碎片
     不再与重点消息同价消耗资源。零成本规则打分（直连恒 1.0；`is_bare_reaction`

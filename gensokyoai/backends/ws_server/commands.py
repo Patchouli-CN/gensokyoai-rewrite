@@ -191,28 +191,34 @@ async def cmd_doctor(ctx) -> CommandResult:
         f"体检报告（{len(worlds)} 频道，已运行 {_format_uptime(time.monotonic() - state.started_at)}）"
     ]
 
-    # --- 前缀缓存科：逐频道 brain.think 的命中率与稳定段漂移 ---
+    # --- 前缀缓存科：逐频道逐 owner 的命中率与稳定段漂移 ---
     lines.append("【前缀缓存】")
     if not worlds:
         lines.append("  （无活跃频道）")
     for cid, world in worlds.items():
-        stats = world.brain.prompt_cache_stats()
-        if stats.calls <= 0:
-            lines.append(f"  {cid}: 尚无 think 调用")
-            continue
-        drift_text = f" 漂移: {stats.drifts}" if stats.drifts else ""
-        lines.append(
-            f"  {cid}: 命中率 {stats.hit_rate:.0%}"
-            f"（{_fmt_tokens(stats.cached_tokens)}/{_fmt_tokens(stats.prompt_tokens)} tok，"
-            f"{stats.calls} 次调用）{drift_text}"
-        )
-        if stats.calls >= 5 and stats.hit_rate < 0.3:
-            findings.append(
-                f"{cid} 缓存命中率 {stats.hit_rate:.0%} 偏低："
-                "检查稳定段是否混入动态内容（时间戳/计数器）"
+        ledgers = [
+            ("brain.think", world.brain.prompt_cache_stats()),
+            ("responder", world.responder.prompt_cache_stats()),
+        ]
+        for owner, stats in ledgers:
+            if stats.calls <= 0:
+                lines.append(f"  {cid} {owner}: 尚无调用")
+                continue
+            drift_text = f" 漂移: {stats.drifts}" if stats.drifts else ""
+            lines.append(
+                f"  {cid} {owner}: 命中率 {stats.hit_rate:.0%}"
+                f"（{_fmt_tokens(stats.cached_tokens)}/{_fmt_tokens(stats.prompt_tokens)} tok，"
+                f"{stats.calls} 次调用）{drift_text}"
             )
-        if stats.drifts:
-            findings.append(f"{cid} 稳定段漂移 {stats.drifts}：若非预期改动，前缀缓存会反复作废")
+            if stats.calls >= 5 and stats.hit_rate < 0.3:
+                findings.append(
+                    f"{cid} {owner} 缓存命中率 {stats.hit_rate:.0%} 偏低："
+                    "检查稳定段是否混入动态内容（时间戳/计数器）"
+                )
+            if stats.drifts:
+                findings.append(
+                    f"{cid} {owner} 稳定段漂移 {stats.drifts}：若非预期改动，前缀缓存会反复作废"
+                )
     total = state.sessions.total_usage()
     if total.prompt_tokens > 0:
         lines.append(

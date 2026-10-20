@@ -7,7 +7,7 @@
 import pytest
 
 from gensokyoai.prompts import CacheStats, PromptCache
-from gensokyoai.schemas.model_schema import Message, Usage
+from gensokyoai.schemas.model_schema import CompletionResult, Message, Usage
 
 
 def _msg(role: str, content: str) -> Message:
@@ -163,3 +163,74 @@ def test_len_and_iter():
     assert len(pc) == 3
     assert [m.content for m in pc] == ["人设", "a", "b"]
     assert "brain" in repr(pc) or "owner='t'" in repr(pc)
+
+
+# ---------- 生产接线：Responder / LocalJudge ----------
+
+
+class _StubBackend:
+    """记录调用参数的假模型后端"""
+
+    def __init__(self, reply: str = "回复") -> None:
+        self.reply = reply
+        self.calls: list[dict] = []
+
+    async def chat(
+        self,
+        messages,
+        *,
+        max_new_tokens=512,
+        temperature=0.7,
+        stop=None,
+        tools=None,
+        execute_tools=True,
+    ):
+        self.calls.append({"messages": list(messages)})
+        return CompletionResult(content=self.reply)
+
+
+async def test_responder_ledger_tracks_calls():
+    """Responder 接线：人设登记为稳定段，调用逐笔记账，发送内容不变"""
+    from gensokyoai.core.responder.generator import Responder
+    from gensokyoai.core.session_manager import SessionManager
+    from gensokyoai.schemas.brain_schema import BrainConclusion
+    from gensokyoai.schemas.scene_schema import SceneSnapshot
+
+    backend = _StubBackend()
+    sessions = SessionManager()
+    sessions.set_default_backend(backend)
+    responder = Responder(sessions, persona="白玉楼的主人是也")
+
+    conclusion = BrainConclusion(verdict="pass_through", intent="回应打招呼", emotion="友好")
+    snapshot = SceneSnapshot(content="你好", sender="灵梦", scene_type="group_chat")
+    reply = await responder.respond(conclusion, snapshot, [])
+    assert reply
+
+    stats = responder.prompt_cache_stats()
+    assert stats.calls == 1
+    pc = responder._prompt_cache
+    assert pc.render()[0].content == "白玉楼的主人是也", "人设应为首个稳定段"
+    # 会话层把人设 system 前缀拼进请求（稳定前缀利于 KV 复用），本轮 user 在其后
+    sent = backend.calls[0]["messages"]
+    assert [m.role for m in sent] == ["system", "user"]
+    assert sent[0].content == "白玉楼的主人是也"
+
+
+async def test_local_judge_ledger_tracks_calls():
+    """LocalJudge 接线：system 稳定段 + user 挥发性尾部，渲染逐字节等价旧拼装"""
+    from gensokyoai.core.brain.gate import Question
+    from gensokyoai.core.brain.judge import LocalJudge
+    from gensokyoai.core.session_manager import SessionManager
+
+    backend = _StubBackend(reply='{"should_reply": 0.9}')
+    sessions = SessionManager()
+    sessions.set_default_backend(backend)
+    judge = LocalJudge(sessions)
+
+    answers = await judge.ask({"chat": "群聊"}, {"should_reply": Question("该不该回复？")})
+    assert answers["should_reply"] == 0.9
+
+    stats = judge.prompt_cache_stats()
+    assert stats.calls == 1
+    sent = backend.calls[0]["messages"]
+    assert [m.role for m in sent] == ["system", "user"], "渲染产物与旧拼装同形同序"

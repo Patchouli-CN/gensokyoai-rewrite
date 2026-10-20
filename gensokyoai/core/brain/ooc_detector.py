@@ -2,9 +2,8 @@
 
 import time
 
-from ...prompts import prompt_mgr
+from ...prompts import PromptCache, prompt_mgr
 from ...schemas.brain_schema import OOCVerdict
-from ...schemas.model_schema import Message
 from ...utils.coerce import as_bool, as_float, as_str
 from ...utils.logger import LoggerManager
 from ...utils.text import try_extract_json_object
@@ -20,6 +19,8 @@ class OOCDetector:
     def __init__(self, sessions: SessionManager) -> None:
         self._logger = LoggerManager.get_logger("OOC")
         self._sessions = sessions
+        self._prompt_cache = PromptCache(owner="brain.ooc")
+        """ 前缀缓存管理：system 段漂移检测 + 命中率遥测（跨调用持有） """
 
     def pre_filter(self, text: str) -> OOCVerdict:
         """规则快筛，零 token；命中才值得进 audit。
@@ -49,24 +50,28 @@ class OOCDetector:
         """
         started = time.monotonic()
         self._logger.info(f"OOC 深审开始: 待审文本={draft[:60]!r}")
+        # system 为稳定段（跨调用漂移检测），user 为每次编译的挥发性尾部；
+        # 渲染产物与旧手工拼装逐字节一致
+        pc = self._prompt_cache
+        pc.reset_tail()
+        pc.static_msg("system", prompt_mgr.render("ooc.audit"), name="system")
+        pc.volatile_msg(
+            "user",
+            prompt_mgr.render(
+                "ooc.audit.user",
+                persona=persona,
+                draft=draft,
+            ),
+        )
         try:
             result = await self._sessions.call(
                 "brain.ooc",
-                [
-                    Message(role="system", content=prompt_mgr.render("ooc.audit")),
-                    Message(
-                        role="user",
-                        content=prompt_mgr.render(
-                            "ooc.audit.user",
-                            persona=persona,
-                            draft=draft,
-                        ),
-                    ),
-                ],
+                pc.render(),
                 stateless=True,
                 temperature=0.1,
                 max_new_tokens=150,
             )
+            pc.record_usage(result.usage)
         except Exception:
             self._logger.exception("OOC 深审调用失败，按未触发处理")
             return OOCVerdict()

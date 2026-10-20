@@ -12,8 +12,7 @@ import asyncio
 import importlib
 import json
 
-from ...prompts import prompt_mgr
-from ...schemas.model_schema import Message
+from ...prompts import CacheStats, PromptCache, prompt_mgr
 from ...utils.coerce import clamp01
 from ...utils.logger import LoggerManager
 from ...utils.text import extract_json_object
@@ -83,6 +82,12 @@ class LocalJudge:
         self._system_prompt = system_prompt
         self._user_prompt = user_prompt
         self._logger = LoggerManager.get_logger("GATE")
+        self._prompt_cache = PromptCache(owner=owner)
+        """ 前缀缓存管理：system 段漂移检测 + 命中率遥测（跨调用持有） """
+
+    def prompt_cache_stats(self) -> CacheStats:
+        """本裁判的前缀缓存遥测快照（health / /doctor 素材）。"""
+        return self._prompt_cache.stats()
 
     async def ask(
         self, state: dict[str, object], questions: dict[str, Question]
@@ -96,19 +101,23 @@ class LocalJudge:
             state=json.dumps(state, ensure_ascii=False),
             questions=question_text,
         )
+        # system 为稳定段（跨调用漂移检测），user 为每次编译的挥发性尾部；
+        # 渲染产物与旧手工拼装逐字节一致
+        pc = self._prompt_cache
+        pc.reset_tail()
+        pc.static_msg("system", prompt_mgr.render(self._system_prompt), name="system")
+        pc.volatile_msg("user", user)
         result = await asyncio.wait_for(
             self._sessions.call(
                 self._owner,
-                [
-                    Message(role="system", content=prompt_mgr.render(self._system_prompt)),
-                    Message(role="user", content=user),
-                ],
+                pc.render(),
                 stateless=True,
                 max_new_tokens=self._max_new_tokens,
                 temperature=self._temperature,
             ),
             timeout=self._timeout_s,
         )
+        pc.record_usage(result.usage)
         answers = parse_probabilities(result.content or "", questions)
         self._logger.debug(f"本地裁判: {answers}")
         return answers

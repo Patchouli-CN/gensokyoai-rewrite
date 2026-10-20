@@ -2,7 +2,7 @@
 
 import time
 
-from ...prompts import prompt_mgr
+from ...prompts import CacheStats, PromptCache, prompt_mgr
 from ...schemas.brain_schema import BrainConclusion
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.model_schema import Message
@@ -35,6 +35,19 @@ class Responder:
         self._sessions = sessions
         self._persona = persona
         self._system_ready = False
+        self._prompt_cache = PromptCache(owner=self._OWNER)
+        """ 前缀缓存管理：人设段漂移检测 + 命中率遥测（跨调用持有）。
+            注意：本类只做记账——消息装配归有状态会话（历史在 SessionManager 侧） """
+
+    def prompt_cache_stats(self) -> CacheStats:
+        """responder 的前缀缓存遥测快照（health / /doctor 素材）。"""
+        return self._prompt_cache.stats()
+
+    def _track(self, user: str) -> None:
+        """把本轮用户提示词记入缓存账本（尾部只留本轮，会话历史不镜像）。"""
+        pc = self._prompt_cache
+        pc.reset_tail()
+        pc.volatile_msg("user", user)
 
     async def respond(
         self,
@@ -61,12 +74,14 @@ class Responder:
         )
         self._ensure_system()
         user = self._user_prompt(conclusion, snapshot, memories, avoid, state_hint)
+        self._track(user)
         result = await self._sessions.call(
             self._OWNER,
             [Message(role="user", content=user)],
             max_new_tokens=1024,
             temperature=0.8,
         )
+        self._prompt_cache.record_usage(result.usage)
         content = result.content.strip()
 
         # 半截续写：小模型长回复常见被 max_tokens 截断，续写一次拼回完整文本
@@ -78,6 +93,7 @@ class Responder:
                 max_new_tokens=1024,
                 temperature=0.8,
             )
+            self._prompt_cache.record_usage(cont.usage)
             content = f"{content}{cont.content.strip()}".strip()
 
         reply = apply_emotion_hint(content, conclusion.emotion)
@@ -116,6 +132,7 @@ class Responder:
         )
         self._ensure_system()
         user = self._user_prompt(conclusion, snapshot, memories, avoid, state_hint)
+        self._track(user)
 
         parts: list[str] = []
         finish = "stop"
@@ -131,6 +148,8 @@ class Responder:
                 yield ev.delta
             if ev.finish_reason:
                 finish = ev.finish_reason
+                if ev.usage is not None:
+                    self._prompt_cache.record_usage(ev.usage)
 
         # 半截续写：小模型长回复被 max_tokens 截断时发起一次流式接续
         if finish == "length":
@@ -146,6 +165,8 @@ class Responder:
                     yield ev.delta
                 if ev.finish_reason:
                     finish = ev.finish_reason
+                    if ev.usage is not None:
+                        self._prompt_cache.record_usage(ev.usage)
 
         # 情绪润色尾缀：如愤怒补"！"、疑问补"？"，仅结尾追加，不打断流式
         content = "".join(parts).strip()
@@ -175,6 +196,7 @@ class Responder:
             sender=snapshot.sender,
             content=snapshot.content,
         )
+        self._track(user)
         result = await self._sessions.call(
             self._OWNER,
             [Message(role="user", content=user)],
@@ -183,6 +205,7 @@ class Responder:
             max_new_tokens=256,
             temperature=0.95,
         )
+        self._prompt_cache.record_usage(result.usage)
         line = result.content.strip().strip('"“” \n')
         self._logger.info(f"过渡语生成: {line!r} 耗时={time.monotonic() - started:.2f}s")
         return line
@@ -191,6 +214,7 @@ class Responder:
         """首次开口前把人设设为会话的 system 前缀（稳定前缀利于 KV cache 复用）。"""
         if not self._system_ready and self._persona:
             self._sessions.set_system(self._OWNER, self._persona)
+            self._prompt_cache.static_msg("system", self._persona, name="persona")
             self._system_ready = True
 
     def _user_prompt(
@@ -253,12 +277,14 @@ class Responder:
         started = time.monotonic()
         self._logger.warning(f"OOC 纠偏重生成: 原因={reason!r} 原回复={bad_reply[:60]!r}")
         user = prompt_mgr.render("responder.correct", bad_reply=bad_reply, reason=reason)
+        self._track(user)
         result = await self._sessions.call(
             self._OWNER,
             [Message(role="user", content=user)],
             max_new_tokens=1024,
             temperature=0.8,
         )
+        self._prompt_cache.record_usage(result.usage)
         reply = result.content.strip()
         self._logger.info(
             f"纠偏完成: {len(reply)}字 耗时={time.monotonic() - started:.2f}s 回复={reply!r}"
