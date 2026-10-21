@@ -1,1 +1,1 @@
-"""GensokyoAI —— 面向小模型的高表现角色扮演框架"""
+"""GensokyoAI v2 —— 房间即中心的最小内核（Room + Mind）。"""

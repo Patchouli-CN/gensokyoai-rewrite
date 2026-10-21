@@ -58,7 +58,8 @@ class LoguruHandler(std_logging.Handler):
                 return
             message = record.getMessage()
             if message.startswith("Traceback") and (
-                "KeyboardInterrupt" in message or "asyncio.exceptions.CancelledError" in message
+                "KeyboardInterrupt" in message
+                or "asyncio.exceptions.CancelledError" in message
             ):
                 return
 
@@ -73,7 +74,9 @@ class LoguruHandler(std_logging.Handler):
                 level = record.levelno
 
         frame, depth = inspect.currentframe(), 0
-        while frame and (depth == 0 or frame.f_code.co_filename == std_logging.__file__):
+        while frame and (
+            depth == 0 or frame.f_code.co_filename == std_logging.__file__
+        ):
             frame = frame.f_back
             depth += 1
 
@@ -95,7 +98,7 @@ class LoggerManager:
     内部缓存已创建的实例，避免重复 bind。
     """
 
-    _cache: dict[str, loguru.Logger] = {}
+    _cache: dict[str, loguru.Logger] = {}  # noqa: RUF012 - 刻意的过程级缓存
 
     @staticmethod
     def get_logger(module_name: str):
@@ -109,8 +112,8 @@ class LoggerManager:
 
         Example:
             >>> brain = LoggerManager.get_logger("BRAIN")
-            >>> brain.critical("service cannot start, exit")
-            [ MainThread  ] | 22:47:15 | BRAIN            | CRITICAL | service cannot start, exit
+            >>> brain.critical("exit")
+            [ MainThread  ] | 22:47:15 | BRAIN            | CRITICAL | exit
         """
         if module_name not in LoggerManager._cache:
             LoggerManager._cache[module_name] = logger.bind(module=module_name)
@@ -135,7 +138,6 @@ def setup_logging(
         log_format_console: 控制台日志格式
         intercept_standard_logging: 是否拦截标准 logging 库的日志
     """
-    global _handlers
 
     # 移除现有 handlers
     if _handlers["console"] is not None:
@@ -150,7 +152,8 @@ def setup_logging(
     # 默认格式 —— 带模块前缀
     if log_format is None:
         log_format = (
-            "[ {thread.name:^12} ] | {time:HH:mm:ss} | {extra[module]:<16} | {level:<8} | {message}"
+            "[ {thread.name:^12} ] | {time:HH:mm:ss} | "
+            "{extra[module]:<16} | {level:<8} | {message}"
         )
 
     if log_format_console is None:
@@ -199,8 +202,8 @@ def setup_logging(
 
 # 为了兼容性，保留原有的 logger 导出
 __all__ = [
+    "LoggerManager",
+    "LoguruHandler",
     "logger",
     "setup_logging",
-    "LoguruHandler",
-    "LoggerManager",
 ]

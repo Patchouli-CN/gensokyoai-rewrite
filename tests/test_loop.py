@@ -1,0 +1,263 @@
+"""Agent 回合测试 —— 模型用工具决定说不说、说几条、等多久。"""
+
+import asyncio
+
+from gensokyoai.loop import Loop
+from gensokyoai.model import Reply, ToolCall
+from gensokyoai.room import Room
+
+
+class _ScriptedMind:
+    """按脚本返回动作的假心智。"""
+
+    name = "觉"
+
+    def __init__(self, *replies: Reply) -> None:
+        self._replies = list(replies)
+        self.feeds: list[dict] = []
+
+    async def step(self, feed: dict, scene=None) -> Reply:
+        self.feeds.append(feed)
+        return self._replies.pop(0) if self._replies else Reply()
+
+
+class _Mouth:
+    def __init__(self, fail_times: int = 0) -> None:
+        self.sent: list[tuple[str, str]] = []
+        self._fail = fail_times
+
+    async def send(self, name: str, text: str) -> None:
+        if self._fail > 0:
+            self._fail -= 1
+            raise ConnectionError("广播通道抖了一下")
+        self.sent.append((name, text))
+
+
+class _Memory:
+    def __init__(self, items: list[str] | None = None) -> None:
+        self.items = list(items or [])
+        self.queries: list[str] = []
+        self.noted: list[tuple[str, float]] = []
+        self.fail_note = False
+
+    async def recall(self, query: str, limit: int = 3) -> list[str]:
+        self.queries.append(query)
+        return list(self.items)
+
+    async def note(self, text: str, importance: float) -> None:
+        if self.fail_note:
+            raise OSError("磁盘满了")
+        self.noted.append((text, importance))
+
+
+def _say(text: str) -> Reply:
+    return Reply(calls=(ToolCall(name="send_message", arguments={"text": text}),))
+
+
+def _wait(ms: int) -> Reply:
+    return Reply(calls=(ToolCall(name="wait", arguments={"ms": ms}),))
+
+
+def _room(*texts: str) -> Room:
+    room = Room("g1")
+    for text in texts:
+        room.append("message", "帕秋莉", text, user_id="u1")
+    return room
+
+
+async def test_turn_sends_what_model_says():
+    """模型调 send_message -> 投递 + 入房"""
+    room = _room("觉，在吗")
+    mind, mouth = _ScriptedMind(_say("在。")), _Mouth()
+    loop = Loop(room, mind, mouth)
+
+    await loop._turn()
+
+    assert mouth.sent == [("觉", "在。")]
+    assert room.events[-1].kind == "reply" and room.events[-1].text == "在。"
+
+
+async def test_multiple_messages_in_one_turn():
+    """一轮里连调几次 send_message = 连发几条（这就是节奏的来源）"""
+    room = _room("在吗")
+    reply = Reply(
+        calls=(
+            ToolCall(name="send_message", arguments={"text": "在。"}),
+            ToolCall(name="send_message", arguments={"text": "怎么了？"}),
+        )
+    )
+    mouth = _Mouth()
+    loop = Loop(room, _ScriptedMind(reply), mouth)
+
+    await loop._turn()
+
+    assert [text for _, text in mouth.sent] == ["在。", "怎么了？"]
+
+
+async def test_no_calls_ends_turn_silently():
+    """模型不调工具 = 这轮不动"""
+    mouth = _Mouth()
+    mind = _ScriptedMind(Reply(text="……"))
+    loop = Loop(_room("随便说说"), mind, mouth)
+
+    await loop._turn()
+
+    assert mouth.sent == []
+    assert len(mind.feeds) == 1
+
+
+async def test_feed_shape():
+    """投递的输入带 now / events / gap / memories"""
+    memory = _Memory(["上次借走了书"])
+    mind = _ScriptedMind(Reply())
+    loop = Loop(_room("觉，我该看什么书？"), mind, _Mouth(), memory=memory)
+
+    await loop._turn()
+
+    feed = mind.feeds[0]
+    assert set(feed) == {"now", "events", "gap", "history", "memories", "results"}
+    assert feed["events"][0]["text"] == "觉，我该看什么书？"
+    assert feed["gap"] is None
+    assert feed["memories"] == ["上次借走了书"]
+    assert memory.queries == ["觉，我该看什么书？"]
+
+
+async def test_wait_stops_when_quiet():
+    """模型只说 wait 且没人说话 -> 不再继续调模型"""
+    mind = _ScriptedMind(_wait(10))
+    loop = Loop(_room("嗯"), mind, _Mouth())
+
+    await loop._turn()
+
+    assert len(mind.feeds) == 1
+
+
+async def test_wait_continues_when_message_arrives():
+    """wait 期间来了新消息 -> 用新消息再调一次模型"""
+    room = _room("在吗")
+    mind = _ScriptedMind(_wait(5000), _say("来了。"))
+    mouth = _Mouth()
+    loop = Loop(room, mind, mouth)
+
+    async def later():
+        await asyncio.sleep(0.02)
+        loop.notify("message", "帕秋莉", "喂？", user_id="u1")
+
+    task = asyncio.create_task(later())
+    await loop._turn()
+    await task
+
+    assert len(mind.feeds) == 2
+    assert mind.feeds[1]["events"][0]["text"] == "喂？"
+    assert mouth.sent == [("觉", "来了。")]
+
+
+async def test_read_events_reveals_gap():
+    """read_events 展开 gap，下一轮就能看见被折叠的消息"""
+    room = Room("g1")
+    for i in range(10):
+        room.append("message", "甲", f"第{i}条")
+    reply = Reply(
+        calls=(
+            ToolCall(
+                name="read_events",
+                arguments={"gap_id": 0, "side": "earliest", "limit": 3},
+            ),
+        )
+    )
+    mind = _ScriptedMind(reply, Reply())
+    loop = Loop(room, mind, _Mouth(), window=2)
+
+    await loop._turn()
+
+    first, second = mind.feeds
+    assert first["gap"]["gapId"] == 0 and first["gap"]["skipped"] == 8
+    assert [event["text"] for event in second["events"]] == ["第0条", "第1条", "第2条"]
+    assert second["gap"] == {"gapId": 1, "skipped": 5, "mentioned": False}
+
+
+async def test_memory_note_uses_message_text():
+    """记忆写的是用户原话，不是模型自己的输出"""
+    memory = _Memory()
+    loop = Loop(
+        _room("觉，我该看什么书？"),
+        _ScriptedMind(_say("随便挑一本。")),
+        _Mouth(),
+        memory=memory,
+    )
+
+    await loop._turn()
+
+    text, importance = memory.noted[0]
+    assert text.startswith("觉，我该看什么书？")
+    assert "随便挑一本。" in text
+    assert importance > 0
+
+
+async def test_memory_failure_does_not_block_send():
+    """记忆坏了只告警，消息照发"""
+    memory = _Memory()
+    memory.fail_note = True
+    mouth = _Mouth()
+    loop = Loop(_room("在吗"), _ScriptedMind(_say("在。")), mouth, memory=memory)
+
+    await loop._turn()
+
+    assert mouth.sent == [("觉", "在。")]
+
+
+async def test_run_retries_after_failure():
+    """模型第一次抛异常：退避重试同一批消息，不丢消息、不重复发送"""
+
+    class _Flaky:
+        name = "觉"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def step(self, feed, scene=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise ConnectionError("后端断线")
+            return _say("在。")
+
+    room = _room("在吗")
+    mind, mouth = _Flaky(), _Mouth()
+    loop = Loop(room, mind, mouth, retry_backoff=0.01, retry_backoff_max=0.02)
+    task = asyncio.create_task(loop.run())
+    loop.notify("message", "帕秋莉", "喂？", user_id="u1")
+    await asyncio.sleep(0.15)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert mind.calls == 2
+    assert mouth.sent == [("觉", "在。")], "重试不该把已经发出去的那条再发一遍"
+
+
+async def test_restored_room_gets_history_once(tmp_path):
+    """重启后第一次投递带上 history，之后不再重复"""
+    from gensokyoai.bgtasks import BgTasks
+    from gensokyoai.room import RoomLog
+
+    tasks = BgTasks()
+    path = tmp_path / "events.jsonl"
+    before = Room("g1", log=RoomLog(path, tasks))
+    before.append("message", "帕秋莉", "上次说的那本书", user_id="u1")
+    before.append("reply", "觉", "记着")
+    await tasks.idle()
+
+    room = Room("g1", log=RoomLog(path, tasks))
+    room.append("message", "帕秋莉", "我又来了", user_id="u1")
+    mind = _ScriptedMind(Reply(), Reply())
+    loop = Loop(room, mind, _Mouth())
+
+    await loop._turn()
+    room.append("message", "帕秋莉", "还在吗", user_id="u1")
+    await loop._turn()
+
+    assert [event["text"] for event in mind.feeds[0]["history"]] == [
+        "上次说的那本书",
+        "记着",
+    ]
+    assert [event["text"] for event in mind.feeds[0]["events"]] == ["我又来了"]
+    assert mind.feeds[1]["history"] == [], "history 只给一次"

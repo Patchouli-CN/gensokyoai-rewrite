@@ -1,147 +1,144 @@
-<div align="center">
+# GensokyoAI v2
 
-# GensokyoAI
+幻想乡 AI 角色扮演引擎 v2。一个房间 = 一条只追加的聊天流，它是全系统唯一事实源，
+其余器官围着它转。
 
-**幻想乡角色扮演引擎 · 重写版**
+## 控制流
 
-在 8K~32K 上下文的小模型上，养一个「活着」的角色。
+房间不是"来消息就回一句"的管线。模型每轮拿到的是 `{now, events, gap, history, memories, results}`，
+它自己通过工具决定：说不说、说几条、等多久、要不要翻看错过的消息。
 
-![Python](https://img.shields.io/badge/Python-%3E%3D3.14-3776ab?logo=python&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Status](https://img.shields.io/badge/Status-Alpha-orange)
-
-> 「啊啦～，欢迎来到白玉楼～。这里很少有客人来呢。
-> ……啊，点心的话，我的那份也绝对不能少哦。」
-
-</div>
-
-## 这是什么
-
-一个用本地 LLM 跑角色扮演的引擎。目标是让小模型（8K~32K 上下文）也能稳定、快速地待在人设里——不串味、不忘事、不乱说话。
-
-做法只有一句话：**把推理和记忆挤出上下文，交给外部工程去管。** 角色一致性、记忆、发言时机、思考深度，全部由工程代码承载，而不是塞进提示词里祈祷模型自觉。上下文里只留最精华的部分。
-
-## 特性
-
-**思考**
-
-- 五档动态推理深度（`NONE / LOW / MID / HIGH / MAX`）：寒暄只跑收尾步（1 次调用），重大剧情跑全链还翻倍预算。档位由裁判打分决定，规则路由兜底。
-- 可定制思考链：角色卡里的 `think_chain` 按名拼装思考步骤，**换链 = 换角色的思维方式，零代码**。卡片作者也可以直接写内联步骤。
-- 接力思考：没配思考链时走多轮接力，模型每轮自述要不要继续想，轮数按档位封顶。
-- 工具调用：接力与思考链都能挂工具，内置时间 / 日期 / 月相。本地小模型不走原生协议，走文本喊话（`调用 工具名 {"参数": 值}`），参数 JSON 尽力提取。
-- 过渡语掩延迟：深思考前先垫一句角色口吻的「唔……让妾身想想」，掩盖接力思考的停顿。
-
-**发言门控（System-1 层）**
-
-- 新消息先过零成本规则（收尾语 / 私聊 / 被 @ 直判），群聊模糊带才调裁判——一次调用同时回答「该不该接话」和「该想多深」。
-- 裁判后端可插拔：本地模型（`LocalJudge`，无状态小调用）或 [TypeSafe](https://typesafe.ai) system one（可选依赖）。
-- 裁判挂了会自动退化：不接的回合回落「点名才回」，档位回落规则路由。
-- OOC 三重守门：初稿规则预筛（零成本）→ 命中才纠偏重生成 → 发出后异步深审。出戏率飙升时自动抬高推理档位下限，恢复后自行撤销。
-
-**表达与感知**
-
-- Eyes / Mouth 分层：感知器协议屏蔽平台差异，口层支持流式逐字蹦或整段投递，控制台和 WebSocket 对称接入。
-- 主动发言：四维对话欲规则评估（表达欲 / 情绪唤起 / 关系牵引 / 情境时机），冷场时角色会自己冒泡——零 token。
-- 频道中枢：多路输入合流成一条快照流，一频道一世界，空闲自动回收。
-
-**记忆与运维**
-
-- 分级记忆：工作记忆 + 长期记忆，重要性直存、访问强化、时间衰减淘汰，定期蒸馏压缩成摘要，重启可恢复。
-- 会话持久化：记忆、快照、跨回合运行时状态事件驱动落盘（走自家 [ayafileio](https://github.com/Patchouli-CN/ayafileio) 真异步 IO），关闭前 flush。
-- 资源闸门：全局并发 + 每租户 RPM / 日预算限流，保护本地单卡；入口令牌桶在变成模型调用之前就拒掉超速用户。
-- 健康监控：token / 延迟 / 上下文占用 / OOC 率 / 费用，超限告警 + 主动干预（上下文告急自动触发蒸馏）。
-- 计费兼容层：输入 / 缓存 / 输出四条流统一计价，内置主流云端模型价格表，本地模型明确不计价（绝不瞎猜）。
-- 思考轨迹留档：每回合一行 JSONL，含逐步推理记录，复盘调参用。
-
-## 快速开始
-
-```bash
-pip install -e .          # 或 pip install -e .[dev]
-python main.py            # 控制台模式，直接和角色对话
-```
-
-模型默认指向 `http://127.0.0.1:8080/v1`（llama-server 或任何 OpenAI 兼容端点）。
-
-完整步骤见 [docs/QUICKSTART.md](docs/QUICKSTART.md)，常见问题见 [docs/QA.md](docs/QA.md)。
-
-接入 QQ（OneBot v11）：起 `gensokyoai-ws` 后，用 [nb2_plugin/](nb2_plugin/README.md) 里的
-NoneBot2 桥接插件把群聊/私聊桥进来——插件跑在独立进程，QQ 侧出事不伤引擎。
-
-## 五档推理深度
-
-| 档位 | 思考链（配了卡片链） | 接力思考（未配卡） | 适用场景 |
-|---|---|---|---|
-| NONE | 不跑链 | 不跑 | 空输入 / 纯寒暄收尾 |
-| LOW | 只留收尾步（1 次调用） | 2 轮 | 日常寒暄、简单问答 |
-| MID | 首 + 尾（2 次调用） | 3 轮 | 一般对话，需看关系和情绪 |
-| HIGH | 全链（N 次调用） | 5 轮 | 复杂剧情推进、多角色交互 |
-| MAX | 全链 + 每步深思考（预算 ×2、低温） | 8 轮 | 重大剧情节点、情感转折 |
-
-## 发言门控
-
-```
-新消息 → 收尾语/私聊/被@（规则直判，零成本）→ 群聊模糊带 → 裁判一次调用：
-        {该不该说 should_reply, 该想多深 needs_deep, addressed, needs_search}
-```
-
-`should_reply` 过阈值才接话；裁判的输入里带着角色自己的活跃度（近 5 分钟说了多少、距上次发言多久）——防刷屏靠模型自觉，代码不设硬冷却。
-
-## 项目结构
-
-```
-gensokyoai/
-├── utils/          # 链式基类 / 日志 / token 计数
-├── schemas/        # 数据契约（msgspec 结构体）
-├── prompts/        # 提示词集中注册
-├── core/           # 引擎内核
-│   ├── brain/      #   决策：接力引擎 / 门控 / 裁判 / 思考链 / OOC
-│   ├── responder/  #   表达：生成 / 风格 / 过渡语 / 纠偏
-│   ├── memorizer/  #   记忆：分级存储 / 蒸馏
-│   └── health/     #   监控：指标 / 告警 / 干预
-├── models/         # 模型接入：llama_cpp / qwen_local / 价格表
-├── satori/         # 感知层（觉）：perceiver / 多路合流 / OneBot11 解析
-├── mouth/          # 口层：console / 广播+流式
-├── roleplay/       # 领域：角色卡 / 主循环 / 频道中枢
-│   ├── components/ #   世界职责组件：投递 / 守门 / 门控 / 指标 / 过渡语 / 防复读 / 主动发言
-│   ├── runtime.py  #   跨回合共享状态（busy / 代际 / 活跃度 / 蒸馏计数）+ 其持久化编排
-│   └── loop.py     #   TouhouWorld：装配 + 主循环序列
-├── command/        # 命令子系统：解析 / 执行 / 权限
-├── tools/          # 内置小工具（时间 / 日期 / 月相）
-└── backends/       # 入口：ws_server（WebSocket 多路频道）
-```
-
-分层铁律：依赖只能向下，`core` 内部四个模块之间零直接 import（通信走事件总线或装配层注入），CI 有 AST 检查兜底。
-
-## 开发
-
-```bash
-python -m pytest          # 测试
-python -m ruff check .    # lint
-python -m mypy gensokyoai # 类型
-python scripts/real_verify.py --fresh   # 真机验证（需要本地 llama-server）
-```
-
-提交遵循 [Conventional Commits](CONTRIBUTING.md)，AI 提交请标注模型名。
-
-## 文档
-
-| 文档 | 内容 |
+| 工具 | 作用 |
 |---|---|
-| [docs/QUICKSTART.md](docs/QUICKSTART.md) | 安装、配置、跑起来、调参、排错 |
-| [docs/QA.md](docs/QA.md) | 常见问题：模型、门控、思考链、记忆、性能、故障 |
-| [CHANGES.md](CHANGES.md) | 更新日志（含真机实录踩坑史） |
+| `send_message` | 发一条。想连说几句就多调几次，出口按 `bubble_gap` 间隔逐条投递 |
+| `wait` | 等 `ms` 毫秒或等下一条消息。没有人叫它时，它可以选择不说话 |
+| `read_events` | 展开 `gap`（一次投递窗口之外被折叠的消息） |
 
-## 相关项目
+模型输出的正文会被丢弃，只有工具调用生效。
 
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) — llama-server 推理后端
-- [TypeSafe AI](https://typesafe.ai) — system one 决策模型（可选裁判后端）
-- [ayafileio](https://github.com/Patchouli-CN/ayafileio) — 自家跨平台真异步文件 IO
-- [MaiBot](https://github.com/Mai-with-u/MaiBot) — 回复时机 / 表情 / 记忆思路的来源
+## 插件与场景
 
-## 二次创作声明
+场景 = 一个房间"怎么算像人"的那些策略：名词、连发几条、允许哪些动作、话怎么发出去。
+机制（回合、未读、gap、记忆）全留在内核。场景可以写在插件里，库负责发现并挂载。
 
-本作品是以上海爱丽丝幻乐团（ZUN）的《东方 Project》系列为题材的二次创作，与原作方无关。内置角色卡的版权归原作方所有，本项目仅作技术演示用途。
+```python
+# my_qq.py —— 不需要 import 内核，只需要这个模块
+from gensokyoai.api import scene, tool
 
-## License
+API_VERSION = "1"  # 和库握手；对不上就不挂载
 
-[MIT](LICENSE)
+
+@scene(
+    name="qq",
+    prompt="你在一个 QQ 群里，没人点你就别插话。",
+    bubbles={"max": 3, "gap_s": 0.4},
+    actions=("say", "wait", "read_events"),
+)
+class QQScene:
+    def __init__(self, ctx):  # ctx.mouth / ctx.name / ctx.room / ctx.log
+        self.ctx = ctx
+
+    @tool("read_member", "读一个人的群名片", {"user_id": "string"})
+    async def read_member(self, user_id):
+        return [{"name": "帕秋莉", "text": "不动的大图书馆"}]  # 回填到下一轮 results
+
+    def describe(self, event):  # 可选：改写成模型该看到的形状
+        return event
+
+    async def say(self, segments, reply_to=None):
+        text = "".join(s["text"] for s in segments if s["type"] == "text")
+        await self.ctx.mouth.send(self.ctx.name, text)
+```
+
+```powershell
+python -m gensokyoai --list-scenes                              # 看有哪些
+python -m gensokyoai --scene qq --plugin-dir ./plugins ...      # 用哪个
+```
+
+- 发现两条通道：`gensokyoai.plugins` 组的 entry points（pip 装的），和 `--plugin-dir` 里的 `.py`。
+- 坏插件只记日志跳过；版本对不上会卸掉该插件的场景；重名直接报错。
+- 场景工具的结果进下一轮 `results` 字段，不用自己维护对话状态。
+
+## 设计约定
+
+- **房间即状态。** 所有器官读它、所有产出写它，只追加不改写。房间自己记住哪些
+  还没投递给模型；超出一轮窗口的折成 `gap`，由模型决定要不要展开。
+- **机制在内核，策略在场景。** 回合、未读、gap、记忆、重试是机制；名词、连发条数、
+  允许的动作、话怎么发出去是策略。插件只能提供策略，不许自己写循环。
+- **器官之间不直接说话。** 只有 `loop.py` 认识所有器官；`mind` 不引用 `mouth`，
+  `memory` 不引用 `hub`。
+- **循环不因单轮失败退出。** 后端断线、投递失败、落盘失败都只是这一轮没成，
+  按指数退避重试，没消费的消息退回未读；房间任务意外退出后 `Hub.get()` 会原地重启。
+- **出口能力分层。** `Mouth` 只要 `send`；`BroadcastMouth` 另能挂/摘连接、声明风格。
+  网关按能力判断，接错 mouth 只告警。
+- **信任边界只在 `Gateway`。** token 用常量时间比较，`style`/`role` 只信回环地址，
+  新频道受 `max_rooms` 限制，断开路径不创建房间。
+
+## 模块
+
+| 层 | 模块 | 职责 |
+|---|---|---|
+| 内核 | `room.py` | 事件流（append-only，有上界）+ 未读/gap + 落盘与回放 |
+| | `mind.py` | 人设 + 场景 + 机制 → 提示词；一次 step 一次模型调用 |
+| | `model.py` | OpenAI 兼容客户端，原生工具调用 |
+| | `memory.py` | JSONL 记忆，bigram 召回，整理时压缩 |
+| | `style.py` / `character.py` | 回复风格预设 / 角色卡加载 |
+| | `utils/` | 日志桥接、文本清洗 |
+| 插件 | `api.py` | 插件作者要的全部声明与装饰器（不依赖内核） |
+| | `plugin.py` | 发现与挂载（entry points + 目录） |
+| | `scenes/` | 内置场景，用同一套 API 写 |
+| 组装 | `loop.py` | 唯一认识所有器官的地方 + agent 回合 |
+| | `hub.py` | room_id → Loop 注册表 |
+| | `health.py` | 计数 / 采样 / 读数 |
+| | `bgtasks.py` | 后台任务登记与退出收尾 |
+| | `dmn.py` | 静息期巡检（记忆压缩） |
+| 边界 | `ws_server.py` | 握手与事件策略 |
+| | `command/` | 斜杠指令（不进房、不调模型） |
+| | `network/base.py` | 传输层 Protocol 声明 |
+| | `network/aiohttp_ws.py` | aiohttp 适配器 |
+| 入口 | `__main__.py` | 控制台 / ws 服务 |
+
+## 运行
+
+需要一个支持工具调用的 OpenAI 兼容端点，默认 `http://127.0.0.1:8080/v1`
+（llama-server 需关掉思考，否则输出会被思考段吃光）。
+
+```powershell
+python -m gensokyoai --character config/roles/KomeijiSatori.yaml
+python -m gensokyoai --character config/roles/KomeijiSatori.yaml --serve --port 8082 --token 你的令牌
+```
+
+参数：`--model URL`、`--model-timeout 秒`、`--data 落盘目录`、`--max-rooms 房间上限`、
+`--window 一次投递多少条未读`。ws 协议是 `ws://host:port/ws/{channel}`。
+
+## 测试
+
+```powershell
+python -m pytest -q          # 全离线，约 2 秒
+python -m ruff check .
+python -m ruff format --check .
+```
+
+`ChatModel` 在测试里用假会话替换，心智用脚本化的假 `Mind`，网关用假 `Pending`/事件
+直接驱动。两个冒烟脚本需要真模型：
+
+```powershell
+$env:GENSOU_CARD = "path/to/KomeijiSatori.yaml"
+$env:GENSOU_MODEL = "http://127.0.0.1:8080/v1"
+python smoke_full.py
+```
+
+## 已知限制
+
+- 房间无空闲回收，只受 `--max-rooms` 限制。
+- 房间日志按 4 MB 轮转到 `.1`，只留一份备份；回放只读当前文件末尾一段。
+- 落盘不逐条 fsync（一次 flush 约 60 ms），进程被强杀可能丢最后几条；
+  正常退出会先把排队写入收尾再关句柄。
+- 记忆召回的结果放在 `memories` 字段里，不进房间。
+- 落盘的只有事件和记忆：未读/gap 状态、工具结果、`dmn` 的"这一觉整理过"都在内存里，
+  重启后未投递的消息会以 `history` 形式补给模型一次。
+- 静息整理由 `bgtasks` 每 60 秒巡检，房间静默 30 分钟且记忆过压力线才压缩。
+- 只有动作类工具（说话/等待/翻看）。没有"查资料"类工具——要加得让工具结果
+  回到对话里，`Mind` 现在每轮都是一次独立调用，不留对话状态。
+- `ReplyStyle.pov` 只是预设里的标识，出口不据此改写文本。
+- 没有 CI，也没有 mypy/pyright 配置。
