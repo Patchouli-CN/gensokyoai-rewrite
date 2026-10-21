@@ -35,6 +35,9 @@ _SCENES: dict[str, type] = {}
 _ALL_ACTIONS = ("say", "wait", "read_events")
 """ 内核提供的动作；场景可以只挑其中几个 """
 
+_WAKE_DEFAULTS = {"on_mention": 1.0, "on_others": 1.0, "cooldown_s": 0.0}
+""" 唤醒策略默认值：点名必醒、别的消息也必醒、无冷却（= 不节流） """
+
 
 class SceneContext(Protocol):
     """库交给场景实例的东西（每个房间一份）。"""
@@ -55,6 +58,7 @@ def scene(
     prompt: str = "",
     bubbles: dict | None = None,
     actions: tuple[str, ...] = ("say",),
+    wake: dict | None = None,
 ) -> Callable[[type], type]:
     """把一个类注册成场景。
 
@@ -63,6 +67,8 @@ def scene(
         prompt: 只给这个场景的名词与规矩（"你在一个 QQ 群里。"）
         bubbles: 连发策略 `{"max": 几条, "gap_s": 间隔秒}`
         actions: 启用哪些内核动作（say / wait / read_events）
+        wake: 唤醒策略 `{"on_mention": 概率, "on_others": 概率, "cooldown_s": 秒}`
+            —— 消息一律入房，只是按这个决定要不要因此开一轮
     """
 
     def wrap(cls: type) -> type:
@@ -76,6 +82,7 @@ def scene(
             "prompt": prompt,
             "bubbles": bubbles or {},
             "actions": _clean_actions(actions),
+            "wake": wake or {},
         }
         _SCENES[name] = cls
         return cls
@@ -124,6 +131,7 @@ def spec_of(scene_object) -> dict:
         "prompt": raw.get("prompt", ""),
         "bubbles": {"max": 1, "gap_s": 0.0, **raw.get("bubbles", {})},
         "actions": _clean_actions(raw.get("actions", ())),
+        "wake": {**_WAKE_DEFAULTS, **raw.get("wake", {})},
     }
 
 

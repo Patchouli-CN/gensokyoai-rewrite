@@ -6,8 +6,10 @@
 """
 
 import asyncio
+import random
 import time
 from collections import deque
+from collections.abc import Callable
 
 from .api import call_tool, spec_of
 from .health import HealthCenter
@@ -65,6 +67,7 @@ class Loop:
         retry_backoff_max: float = _BACKOFF_MAX_S,
         bubble_gap: float | None = None,
         dedup_window: float = _DEDUP_WINDOW_S,
+        rng: Callable[[], float] = random.random,
     ) -> None:
         """组装。
 
@@ -81,6 +84,7 @@ class Loop:
             retry_backoff_max: 退避上限（秒）
             bubble_gap: 连发间隔（None = 用场景声明的）
             dedup_window: 同一句话多少秒内不重复发（0 = 不拦）
+            rng: 唤醒概率用的随机源（测试注入）
         """
         self.room = room
         self.mind = mind
@@ -107,6 +111,13 @@ class Loop:
         self._dedup_window = max(0.0, dedup_window)
         self._said: deque[tuple[float, str]] = deque()
         """ 最近发出去的（时间, 文本），防同一句在短时间里说两遍 """
+        wake = spec_of(self._scene)["wake"]
+        self._wake_on_mention = _chance(wake.get("on_mention", 1.0))
+        self._wake_on_others = _chance(wake.get("on_others", 1.0))
+        self._wake_cooldown = max(0.0, float(wake.get("cooldown_s", 0.0)))
+        self._rng = rng
+        self._last_spoke = 0.0
+        """ 上次开口的时间；冷却期内没被点名就不醒 """
 
     def notify(
         self,
@@ -117,7 +128,7 @@ class Loop:
         user_id: str = "",
         mentioned: bool = False,
     ) -> None:
-        """消息入房 + 唤醒循环。
+        """消息入房，按场景的唤醒策略决定开不开一轮。
 
         Args:
             kind: message 或 reply
@@ -127,7 +138,18 @@ class Loop:
             mentioned: 是否点名了角色
         """
         self.room.append(kind, sender, text, user_id=user_id, mentioned=mentioned)
-        self._wake.set()
+        if self._should_wake(mentioned):
+            self._wake.set()
+
+    def _should_wake(self, mentioned: bool) -> bool:
+        """要不要因为这条消息开一轮（消息本身已经入房，不影响上下文）。"""
+        if mentioned:
+            return self._rng() < self._wake_on_mention
+        if self._wake_cooldown > 0 and (
+            time.monotonic() - self._last_spoke < self._wake_cooldown
+        ):
+            return False
+        return self._rng() < self._wake_on_others
 
     async def run(self) -> None:
         """常驻循环（被取消退出；单轮失败退避重试）。"""
@@ -235,6 +257,7 @@ class Loop:
             return
         await self._scene.say(segments, reply_to)
         self._said.append((time.monotonic(), text))
+        self._last_spoke = time.monotonic()
         self.room.append("reply", self.mind.name, text)
         if self._health is not None:
             self._health.count(f"{self.room.name}.says")
@@ -314,6 +337,14 @@ def _last_message(events: list[Event]) -> str:
         if event.kind == "message":
             return event.text
     return ""
+
+
+def _chance(value) -> float:
+    """把概率夹到 [0, 1]；写错了当必醒。"""
+    try:
+        return min(1.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return 1.0
 
 
 def _int(value, default: int) -> int:

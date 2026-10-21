@@ -1,8 +1,9 @@
 """Agent 回合测试 —— 模型用工具决定说不说、说几条、等多久。"""
 
 import asyncio
+from typing import ClassVar
 
-from gensokyoai.loop import Loop
+from gensokyoai.loop import Loop, SceneContext
 from gensokyoai.model import Reply, ToolCall
 from gensokyoai.room import Room
 
@@ -63,6 +64,27 @@ def _room(*texts: str) -> Room:
     for text in texts:
         room.append("message", "帕秋莉", text, user_id="u1")
     return room
+
+
+def _quiet_scene(mouth: _Mouth, **wake) -> object:
+    """按给定的唤醒策略造一个最小场景。"""
+
+    class _Scene:
+        _gensokyo_scene: ClassVar[dict] = {
+            "name": "t_quiet",
+            "prompt": "",
+            "bubbles": {"max": 1, "gap_s": 0.0},
+            "actions": ("say",),
+            "wake": {"on_mention": 1.0, "on_others": 1.0, "cooldown_s": 0.0, **wake},
+        }
+
+        def __init__(self, ctx) -> None:
+            self.ctx = ctx
+
+        async def say(self, segments, reply_to=None) -> None:
+            await self.ctx.mouth.send(self.ctx.name, segments[0]["text"])
+
+    return _Scene(SceneContext(mouth=mouth, name="觉", room="g1", log=None))
 
 
 async def test_turn_sends_what_model_says():
@@ -284,3 +306,42 @@ async def test_same_line_is_not_repeated(tmp_path):
     await loop._say([{"type": "text", "text": "另一句。"}])
 
     assert [text for _, text in mouth.sent] == ["天人的效率总是惊人。", "另一句。"]
+
+
+async def test_unmentioned_message_does_not_wake_quiet_scene():
+    """没被点名 + 唤醒概率 0：消息入房，但不开一轮"""
+    mouth = _Mouth()
+    scene = _quiet_scene(mouth, on_others=0.0)
+    loop = Loop(Room("g1"), _ScriptedMind(Reply()), mouth, scene=scene, rng=lambda: 0.0)
+
+    loop.notify("message", "帕秋莉", "今天好热", user_id="u1")
+
+    assert loop.room.unread == 1, "消息照样入房，上下文不丢"
+    assert not loop._wake.is_set(), "但没醒"
+
+
+async def test_mentioned_message_always_wakes():
+    """被点名：唤醒概率 1，一定醒"""
+    mouth = _Mouth()
+    scene = _quiet_scene(mouth, on_others=0.0)
+    loop = Loop(
+        Room("g1"), _ScriptedMind(Reply()), mouth, scene=scene, rng=lambda: 0.99
+    )
+
+    loop.notify("message", "帕秋莉", "觉，在吗", user_id="u1", mentioned=True)
+
+    assert loop._wake.is_set()
+
+
+async def test_cooldown_blocks_unmentioned_after_speaking():
+    """刚说过话的冷却期内，没被点名就不醒"""
+    mouth = _Mouth()
+    scene = _quiet_scene(mouth, on_others=1.0, cooldown_s=60.0)
+    loop = Loop(Room("g1"), _ScriptedMind(Reply()), mouth, scene=scene, rng=lambda: 0.0)
+
+    await loop._say([{"type": "text", "text": "嗯。"}])
+    loop.notify("message", "帕秋莉", "随便说说", user_id="u1")
+
+    assert not loop._wake.is_set(), "冷却期内不许醒"
+    loop.notify("message", "帕秋莉", "觉，你呢", user_id="u1", mentioned=True)
+    assert loop._wake.is_set(), "点名可以穿透冷却"
