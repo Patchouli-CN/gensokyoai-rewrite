@@ -506,3 +506,51 @@ async def test_image_rejection_retries_without_images():
 
     assert seen == [True, False], "先带图、再不带图"
     assert mouth.sent == [("觉", "在。")]
+
+
+async def test_images_survive_restart(tmp_path):
+    """图片落盘：重启后回放出来的事件还带着图"""
+    import base64
+
+    from gensokyoai.bgtasks import BgTasks
+    from gensokyoai.room import RoomLog
+
+    png = bytes.fromhex("89504e470d0a1a0a0000000d49484452") + b"\x00" * 32
+    url = "data:image/png;base64," + base64.b64encode(png).decode()
+
+    tasks = BgTasks()
+    before = Room("g1", log=RoomLog(tmp_path / "events.jsonl", tasks))
+    before.append("message", "帕秋莉", "看这张 [图片×1]", user_id="u1", images=(url,))
+    await tasks.idle()
+
+    room = Room("g1", log=RoomLog(tmp_path / "events.jsonl", tasks))
+
+    assert room.events, "回放要有事件"
+    assert room.events[-1].images == (url,), "图要能读回来"
+    assert (tmp_path / "media").exists(), "图存在 media/ 下"
+    assert "base64" not in (tmp_path / "events.jsonl").read_text(encoding="utf-8"), (
+        "base64 不该进日志"
+    )
+
+
+async def test_broken_media_is_skipped(tmp_path):
+    """media 下的文件丢了/坏了：事件照常回放，只是没图"""
+    import base64
+
+    from gensokyoai.bgtasks import BgTasks
+    from gensokyoai.room import RoomLog
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    url = "data:image/png;base64," + base64.b64encode(png).decode()
+
+    tasks = BgTasks()
+    before = Room("g1", log=RoomLog(tmp_path / "events.jsonl", tasks))
+    before.append("message", "帕秋莉", "看这张", user_id="u1", images=(url,))
+    await tasks.idle()
+    for stale in (tmp_path / "media").glob("*.img"):
+        stale.write_bytes(b"not an image")
+
+    room = Room("g1", log=RoomLog(tmp_path / "events.jsonl", tasks))
+
+    assert room.events[-1].text == "看这张"
+    assert room.events[-1].images == ()

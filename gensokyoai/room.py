@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import base64
 import time
 from pathlib import Path
 from typing import Literal
@@ -31,6 +32,29 @@ _DEFAULT_WINDOW = 30
 
 _MAX_LOG_BYTES = 4 * 1024 * 1024
 """ 单房间日志的大小上界，超了轮转到 .1（只留一份备份） """
+
+_MAX_MEDIA_PER_EVENT = 4
+""" 一条消息最多存几张图（多出来的当没发） """
+
+_MAX_MEDIA_FILES = 60
+""" 房间目录下最多留这么多张图，超了按时间丢最老的 """
+
+_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF8", "image/gif"),
+)
+
+
+def _sniff(data: bytes) -> str | None:
+    """按文件头认 mime；认不出返回 None（存过的东西不保证还是图）。"""
+    for magic, kind in _MAGIC:
+        if data.startswith(magic):
+            return kind
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
 
 _CONTEXT = 12
 """ 每轮附带多少条上下文（含自己的发言） """
@@ -91,6 +115,7 @@ class RoomLog:
         self._tasks = tasks
         self._max_bytes = max(1024, max_bytes)
         self._name = path.parent.name or path.stem
+        self._media_dir = path.parent / "media"
         self._lock = asyncio.Lock()
         self._file: ayafileio.AsyncFile[str] | None = None
         self._size = 0
@@ -98,6 +123,9 @@ class RoomLog:
 
     def load(self, limit: int | None = None) -> list[Event]:
         """回放文件末尾一段（同步，建房时调用）；坏行跳过。
+
+        图片只存文件名（正文里不放 base64），加载时读回来还原成 data URL，
+        所以重启之后"刚才那张图"还在。
 
         Args:
             limit: 最多取最近多少条（None = 仅受 max_bytes 约束）
@@ -113,10 +141,68 @@ class RoomLog:
         events: list[Event] = []
         for number, line in enumerate(lines, 1):
             try:
-                events.append(msgspec.json.decode(line, type=Event))
+                event = msgspec.json.decode(line, type=Event)
             except msgspec.DecodeError:
                 _logger.warning(f"房间日志坏行已跳过: {self._path}:{number}")
+                continue
+            if event.images:
+                event = msgspec.structs.replace(
+                    event, images=self._read_media(event.images)
+                )
+            events.append(event)
         return events
+
+    def _read_media(self, names: tuple[str, ...]) -> tuple[str, ...]:
+        """按文件名把图读回 data URL；读不到就跳过（别让一条图拖垮回放）。"""
+        found: list[str] = []
+        for name in names:
+            path = self._media_dir / name
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            mime = _sniff(data)
+            if mime is None:
+                continue
+            found.append(f"data:{mime};base64,{base64.b64encode(data).decode()}")
+        return tuple(found)
+
+    def _save_media(self, event: Event) -> tuple[str, ...]:
+        """把图写到旁边（只留文件名进 JSONL），顺手清掉太老的。"""
+        if not event.images:
+            return ()
+        names: list[str] = []
+        try:
+            self._media_dir.mkdir(parents=True, exist_ok=True)
+            for index, url in enumerate(event.images[:_MAX_MEDIA_PER_EVENT]):
+                head, _, payload = url.partition(",")
+                if not head.startswith("data:") or not payload:
+                    continue
+                try:
+                    data = base64.b64decode(payload, validate=False)
+                except (ValueError, TypeError):
+                    continue
+                name = f"{event.msg_id}-{index}.img"
+                (self._media_dir / name).write_bytes(data)
+                names.append(name)
+        except OSError:
+            return ()
+        self._prune_media()
+        return tuple(names)
+
+    def _prune_media(self) -> None:
+        """只留最近这些张图（按修改时间）。"""
+        try:
+            files = sorted(
+                self._media_dir.glob("*.img"), key=lambda p: p.stat().st_mtime
+            )
+        except OSError:
+            return
+        for path in files[: max(0, len(files) - _MAX_MEDIA_FILES)]:
+            try:
+                path.unlink()
+            except OSError:
+                continue
 
     def _read_tail(self) -> str:
         """只读文件末尾 max_bytes，避免长历史拖住建房。"""
@@ -130,9 +216,13 @@ class RoomLog:
     def note(self, event: Event) -> asyncio.Task:
         """异步入盘；同房间的写经锁串行，保序。
 
+        图片写旁边的 `media/`，JSONL 里只留文件名（base64 不进日志）。
+
         Returns:
             asyncio.Task: 写盘任务（想确认落盘可以 await 它）
         """
+        if event.images:
+            event = msgspec.structs.replace(event, images=self._save_media(event))
         line = msgspec.json.encode(event).decode() + "\n"
         return self._tasks.spawn(f"roomlog:{self._name}", self._write(line))
 
@@ -225,10 +315,8 @@ class Room:
         if kind == "message":
             self._unread.append(event)
         if self._log is not None:
-            # 图片数据不进日志：重放时只剩文字里的 [图片] 标记
-            self._log.note(
-                msgspec.structs.replace(event, images=()) if event.images else event
-            )
+            # 图片写旁边存文件，JSONL 里只留文件名（由 RoomLog 处理）
+            self._log.note(event)
         return event
 
     def take_feed(
