@@ -39,18 +39,20 @@ ws 接入：`ws://127.0.0.1:8082/ws/{频道名}?style=pure_dialogue&user=你的�
 ```python
 from gensokyoai.api import scene, tool
 
+
 @scene(name="qq", prompt="你在一个 QQ 群里。", bubbles={"max": 3, "gap_s": 0.4})
 class QQScene:
     def __init__(self, ctx):
-        self.ctx = ctx      # ctx.mouth / ctx.name / ctx.room / ctx.log
+        self.ctx = ctx  # ctx.mouth / ctx.name / ctx.room / ctx.log
 
     @tool("read_member", "读一个人的群名片", {"user_id": "string"})
     async def read_member(self, user_id):
         return [{"name": "帕秋莉", "text": "红魔馆的魔法使"}]
 
     async def say(self, segments, reply_to=None):
-        await self.ctx.mouth.send(self.ctx.name, "".join(
-            s["text"] for s in segments if s["type"] == "text"))
+        await self.ctx.mouth.send(
+            self.ctx.name, "".join(s["text"] for s in segments if s["type"] == "text")
+        )
 ```
 
 `--plugin-dir plugins/` 扫目录挂载，或打包时用 entry point（`gensokyoai.plugins` 组）自动发现。
