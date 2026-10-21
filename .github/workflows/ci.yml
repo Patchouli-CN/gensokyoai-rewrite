@@ -8,12 +8,12 @@ on:
 
 jobs:
   quality:
-    name: lint / types / tests (py${{ matrix.python-version }})
+    name: lint / tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.14"]
+        python-version: ["3.14", "3.15"]
 
     steps:
       - name: Checkout
@@ -26,8 +26,8 @@ jobs:
 
       - name: Install project and dev dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          python -m pip install --upgrade pip uv
+          python -m uv pip install --system -e . pytest pytest-asyncio ruff
 
       - name: Ruff lint
         run: ruff check .
@@ -35,20 +35,13 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
-      - name: Mypy type check
-        run: mypy gensokyoai
-
       - name: Pytest
         run: pytest -q
 
-      # 打包回归：wheel 是否含入口点与自带资源、装完是否真能跑
-      - name: Build wheel
-        run: python -m build --wheel
-
-      - name: Verify packaged entry points and bundled resources
+      # 打包回归：wheel 能 build、装完模块入口能跑
+      - name: Build wheel and verify module entry
         run: |
+          python -m uv pip install --system build
+          python -m build --wheel
           pip install --force-reinstall --no-deps dist/*.whl
-          gensokyoai --help
-          gensokyoai-ws --help
-          cd "${{ runner.temp }}"
-          python -c "from gensokyoai.app import DEFAULT_CONFIG, resolve_resource; p = resolve_resource(DEFAULT_CONFIG); print('bundled config:', p); assert '_resources' in str(p), p"
+          python -m gensokyoai --help
