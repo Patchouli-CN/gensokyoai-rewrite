@@ -34,6 +34,15 @@ data/<房间名>/memory.jsonl    记忆条目
 
 模型、单价、窗口额度都写在这一个文件里，**CLI 与 nb2 插件共用**。改完重启生效。
 
+这个文件**不进 git**（里面可能有模型令牌），仓库里只有模板：
+
+```bash
+cp config/settings.example.yaml config/settings.yaml
+```
+
+默认位置锚在仓库根，从哪个目录启动都读得到；`--settings` 给的是别的路径
+却不存在时会直接报错，不会静默回落到本地模型。
+
 ```yaml
 model:
   provider: openai                      # openai（兼容端点）/ anthropic

@@ -27,7 +27,7 @@ from .mouth import ConsoleMouth, WsMouth
 from .network.aiohttp_ws import AiohttpWebsocketServer
 from .plugin import discover, load
 from .room import Room, RoomLog
-from .settings import DEFAULT_PATH, load_settings
+from .settings import load_settings
 from .utils.logger import LoggerManager, setup_logging
 from .ws_server import Gateway
 
@@ -164,8 +164,8 @@ async def main() -> None:
     parser.add_argument("--character", help="角色卡 YAML 路径")
     parser.add_argument(
         "--settings",
-        default=str(DEFAULT_PATH),
-        help="模型与计费配置（默认 config/settings.yaml）",
+        default="",
+        help="模型与计费配置（默认 config/settings.yaml，模板见 example）",
     )
     parser.add_argument("--model", default="", help="临时覆盖配置里的端点地址")
     parser.add_argument(
@@ -220,7 +220,7 @@ async def main() -> None:
         raise SystemExit("缺少 --character")
 
     card = load_card(args.character)
-    settings = load_settings(args.settings)
+    settings = load_settings(args.settings or None)
     if args.model_timeout:
         settings = msgspec.structs.replace(
             settings,

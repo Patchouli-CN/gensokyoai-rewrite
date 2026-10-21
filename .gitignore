@@ -14,6 +14,9 @@ scratch/
 logs/
 ignore/
 
+# 本地配置：可能有模型令牌，只提交 settings.example.yaml 模板
+config/settings.yaml
+
 # 构建/工具缓存
 .mypy_cache/
 .ruff_cache/

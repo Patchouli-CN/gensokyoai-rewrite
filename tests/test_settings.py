@@ -2,17 +2,36 @@
 
 import pytest
 
+from gensokyoai import settings as settings_module
 from gensokyoai.settings import Settings, load_settings, parse_span
 
 
-def test_missing_file_falls_back_to_local_defaults(tmp_path):
-    """没有配置文件：本地 llama-server，不记钱"""
-    settings = load_settings(tmp_path / "nope.yaml")
+def test_no_default_file_falls_back_to_local_defaults(tmp_path, monkeypatch):
+    """默认位置没文件：本地 llama-server，不记钱"""
+    monkeypatch.setattr(settings_module, "DEFAULT_PATH", tmp_path / "nope.yaml")
+
+    settings = load_settings()
 
     assert settings.model.base_url.endswith("8080/v1")
     assert settings.model.name == ""
     assert settings.prices().input == 0.0, "没配单价、模型名不在内置表里 = 不算钱"
     assert settings.quotas() == ()
+
+
+def test_explicit_missing_path_is_an_error(tmp_path):
+    """显式指定了路径却不存在：报错，别静默回落"""
+    with pytest.raises(FileNotFoundError) as excinfo:
+        load_settings(tmp_path / "nope.yaml")
+
+    assert "settings.example.yaml" in str(excinfo.value), "报错要说模板在哪"
+
+
+def test_default_path_is_anchored_to_repo_root():
+    """默认路径锚在仓库根，不随 cwd 漂"""
+    assert settings_module.DEFAULT_PATH.is_absolute()
+    assert settings_module.DEFAULT_PATH.parent.name == "config"
+    root = settings_module.DEFAULT_PATH.parent.parent
+    assert (root / "pyproject.toml").exists()
 
 
 def test_spans_parse_to_seconds():

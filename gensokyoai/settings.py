@@ -1,7 +1,6 @@
 """配置 —— 模型与计费写在 `config/settings.yaml`，两个宿主共用一份。
 
-命令行只留一次性覆盖（`--model`），长期设置都进文件：改一次，CLI 与 nb2 插件
-都按它走。
+这个文件不进 git（仓库里只有 `settings.example.yaml` 当模板），密钥不会被提交。
 """
 
 from pathlib import Path
@@ -12,8 +11,20 @@ import yaml
 from .llm import Prices, Quota, UsageLedger, price_for
 from .model import DEFAULT_TIMEOUT_S, ChatModel
 
-DEFAULT_PATH = Path("config/settings.yaml")
-""" 默认配置文件位置（相对 cwd） """
+
+def _repo_root() -> Path:
+    """从包目录往上找仓库根（有 pyproject.toml 的那层）；找不到就用 cwd。"""
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path.cwd()
+
+
+DEFAULT_PATH = _repo_root() / "config" / "settings.yaml"
+""" 默认配置文件位置（锚在仓库根，不随 cwd 漂 ） """
+
+EXAMPLE_PATH = _repo_root() / "config" / "settings.example.yaml"
+""" 模板（在 git 里）；复制成 settings.yaml 再改 """
 
 _SPANS = {"m": 60.0, "h": 3600.0, "d": 86400.0, "w": 604800.0}
 
@@ -134,7 +145,10 @@ def parse_span(text: str) -> float:
 
 
 def load_settings(path: str | Path | None = None) -> Settings:
-    """读配置；文件不存在就用默认值（本地 llama-server、不记钱）。
+    """读配置。
+
+    没给路径时用默认位置，文件不存在就回落到默认值（本地 llama-server、
+    不记钱）；**给了路径却不存在会报错**——省得你以为在读配置、其实在用默认。
 
     Args:
         path: 配置文件路径（None = `config/settings.yaml`）
@@ -143,10 +157,16 @@ def load_settings(path: str | Path | None = None) -> Settings:
         Settings: 解析好的配置
 
     Raises:
-        ValueError: YAML 不是 mapping，或窗口跨度写错
+        FileNotFoundError: 显式指定的配置文件不存在
+        ValueError: YAML 不是 mapping，或字段不对
     """
     target = Path(path) if path is not None else DEFAULT_PATH
     if not target.exists():
+        if path is not None:
+            raise FileNotFoundError(
+                f"配置文件不存在: {target}"
+                f"（模板见 {EXAMPLE_PATH}；不想用配置就别指定路径）"
+            )
         return Settings()
     raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
