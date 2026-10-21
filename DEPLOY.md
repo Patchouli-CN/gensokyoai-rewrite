@@ -78,7 +78,7 @@ billing:
 - CLI 用 `--settings` 指定别处的配置；`--model` 只是临时覆盖 base_url
 - nb2 插件用 `GSK_SETTINGS` 指向它（默认 `../config/settings.yaml`）；流水落在它的 `GSK_DATA` 下
 - 本地端点不需要模型名和令牌，留空即不发
-- 再加一家：实现 `Provider.complete`，塞进 `gensokyoai/llm/__init__.py` 的 `PROVIDERS`
+- `provider` 不只是协议形状，也决定用哪套价格（见下一节）
 
 ## 计费：价格跟着适配器
 
@@ -145,9 +145,21 @@ quotas:
   以及每个窗口已用多少
 - `billing.usage` 落一行一条流水，重启后窗口接着算；超出最长窗口的老流水会被丢掉
 
+**查余额** —— 有的厂商有余额接口（DeepSeek 是 `GET /user/balance`），
+`/balance`（别名 `/余额`，需要 admin 权限）会当场查一次：
+
+```
+/余额  ->  余额 ¥41.78（赠送 ¥0.00 / 充值 ¥41.78）（¥1/4 空闲，2/8 高峰…）
+```
+
+- 没有余额接口的（OpenAI 就没有）会回「这个端点不提供余额查询」，不报错
+- 查询失败（断网、令牌错）也当不支持处理，不会影响聊天
+- 余额是联网查的，跟本地算的花费（账本）是两回事：一个是别人账上还剩多少，
+  一个是这次会话按单价累加了多少
+
 **再加一家**：在 `gensokyoai/llm/<vendor>.py` 里实现 `Provider.complete`，
 带一个 `billing`（`FlatBilling` / `PeakBilling` 够用，特殊口径自己实现 `Billing` 协议），
-然后注册进 `PROVIDERS`。
+有余额接口就顺手覆盖 `balance()`，然后注册进 `PROVIDERS`。
 
 ### 关思考
 

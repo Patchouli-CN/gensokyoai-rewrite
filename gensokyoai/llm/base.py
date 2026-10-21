@@ -4,6 +4,7 @@ from typing import Protocol
 
 import aiohttp
 
+from .billing import Balance
 from .types import Completion, Turn
 
 
@@ -28,6 +29,10 @@ class Provider(Protocol):
         """关连接。"""
         ...
 
+    async def balance(self) -> Balance | None:
+        """查账户余额（不支持的厂商返回 None）。"""
+        ...
+
 
 class HttpProvider:
     """共用一份长驻 HTTP 会话的适配器基类。"""
@@ -49,6 +54,10 @@ class HttpProvider:
         if self._session is not None and not self._session.closed:
             await self._session.close()
         self._session = None
+
+    async def balance(self) -> Balance | None:
+        """查账户余额；默认认为这家没提供，子类有接口就覆盖。"""
+        return None
 
 
 def text_of(parts) -> str:

@@ -138,7 +138,7 @@ async def _serve(args, card, mind: Mind, scene_cls) -> None:
     gateway = Gateway(
         hub,
         token=args.token,
-        executor=build_executor(health),
+        executor=build_executor(health, mind.model),
         max_rooms=args.max_rooms,
     )
     server = AiohttpWebsocketServer(args.host, args.port, validate=gateway.validate)

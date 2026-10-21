@@ -150,6 +150,30 @@ def symbol(currency: str) -> str:
     return _SYMBOLS.get(currency.upper(), currency + " ")
 
 
+class Balance(msgspec.Struct, frozen=True):
+    """账户余额（有的厂商能查，有的不能）。"""
+
+    currency: str = ""
+    total: float = 0.0
+    granted: float = 0.0
+    """ 赠送额度 """
+    topped_up: float = 0.0
+    """ 充值余额 """
+    available: bool = True
+
+    def describe(self) -> str:
+        """一行说明。"""
+        mark = symbol(self.currency) if self.currency else ""
+        text = f"余额 {mark}{self.total:.2f}"
+        if self.granted or self.topped_up:
+            text += (
+                f"（赠送 {mark}{self.granted:.2f} / 充值 {mark}{self.topped_up:.2f}）"
+            )
+        if not self.available:
+            text += " · 当前不可用"
+        return text
+
+
 class Quota(msgspec.Struct, frozen=True):
     """一个滚动窗口的额度（0 = 不限）。"""
 

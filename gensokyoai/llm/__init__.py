@@ -4,6 +4,7 @@ from .anthropic import AnthropicProvider
 from .base import Provider
 from .billing import (
     BEIJING,
+    Balance,
     Billing,
     FlatBilling,
     PeakBilling,
@@ -34,6 +35,7 @@ __all__ = [
     "TEXT",
     "VIDEO",
     "AnthropicProvider",
+    "Balance",
     "Billing",
     "Completion",
     "DeepSeekProvider",

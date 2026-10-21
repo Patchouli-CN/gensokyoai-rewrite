@@ -1,11 +1,19 @@
-"""内置命令 —— /doctor（健康中心报告）、/help。"""
+"""内置命令 —— /doctor（健康中心报告）、/balance（查余额）、/help。"""
 
 from ..health import HealthCenter
+from ..model import ChatModel
 from .core import Command, CommandExecutor
 
 
-def build_executor(health: HealthCenter | None = None) -> CommandExecutor:
-    """装配内置命令（健康中心给了才挂 /doctor）。"""
+def build_executor(
+    health: HealthCenter | None = None, model: ChatModel | None = None
+) -> CommandExecutor:
+    """装配内置命令。
+
+    Args:
+        health: 健康中心（给了才挂 /doctor）
+        model: 模型端点（给了才挂 /balance——要联网查）
+    """
     executor = CommandExecutor()
 
     if health is not None:
@@ -16,6 +24,24 @@ def build_executor(health: HealthCenter | None = None) -> CommandExecutor:
         executor.register(
             Command(
                 name="doctor", handler=doctor, aliases=("体检",), desc="运行指标体检"
+            )
+        )
+
+    if model is not None:
+
+        async def balance(ctx, args: str) -> str:
+            found = await model.balance()
+            if found is None:
+                return "这个端点不提供余额查询"
+            return f"{found.describe()}（{model.ledger.describe()}）"
+
+        executor.register(
+            Command(
+                name="balance",
+                handler=balance,
+                permission="admin",
+                aliases=("余额",),
+                desc="查剩余额度",
             )
         )
 

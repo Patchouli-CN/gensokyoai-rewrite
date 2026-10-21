@@ -4,6 +4,7 @@ import msgspec
 
 from .llm import (
     IMAGE,
+    Balance,
     Billing,
     Image,
     Quota,
@@ -100,6 +101,7 @@ class ChatModel:
         )
         self._health = health
         self._warned_reasoning = False
+        self._balance: Balance | None = None
 
     async def refresh_capabilities(self) -> frozenset[str]:
         """问端点要一次能力；问不到就保持现有声明。"""
@@ -181,6 +183,17 @@ class ChatModel:
         self._health.count("llm.prompt_tokens", completion.usage.prompt_tokens)
         self._health.count("llm.completion_tokens", completion.usage.completion_tokens)
         self._health.observe("llm.cost_usd", self.ledger.cost)
+
+    async def balance(self) -> Balance | None:
+        """查账户余额；端点不提供就返回 None。
+
+        Returns:
+            Balance | None: 余额（含赠送/充值），或者 None
+        """
+        found = await self._provider.balance()
+        if found is not None:
+            self._balance = found
+        return found
 
     async def close(self) -> None:
         """关闭长驻连接（可重复调用）。"""

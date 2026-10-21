@@ -4,7 +4,9 @@
 高峰是北京时间工作日 9-12、14-18，法定节假日全天按空闲算。
 """
 
-from .billing import Billing, PeakBilling, Rates
+import aiohttp
+
+from .billing import Balance, Billing, PeakBilling, Rates
 from .openai import OpenAIProvider
 
 _FLASH = (
@@ -65,3 +67,39 @@ class DeepSeekProvider(OpenAIProvider):
         """
         super().__init__(base_url, model=model, **kwargs)
         self.billing = billing_for(model, holidays=holidays)
+        self._balance_url = f"{_root_of(base_url)}/user/balance"
+        """ 余额接口不在 /v1 下面 """
+
+    async def balance(self) -> Balance | None:
+        """查账户余额（GET /user/balance）。"""
+        try:
+            async with self.session().get(
+                self._balance_url, headers=self._headers
+            ) as response:
+                if response.status != 200:
+                    return None
+                data = await response.json()
+        except (aiohttp.ClientError, OSError, ValueError, TimeoutError):
+            return None
+        return _balance_of(data)
+
+
+def _root_of(base_url: str) -> str:
+    """`https://api.deepseek.com/v1` -> `https://api.deepseek.com`。"""
+    root = base_url.rstrip("/")
+    return root[: -len("/v1")] if root.endswith("/v1") else root
+
+
+def _balance_of(data) -> Balance | None:
+    """解析余额响应：取第一条 balance_infos。"""
+    infos = (data or {}).get("balance_infos") or []
+    if not isinstance(infos, list) or not infos:
+        return None
+    first = infos[0]
+    return Balance(
+        currency=str(first.get("currency") or ""),
+        total=float(first.get("total_balance") or 0.0),
+        granted=float(first.get("granted_balance") or 0.0),
+        topped_up=float(first.get("topped_up_balance") or 0.0),
+        available=bool((data or {}).get("is_available", True)),
+    )
