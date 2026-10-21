@@ -142,14 +142,21 @@ def spec_of(scene_object) -> dict:
 
 
 def tools_of(scene_object) -> list[dict]:
-    """场景声明的工具元信息（不含内核动作）。"""
+    """场景声明的工具元信息（不含内核动作）。
+
+    沿继承链收集：`WebTools` 这类混入声明的工具，场景继承下来也算。子类覆盖同名
+    方法时以子类为准。
+    """
     cls = scene_object if inspect.isclass(scene_object) else type(scene_object)
-    found = []
-    for value in vars(cls).values():
-        meta = getattr(value, "_gensokyo_tool", None)
-        if meta is not None:
-            found.append(meta)
-    return found
+    found: dict[str, dict] = {}
+    for klass in reversed(cls.__mro__):
+        if klass is object:
+            continue
+        for value in vars(klass).values():
+            meta = getattr(value, "_gensokyo_tool", None)
+            if meta is not None:
+                found[meta["name"]] = meta
+    return list(found.values())
 
 
 def schema_of(meta: dict) -> dict:

@@ -50,6 +50,7 @@ def _loop_factory(
     keeper: DmnKeeper | None = None,
     scene_cls=None,
     window: int = 30,
+    tools_config: str = "",
 ):
     def factory(room_id: str) -> Loop:
         memory = (
@@ -67,7 +68,8 @@ def _loop_factory(
         mouth = mouth_for(room_id)
         scene = (
             scene_cls(
-                SceneContext(mouth=mouth, name=mind.name, room=room_id, log=_scene_log)
+                SceneContext(mouth=mouth, name=mind.name, room=room_id, log=_scene_log),
+                tools_config=tools_config or None,
             )
             if scene_cls is not None
             else None
@@ -100,6 +102,7 @@ async def _console(args, card, mind: Mind, scene_cls) -> None:
         keeper=keeper,
         scene_cls=scene_cls,
         window=args.window,
+        tools_config=args.tools_config,
     )("console")
     task = asyncio.create_task(loop.run())
     try:
@@ -132,6 +135,7 @@ async def _serve(args, card, mind: Mind, scene_cls) -> None:
             keeper=keeper,
             scene_cls=scene_cls,
             window=args.window,
+            tools_config=args.tools_config,
         )
     )
     health.gauge("rooms", lambda: len(hub.room_ids()))
@@ -191,6 +195,11 @@ async def main() -> None:
     )
     parser.add_argument(
         "--scene", default="chat", help="用哪个场景（见 --list-scenes）"
+    )
+    parser.add_argument(
+        "--tools-config",
+        default="",
+        help="工具的站点配置目录（默认 config/tools）",
     )
     parser.add_argument(
         "--plugin-dir",

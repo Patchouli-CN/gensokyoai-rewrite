@@ -1,0 +1,12 @@
+# 网页抓取的站点规则。不配这个文件 = 全放行（内网地址仍然一律拒）。
+#
+# 配上 allow 之后就变成白名单模式：只有名单里的域名能抓。
+# 想放开冷门站就把 allow 清空。
+
+allow: []
+# allow:
+#   - thwiki.cc
+#   - github.com
+#   - wikipedia.org
+
+block: []

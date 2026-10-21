@@ -1,0 +1,21 @@
+# 搜索结果的站点规则。不配这个文件 = 全放行。
+#
+# allow：只认这些域名（空 = 不限）。加上之后就只搜权威站，副作用是冷门问题可能搜不到。
+# prefer：结果里这些域名排前面（不影响放不放行）。
+# block：这些域名一律不要（内容农场、镜像站之类）。
+#
+# 域名按后缀匹配：写 thwiki.cc 会同时命中 www.thwiki.cc / m.thwiki.cc
+
+allow: []
+
+prefer:
+  - thwiki.cc
+  - bilibili.com
+  - zhihu.com
+  - github.com
+  - wikipedia.org
+
+block:
+  - baijiahao.baidu.com
+  - sohu.com
+  - 163.com
