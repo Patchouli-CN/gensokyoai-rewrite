@@ -30,6 +30,41 @@ data/<房间名>/memory.jsonl    记忆条目
 
 不给这个参数 = 纯内存，进程一退就忘。
 
+## 换模型 / 多家厂商
+
+引擎只认一套**厂商无关的消息**（文字块 / 图片块 + 工具调用），各家适配器负责翻译。
+换一家只改配置，不动代码。
+
+```dotenv
+GSK_PROVIDER=openai          # openai（兼容端点）/ anthropic
+GSK_MODEL=https://api.deepseek.com/v1
+GSK_MODEL_NAME=deepseek-chat
+GSK_MODEL_KEY=sk-xxx
+```
+
+| 端点 | PROVIDER | MODEL | 模型名 |
+|---|---|---|---|
+| llama-server / vLLM / Ollama | `openai` | `http://127.0.0.1:8080/v1` | 留空 |
+| DeepSeek | `openai` | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| OpenRouter | `openai` | `https://openrouter.ai/api/v1` | 它给的名字 |
+| Claude | `anthropic` | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` |
+
+- 切换是全局的：改配置、重启进程
+- 本地端点不需要模型名和令牌，这两项留空即不发
+- `chat_template_kwargs`（关思考）只往 openai 形状发；云端点若嫌它多余，用 `think=None` 关掉
+- 再加一家：实现 `Provider.complete`，塞进 `gensokyoai/llm/__init__.py` 的 `PROVIDERS`
+
+## 计费
+
+每次补全按厂商回的 `usage` 记账，输入 / 输出 / 缓存命中分开算：
+
+- 价格按**模型名前缀**匹配内置表（`gpt-4o-mini`、`deepseek-chat`、`claude-sonnet`…）
+- 要覆盖就填 `GSK_PRICE_INPUT` / `GSK_PRICE_OUTPUT`，单位是 **USD / 百万 token**
+- 本地模型没价格 = 只记 token 不算钱
+- `/doctor` 里直接能看到 `llm.prompt_tokens` / `llm.completion_tokens` / `llm.cost_usd`
+- CLI 形态对应 `--provider` / `--model-name` / `--api-key` / `--price-in` / `--price-out`
+
 ## 形态 A：控制台
 
 ```bash

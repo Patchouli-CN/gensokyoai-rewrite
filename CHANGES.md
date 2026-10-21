@@ -11,6 +11,8 @@
 - Mind 改为原生 tool_call：模型用 `send_message / wait / read_events` 动作说话，正文直接丢弃
 - 场景插件系统：`@scene` / `@tool` 声明，entry points 或目录扫描挂载，内置 chat 场景
 - 角色卡简化为三字段（version / name / detail），设定全在 detail；开场白功能移除
+- 模型适配层：厂商无关的消息（文字/图片块 + 工具调用），openai / anthropic 两套适配器，
+  按 usage 计费（价格表前缀匹配，`/doctor` 看得到花费）
 
 ### 持久化
 

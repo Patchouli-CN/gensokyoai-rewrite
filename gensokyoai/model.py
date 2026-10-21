@@ -1,14 +1,17 @@
-"""最小模型客户端 —— OpenAI 兼容 /v1/chat/completions（llama-server 直连）。
+"""引擎看到的一个模型端点 —— 换厂商只换适配器，这里只管单轮补全与记账。"""
 
-支持原生工具调用：请求带 tools，响应里的 tool_calls 解析成结构化的动作。
-整个进程复用一个 ClientSession，每次补全都有总时限。
-"""
-
-import json
-
-import aiohttp
 import msgspec
 
+from .llm import (
+    Image,
+    Prices,
+    Text,
+    Turn,
+    UsageLedger,
+    build_provider,
+    price_for,
+)
+from .llm.types import ToolCall
 from .utils.logger import LoggerManager
 
 _logger = LoggerManager.get_logger("MODEL")
@@ -16,48 +19,62 @@ _logger = LoggerManager.get_logger("MODEL")
 DEFAULT_TIMEOUT_S = 120.0
 """ 单次补全的总时限（秒） """
 
-
-class ToolCall(msgspec.Struct, frozen=True):
-    """模型发起的一次工具调用。"""
-
-    name: str
-    arguments: dict = msgspec.field(default_factory=dict)
+__all__ = ["DEFAULT_TIMEOUT_S", "ChatModel", "Reply", "ToolCall"]
 
 
 class Reply(msgspec.Struct, frozen=True):
-    """一次补全的结果：正文 + 工具调用。"""
+    """一次补全的结果（引擎只关心这个）。"""
 
     text: str = ""
     calls: tuple[ToolCall, ...] = ()
 
 
 class ChatModel:
-    """一个聊天模型端点。"""
+    """一个聊天模型端点：厂商无关的输入，统一的结果与账目。"""
 
     def __init__(
         self,
         base_url: str,
         *,
-        think: bool = False,
+        provider: str = "openai",
+        name: str = "",
+        api_key: str = "",
+        headers: dict | None = None,
+        think: bool | None = False,
         timeout: float = DEFAULT_TIMEOUT_S,
+        extra: dict | None = None,
+        prices: Prices | None = None,
+        health=None,
     ) -> None:
         """初始化。
 
         Args:
-            base_url: OpenAI 兼容端点（如 http://127.0.0.1:8080/v1）
-            think: 模板思考开关（开着会吃光 max_tokens，工具调用基本必坏）
-            timeout: 单次补全的总时限（秒）
+            base_url: 端点地址（llama-server 的 /v1、各家的 API 根路径）
+            provider: 厂商名（openai / anthropic）
+            name: 模型名（云端必填，llama-server 可空）
+            api_key: 令牌（空 = 不带鉴权头）
+            headers: 额外请求头
+            think: 思考开关；None = 连这个厂商专有字段都不发
+            timeout: 单次补全时限（秒）
+            extra: 原样并进请求体的厂商专有参数
+            prices: 价格（None = 按模型名查内置表）
+            health: 健康中心（None = 不记账）
         """
-        self._url = f"{base_url.rstrip('/')}/chat/completions"
-        self._think = think
-        self._timeout = aiohttp.ClientTimeout(total=timeout)
-        self._session: aiohttp.ClientSession | None = None
-
-    def _ensure_session(self) -> aiohttp.ClientSession:
-        """懒建并复用长驻会话（会话需在运行中的事件循环里创建）。"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=self._timeout)
-        return self._session
+        kind = provider.lower()
+        kwargs = {
+            "model": name,
+            "api_key": api_key,
+            "headers": headers,
+            "extra": extra,
+            "timeout": timeout,
+        }
+        if kind == "openai":
+            kwargs["think"] = think
+        self._provider = build_provider(kind, base_url, **kwargs)
+        self.name = name or kind
+        self.think = think
+        self.ledger = UsageLedger(prices or price_for(name))
+        self._health = health
 
     async def chat(
         self,
@@ -85,79 +102,44 @@ class ChatModel:
         Raises:
             aiohttp.ClientError: 连接或 HTTP 失败
             TimeoutError: 超过 timeout
-            RuntimeError: 响应不是预期的 chat completion 形状
+            RuntimeError: 响应不是预期的形状
         """
-        content: object = user
-        if images:
-            parts: list[dict] = [{"type": "text", "text": user}]
-            for label, url in images:
-                parts.append({"type": "text", "text": label})
-                parts.append({"type": "image_url", "image_url": {"url": url}})
-            content = parts
-        payload: dict = {
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": content},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "chat_template_kwargs": {
-                "thinking": self._think,
-                "enable_thinking": self._think,
-            },
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+        parts: list = [Text(user)]
+        for label, url in images or ():
+            parts.append(Image(url=url, label=label))
+        turns = [
+            Turn(role="system", parts=(Text(system),)),
+            Turn(role="user", parts=tuple(parts)),
+        ]
 
-        session = self._ensure_session()
-        async with session.post(self._url, json=payload) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-        try:
-            choice = data["choices"][0]
-            message = choice["message"]
-        except (KeyError, IndexError, TypeError) as err:
-            raise RuntimeError(f"模型响应形状异常: {data!r:.200}") from err
-        if choice.get("finish_reason") == "length":
-            _logger.warning("模型被 max_tokens 截断，这一轮的动作可能不完整")
-        return Reply(
-            text=(message.get("content") or "").strip(),
-            calls=_calls_of(message.get("tool_calls")),
+        completion = await self._provider.complete(
+            turns,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
+        self._record(completion)
+        return Reply(text=completion.text, calls=completion.calls)
+
+    def _record(self, completion) -> None:
+        """记账：用量、花费、截断告警。"""
+        self.ledger.record(completion.usage)
+        if completion.finish_reason in ("length", "max_tokens"):
+            _logger.warning("模型被 max_tokens 截断，这一轮的动作可能不完整")
+        if self._health is None:
+            return
+        self._health.count("llm.prompt_tokens", completion.usage.prompt_tokens)
+        self._health.count("llm.completion_tokens", completion.usage.completion_tokens)
+        self._health.observe("llm.cost_usd", self.ledger.cost)
 
     async def close(self) -> None:
-        """关闭长驻会话（可重复调用）。"""
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        """关闭长驻连接（可重复调用）。"""
+        await self._provider.aclose()
 
     async def __aenter__(self) -> "ChatModel":
         """进入上下文。"""
         return self
 
     async def __aexit__(self, *exc_info) -> None:
-        """退出时关闭会话。"""
+        """退出时关闭连接。"""
         await self.close()
-
-
-def _calls_of(raw) -> tuple[ToolCall, ...]:
-    """把响应里的 tool_calls 解成结构化动作；坏参数当空参处理。"""
-    calls: list[ToolCall] = []
-    for item in raw or ():
-        function = item.get("function") or {}
-        name = function.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        arguments = function.get("arguments")
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except ValueError:
-                arguments = {}
-        calls.append(
-            ToolCall(
-                name=name, arguments=arguments if isinstance(arguments, dict) else {}
-            )
-        )
-    return tuple(calls)

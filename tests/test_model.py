@@ -37,10 +37,12 @@ class _FakeSession:
         self.timeout = timeout
         self.closed = False
         self.posts: list[tuple[str, dict]] = []
+        self.headers: list[dict] = []
         type(self).instances.append(self)
 
-    def post(self, url: str, json=None):
+    def post(self, url: str, json=None, headers=None, **kwargs):
         self.posts.append((url, json))
+        self.headers.append(dict(headers or {}))
         return _FakeResponse(type(self).payload)
 
     async def close(self) -> None:

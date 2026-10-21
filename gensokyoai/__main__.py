@@ -18,6 +18,7 @@ from .command.builtin import build_executor
 from .dmn import DmnKeeper
 from .health import HealthCenter
 from .hub import Hub
+from .llm import Prices
 from .loop import Loop, SceneContext
 from .memory import Memory
 from .mind import Mind
@@ -38,9 +39,23 @@ def _build_mind(
     name: str,
     *,
     timeout: float = DEFAULT_TIMEOUT_S,
+    provider: str = "openai",
+    model_name: str = "",
+    api_key: str = "",
+    prices=None,
+    health=None,
 ) -> Mind:
     """组装心智（人设 + 模型端点）。"""
-    return Mind(ChatModel(model_url, timeout=timeout), name, persona)
+    model = ChatModel(
+        model_url,
+        provider=provider,
+        name=model_name,
+        api_key=api_key,
+        timeout=timeout,
+        prices=prices,
+        health=health,
+    )
+    return Mind(model, name, persona)
 
 
 async def _tidy(loop: Loop) -> None:
@@ -173,6 +188,17 @@ async def main() -> None:
     parser.add_argument("--character", help="角色卡 YAML 路径")
     parser.add_argument("--model", default="http://127.0.0.1:8080/v1", help="模型端点")
     parser.add_argument(
+        "--provider", default="openai", help="厂商适配器（openai / anthropic）"
+    )
+    parser.add_argument("--model-name", default="", help="模型名（云端必填）")
+    parser.add_argument("--api-key", default="", help="令牌（空 = 不带鉴权头）")
+    parser.add_argument(
+        "--price-in", type=float, default=None, help="输入价（USD / 百万 token）"
+    )
+    parser.add_argument(
+        "--price-out", type=float, default=None, help="输出价（USD / 百万 token）"
+    )
+    parser.add_argument(
         "--model-timeout",
         type=float,
         default=DEFAULT_TIMEOUT_S,
@@ -224,7 +250,22 @@ async def main() -> None:
         raise SystemExit("缺少 --character")
 
     card = load_card(args.character)
-    mind = _build_mind(args.model, card.persona, card.name, timeout=args.model_timeout)
+    prices = None
+    if args.price_in is not None or args.price_out is not None:
+        prices = Prices(
+            input=args.price_in or 0.0,
+            output=args.price_out or 0.0,
+        )
+    mind = _build_mind(
+        args.model,
+        card.persona,
+        card.name,
+        timeout=args.model_timeout,
+        provider=args.provider,
+        model_name=args.model_name,
+        api_key=args.api_key,
+        prices=prices,
+    )
     try:
         if args.serve:
             await _serve(args, card, mind, scene_cls)

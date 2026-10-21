@@ -7,7 +7,8 @@
 ## 要求
 
 - Python ≥ 3.12
-- 一个 OpenAI 兼容端点（llama-server、vLLM 等，本地即可）
+- 一个模型端点：本地 llama-server 即可，也可以换 OpenAI / DeepSeek / OpenRouter / Claude
+  （适配器在 `gensokyoai/llm/`，加一家就是实现一个 `complete`）
 - 端点支持原生 tool_call（说话靠 `send_message` 工具调用）
 
 ## 安装
