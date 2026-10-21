@@ -554,3 +554,19 @@ async def test_broken_media_is_skipped(tmp_path):
 
     assert room.events[-1].text == "看这张"
     assert room.events[-1].images == ()
+
+
+async def test_image_from_previous_batch_is_still_attached():
+    """图在上一轮被消费掉了，下一句"她是谁"也要带上那张图"""
+    url = "data:image/png;base64,iVBORw0KGgo="
+    mouth = _Mouth()
+    mind = _ScriptedMind(_say("嗯"), _say("纯狐。"))
+    loop = Loop(Room("g1"), mind, mouth)
+
+    loop.notify("message", "帕秋莉", "看这张 [图片×1]", user_id="u1", images=(url,))
+    await loop._turn()
+    loop.notify("message", "帕秋莉", "她是谁？", user_id="u1", mentioned=True)
+    await loop._turn()
+
+    assert mind.images[0] == [("帕秋莉 发的第 1 张图：", url)]
+    assert mind.images[1] == [("帕秋莉 发的第 1 张图：", url)], "这一批没图，要带历史的"
