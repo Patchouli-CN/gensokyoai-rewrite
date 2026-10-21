@@ -163,6 +163,8 @@ class TouhouWorld:
             self.memory, ttl_s=(search or SearchSettings()).cache_ttl_s
         )
         """ 联网工具知识缓存（L1 会话内 + L2 落本世界长期记忆） """
+        self._search_cfg = search or SearchSettings()
+        """ 联网配置（knowledge_search 工具的站点表来源） """
         self.health = HealthMonitor(
             bus=self.bus,
             session_provider=self._session_health,
@@ -392,6 +394,12 @@ class TouhouWorld:
                 self._logger.info(f"加载全局注册工具: {[t.tool_name for t in registered_tools]}")
         except Exception as err:
             self._logger.warning(f"加载全局注册工具失败: {err}")
+
+        # 可信知识站站内搜索：URL 构造收进代码，模型只给关键词（不配站不注册）
+        if self._search_cfg.knowledge_sites:
+            from ..tools.knowledge_search import build_knowledge_search
+
+            tools.append(build_knowledge_search(self._search_cfg.knowledge_sites))
 
         if external_tools:
             for tool in external_tools:

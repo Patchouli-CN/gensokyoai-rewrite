@@ -94,6 +94,39 @@ async def _read_capped(stream, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+async def guarded_get_text(url: str, *, timeout_s: float = 20.0) -> str:
+    """经 SSRF 门禁的 GET（字面校验 + DNS 复检），返回解码文本。
+
+    给站内 API 调用（knowledge_search 等）复用的最小件：不跟重定向（API 端点
+    不跳转，3xx 算失败）、不剥 HTML。页面抓取请用 fetch_url 工具本体。
+
+    Args:
+        url: 完整网址（http/https）
+        timeout_s: 总超时秒数
+
+    Returns:
+        str: 响应体文本（utf-8，容错解码）
+
+    Raises:
+        UnsafeUrlError: 门禁拦截
+        aiohttp.ClientError / TimeoutError: 网络层失败（调用方自行翻译成人话）
+    """
+    validate_external_url(url)
+    connector = aiohttp.TCPConnector(resolver=_GuardedResolver())
+    async with (
+        aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout_s),
+            headers=_USER_AGENT,
+            connector=connector,
+        ) as session,
+        session.get(url, allow_redirects=False) as response,
+    ):
+        if not 200 <= response.status < 300:
+            raise aiohttp.ClientError(f"HTTP {response.status}")
+        raw = await _read_capped(response.content, _MAX_BYTES)
+    return raw.decode("utf-8", "replace")
+
+
 def _strip_html(text: str) -> str:
     """粗粒度 HTML -> 纯文本（剥 script/style + 标签替空格 + 实体反转义）"""
     text = _SCRIPT_STYLE_PATTERN.sub(" ", text)

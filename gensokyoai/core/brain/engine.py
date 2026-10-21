@@ -83,8 +83,8 @@ def build_tool_directive(sites: list[KnowledgeSite]) -> str:
     if not lines:
         return ""
     return (
-        "【可信知识站】查角色/作品/设定等领域知识时，优先用 fetch_url 抓这些站点"
-        "（或它们的站内搜索/API），查不到再用 web_search 泛搜：\n" + "\n".join(lines)
+        "【可信知识站】查角色/作品/设定等领域知识时，优先用 knowledge_search 在这些站里搜"
+        "（看中结果再 fetch_url 抓正文），查不到再用 web_search 泛搜：\n" + "\n".join(lines)
     )
 
 

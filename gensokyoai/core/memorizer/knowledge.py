@@ -71,7 +71,7 @@ class KnowledgeCache:
         self._l1: dict[str, tuple[float, str]] = {}
 
     def wrap_all(self, tools: list[ToolSpec]) -> list[ToolSpec]:
-        """把 web_search / fetch_url 换成带缓存的包装版（其余工具原样返回）。
+        """把 web_search / fetch_url / knowledge_search 换成带缓存的包装版（其余原样返回）。
 
         包装保持原签名与文档（functools.wraps），对模型与工具链路完全透明。
         """
@@ -83,9 +83,22 @@ class KnowledgeCache:
             elif spec.tool_name == "fetch_url":
                 wrapped.append(self._wrap_fetch_url(spec))
                 self._logger.debug("fetch_url 已套知识缓存")
+            elif spec.tool_name == "knowledge_search":
+                wrapped.append(self._wrap_knowledge_search(spec))
+                self._logger.debug("knowledge_search 已套知识缓存")
             else:
                 wrapped.append(spec)
         return wrapped
+
+    def _wrap_knowledge_search(self, spec: ToolSpec) -> ToolSpec:
+        """knowledge_search 的缓存包装（独立方法：避免闭包捕获循环变量）。"""
+        original = spec.tool_func
+
+        @functools.wraps(original)
+        async def cached_knowledge_search(query: str, max_results: int = 5) -> str:
+            return await self._cached(f"kwiki:{query}", original, query, max_results)
+
+        return ToolSpec(tool_func=cached_knowledge_search, name=spec.name)
 
     def _wrap_web_search(self, spec: ToolSpec) -> ToolSpec:
         """web_search 的缓存包装（独立方法：避免闭包捕获循环变量）。"""
