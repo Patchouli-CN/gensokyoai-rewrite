@@ -244,3 +244,89 @@ async def test_in_flight_query_also_coalesces():
 
     assert second is None
     assert started == ["A"], "B 没触发第二次查询"
+
+
+# ---------- /doctor 的可读性 ----------
+
+
+class _FakeLedger:
+    calls = 14
+    prompt_tokens = 41_622
+    completion_tokens = 672
+    cached_tokens = 25_400
+    cost = 0.0196
+    currency = "CNY"
+    quotas: tuple = ()
+
+    class billing:
+        @staticmethod
+        def describe() -> str:
+            return "¥1/4 空闲，2/8 高峰"
+
+    @staticmethod
+    def describe() -> str:
+        return "¥1/4 空闲，2/8 高峰"
+
+    @staticmethod
+    def status() -> list[str]:
+        return []
+
+
+class _FakeModel:
+    ledger = _FakeLedger()
+
+    class last_balance:
+        @staticmethod
+        def describe() -> str:
+            return "余额 ¥41.45（赠送 ¥0.00 / 充值 ¥41.45）"
+
+
+def _health_with_rooms() -> HealthCenter:
+    clock = _Clock()
+    health = HealthCenter(clock=clock)
+    clock.now = 162.0
+    for _ in range(3):
+        health.count("g1093789154.says")
+        health.observe("g1093789154.turn_s", 21.2)
+    health.count("g1093789154.turn_errors", 1)
+    for _ in range(8):
+        health.count("g364292616.says")
+        health.observe("g364292616.turn_s", 1.2)
+    return health
+
+
+async def test_doctor_reads_like_a_report():
+    """体检说人话：余额、用量、缓存命中、每群状况"""
+    executor = build_executor(_health_with_rooms(), _FakeModel())
+
+    reply = await executor.execute("/doctor", CommandContext(permission="visitor"))
+
+    assert reply is not None
+    assert "余额 ¥41.45" in reply
+    assert "缓存命中 61%" in reply
+    assert "¥0.0196" in reply
+    assert "群 1093789154" in reply and "失败 1 次" in reply
+    assert "llm.prompt_tokens" not in reply, "别把内部指标名糊给用户"
+    assert "turn_s" not in reply
+
+
+async def test_doctor_raw_keeps_internal_names():
+    """/doctor 原始 还能看到内部指标（排查用）"""
+    executor = build_executor(_health_with_rooms(), None)
+
+    reply = await executor.execute("/doctor 原始", CommandContext(permission="visitor"))
+
+    assert reply is not None
+    assert "g1093789154.turn_s" in reply
+    assert "avg=" in reply
+
+
+async def test_doctor_without_model_still_works():
+    """没给模型端点时（只有 health）也能出报告"""
+    executor = build_executor(_health_with_rooms(), None)
+
+    reply = await executor.execute("/doctor", CommandContext(permission="visitor"))
+
+    assert reply is not None
+    assert "群 1093789154" in reply
+    assert "余额" not in reply

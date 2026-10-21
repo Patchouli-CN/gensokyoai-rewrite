@@ -37,21 +37,46 @@ class HealthCenter:
         samples = self._samples.setdefault(name, deque(maxlen=_MAX_SAMPLES))
         samples.append(value)
 
+    @property
+    def uptime(self) -> float:
+        """已经跑了多少秒。"""
+        return self._clock() - self._started
+
+    def counter(self, name: str) -> float:
+        """取一个计数值（没有就是 0）。"""
+        return self._counters.get(name, 0.0)
+
+    def counters(self) -> dict[str, float]:
+        """全部计数（只读副本）。"""
+        return dict(self._counters)
+
+    def latency(self, name: str) -> tuple[float, float, int] | None:
+        """某个采样的 (平均, p95, 次数)；没有采样返回 None。"""
+        samples = self._samples.get(name)
+        if not samples:
+            return None
+        ordered = sorted(samples)
+        p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+        return sum(ordered) / len(ordered), p95, len(ordered)
+
+    def gauge_value(self, name: str) -> float | None:
+        """读一次 gauge（没有就是 None）。"""
+        reader = self._gauges.get(name)
+        return None if reader is None else reader()
+
     def report(self) -> str:
-        """渲染体检报告（纯文本，/doctor 与日志都能用）。"""
-        uptime = self._clock() - self._started
-        lines = [f"运行 {uptime / 60:.1f} 分钟"]
+        """渲染原始指标（内部名 + 数字，排查用）。"""
+        lines = [f"运行 {self.uptime / 60:.1f} 分钟"]
         if self._counters:
             lines.append(
                 "计数: "
                 + ", ".join(f"{k}={v:g}" for k, v in sorted(self._counters.items()))
             )
-        for name, samples in sorted(self._samples.items()):
-            if samples:
-                ordered = sorted(samples)
-                p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
-                avg = sum(ordered) / len(ordered)
-                lines.append(f"{name}: avg={avg:.2f} p95={p95:.2f} (n={len(ordered)})")
+        for name in sorted(self._samples):
+            stats = self.latency(name)
+            if stats is not None:
+                avg, p95, count = stats
+                lines.append(f"{name}: avg={avg:.2f} p95={p95:.2f} (n={count})")
         if self._gauges:
             lines.append(
                 "读数: "

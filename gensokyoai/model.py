@@ -182,7 +182,12 @@ class ChatModel:
             return
         self._health.count("llm.prompt_tokens", completion.usage.prompt_tokens)
         self._health.count("llm.completion_tokens", completion.usage.completion_tokens)
-        self._health.observe("llm.cost_usd", self.ledger.cost)
+        self._health.count("llm.cached_tokens", completion.usage.cached_tokens)
+
+    @property
+    def last_balance(self) -> Balance | None:
+        """上一次查到的余额（没有查过就是 None）。"""
+        return self._balance
 
     async def balance(self) -> Balance | None:
         """查账户余额；端点不提供就返回 None。
