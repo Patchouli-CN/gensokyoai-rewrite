@@ -10,6 +10,7 @@
 - 旧的大脑层 / 决策管线 / 喊话式工具提取 / 注意力档位全部移除
 - Mind 改为原生 tool_call：模型用 `send_message / wait / read_events` 动作说话，正文直接丢弃
 - 场景插件系统：`@scene` / `@tool` 声明，entry points 或目录扫描挂载，内置 chat 场景
+- 角色卡简化为三字段（version / name / detail），设定全在 detail；开场白功能移除
 
 ### 持久化
 

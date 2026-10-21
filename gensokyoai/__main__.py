@@ -111,9 +111,6 @@ async def _console(args, card, mind: Mind, scene_cls) -> None:
         window=args.window,
     )("console")
     task = asyncio.create_task(loop.run())
-    if card.greeting:
-        print(f"{card.name}: {card.greeting}")
-        loop.room.append("reply", card.name, card.greeting)
     try:
         while True:
             try:
@@ -150,7 +147,6 @@ async def _serve(args, card, mind: Mind, scene_cls) -> None:
     gateway = Gateway(
         hub,
         token=args.token,
-        greeting_of=lambda loop: card.greeting if not loop.room.events else "",
         executor=build_executor(health),
         max_rooms=args.max_rooms,
     )

@@ -1,4 +1,4 @@
-"""回复风格（ReplyStyle）—— 叙述许可 + 开场白开关。
+"""回复风格（ReplyStyle）—— 叙事视角 + 叙述许可。
 
 场景归属由接入侧（插件/连接参数）声明，机制归框架：出口按 allow_narration
 剥离括号叙述。人设卡不参与风格，同一张卡任意场景复用。
@@ -17,16 +17,13 @@ class ReplyStyle(msgspec.Struct, frozen=True):
 
     pov: NarrativePOV = "any"
     allow_narration: bool = True
-    send_greeting: bool = True
 
 
 REPLY_STYLES: dict[str, ReplyStyle] = {
     "free": ReplyStyle(),
-    "pure_dialogue": ReplyStyle(
-        pov="first", allow_narration=False, send_greeting=False
-    ),
-    "tavern": ReplyStyle(pov="any", allow_narration=True, send_greeting=True),
-    "rpg": ReplyStyle(pov="third", allow_narration=True, send_greeting=True),
+    "pure_dialogue": ReplyStyle(pov="first", allow_narration=False),
+    "tavern": ReplyStyle(pov="any", allow_narration=True),
+    "rpg": ReplyStyle(pov="third", allow_narration=True),
 }
 
 

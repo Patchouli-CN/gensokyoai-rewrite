@@ -32,6 +32,19 @@ ws 接入：`ws://127.0.0.1:8082/ws/{频道名}?style=pure_dialogue&user=你的�
 发 `{"text": "...", "user": "...", "direct": true}`，收 `{"type": "message", "speaker": "...", "text": "..."}`。
 `style` 可选 `free / pure_dialogue / tavern / rpg`——只投递、不投递叙述，这层管。
 
+## 角色卡
+
+一份 YAML 三个字段，设定全在 `detail` 里，不做花哨键值对：
+
+```yaml
+version: "0.0.1"   # 卡面版本号，自己改卡时自己 bump
+name: 古明地觉
+detail: |
+  你是古明地觉，地灵殿的主人……
+```
+
+格式约束（纯对话/叙述许可）归场景层，卡只写人设。示例卡在 `config/roles/`。
+
 ## 场景插件
 
 场景 = 这个房间是什么地方、能干什么。一个 `.py` 就是插件：

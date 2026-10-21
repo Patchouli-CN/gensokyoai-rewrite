@@ -125,10 +125,10 @@ async def test_message_flows_into_room_with_identity():
     assert event.user_id == "帕秋莉"
 
 
-async def test_connected_applies_style_and_greets():
-    """空房 + 风格声明：应用风格；pure_dialogue 免开场白"""
+async def test_connected_applies_style():
+    """风格声明在首连时应用到 mouth"""
     hub = _hub()
-    gateway = _gateway(hub, greeting_of=lambda loop: "欢迎")
+    gateway = _gateway(hub)
     await gateway.validate(_FakePending("g1", {"style": "pure_dialogue"}))
     conn = _FakeConn("g1")
 
@@ -136,22 +136,6 @@ async def test_connected_applies_style_and_greets():
 
     assert hub.get("g1").mouth._style.pov == "first"
     assert conn.sent == []
-
-
-async def test_greeting_enters_room_once():
-    """开场白入房一次：第二个连接不再收"""
-    hub = _hub()
-    gateway = _gateway(
-        hub, greeting_of=lambda loop: "欢迎" if not loop.room.events else ""
-    )
-    first, second = _FakeConn("g1"), _FakeConn("g1")
-
-    await gateway.handle(Connected(first))
-    await gateway.handle(Connected(second))
-
-    assert [frame["text"] for frame in first.sent] == ["欢迎"]
-    assert second.sent == []
-    assert len(hub.get("g1").room.events) == 1
 
 
 async def test_disconnected_detaches_sink():

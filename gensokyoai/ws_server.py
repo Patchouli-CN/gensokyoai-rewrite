@@ -1,16 +1,14 @@
 """ws 网关 —— 消费传输层事件流，应用层策略全在这里。
 
 不识 aiohttp、不识回调：`validate` 管握手（频道/token/风格/房间上限），
-`handle` 管事件（挂嘴/开场白/信封解析入房）。测试用假事件直接驱动。
+`handle` 管事件（挂嘴/信封解析入房）。测试用假事件直接驱动。
 """
 
 import hmac
 import re
-from collections.abc import Callable
 
 from .command import CommandContext, permission_of
 from .hub import Hub
-from .loop import Loop
 from .mouth import BroadcastMouth
 from .network.base import (
     Connected,
@@ -40,7 +38,6 @@ class Gateway:
         hub: Hub,
         *,
         token: str | None = None,
-        greeting_of: Callable[[Loop], str] = lambda loop: "",
         executor=None,
         max_rooms: int | None = None,
     ) -> None:
@@ -49,13 +46,11 @@ class Gateway:
         Args:
             hub: 房间注册表（房间的 mouth 需可挂连接才能广播）
             token: 接入令牌（None = 不校验）
-            greeting_of: 取房间角色的开场白（空 = 不发）
             executor: 命令执行器（None = 斜杠消息按普通聊天处理）
             max_rooms: 同时存在的房间上限（None = 不限）
         """
         self._hub = hub
         self._token = token
-        self._greeting_of = greeting_of
         self._executor = executor
         self._max_rooms = max_rooms
         self._styles: dict[str, ReplyStyle | None] = {}
@@ -114,12 +109,6 @@ class Gateway:
             mouth.attach(conn)
         else:
             _logger.warning(f"房间 {conn.path} 的 mouth 不支持挂连接")
-        greeting = self._greeting_of(loop)
-        if greeting and (style is None or style.send_greeting):
-            await conn.send(
-                {"type": "message", "speaker": loop.mind.name, "text": greeting}
-            )
-            loop.room.append("reply", loop.mind.name, greeting)  # 否则每连接都重发
 
     async def _on_message(self, event: Message) -> None:
         loop = self._hub.get(event.conn.path)
