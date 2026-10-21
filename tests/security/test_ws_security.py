@@ -71,7 +71,7 @@ def _char() -> Character:
 async def test_hub_rejects_channel_flood():
     """频道数上限：刷随机频道名制造世界任务在第 max_channels+1 个被拒"""
 
-    def factory(channel_id, perceiver, mouth):
+    def factory(channel_id, perceiver, mouth, style):
         return _FakeWorld(perceiver)
 
     hub = ChannelHub(

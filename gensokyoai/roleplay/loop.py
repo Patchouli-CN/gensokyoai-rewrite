@@ -40,6 +40,7 @@ from ..schemas.event_schema import BaseEvent, EventTopic, TurnEndPayload
 from ..schemas.memory_schema import MemoryItem, MemoryType
 from ..schemas.model_schema import ToolSpec
 from ..schemas.scene_schema import SceneSnapshot
+from ..schemas.style_schema import ReplyStyle
 from ..utils.logger import LoggerManager
 from ..utils.tasks import TaskManager
 from .character import Character
@@ -86,6 +87,7 @@ class TouhouWorld:
         persistence=None,
         embedder: Embedder | None = None,
         memory_min_score: float = 0.0,
+        reply_style: ReplyStyle | None = None,
     ) -> None:
         """
         Args:
@@ -117,6 +119,8 @@ class TouhouWorld:
             persistence: 可插拔持久化后端；None 用默认 JsonFilePersistence(storage_dir)
             embedder: 记忆向量化器（None = 长期记忆检索退回子串匹配）
             memory_min_score: 语义检索相似度下限（0 = 不过滤；config.embedding.min_score 传入）
+            reply_style: 回复风格（叙事视角/叙述许可/开场白开关；None = free 不限制。
+                场景归属由接入侧声明，人设卡不参与；见 schemas/style_schema.py）
             settings: 世界行为旋钮（WorldSettings：蒸馏节奏 / 主动发言 / 过渡语 /
                 OOC / 工具 / 关闭；None = 全默认）
         """
@@ -124,6 +128,8 @@ class TouhouWorld:
         self._logger = LoggerManager.get_logger("WORLD")
         self.eye = eye
         self.character = character
+        self.reply_style = reply_style or ReplyStyle()
+        """ 回复风格（叙事视角/叙述许可/开场白开关；hub 据此核对频道风格声明）"""
         self.mouth = mouth or ConsoleMouth()
         """ 口层：输出投递（默认 ConsoleMouth）"""
 
@@ -191,7 +197,7 @@ class TouhouWorld:
             tool_directive=build_tool_directive((search or SearchSettings()).knowledge_sites),
         )
 
-        self.responder = Responder(sessions=self.sessions, persona=character.prompt)
+        self.responder = Responder(sessions=self.sessions, persona=self._styled_persona())
 
         # --- 发言门控（System-1 混合门控；enabled=False 时维持「每条都回」旧行为）---
         self._gate = gate if gate is not None else GateSettings()
@@ -272,6 +278,7 @@ class TouhouWorld:
             self._parrot,
             self._ooc_guard,
             bus=self.bus,
+            reply_style=self.reply_style,
         )
         """ 表达 + 投递管线（主循环与主动发言共用的「说话」通道；见 components/delivery.py）"""
         self._initiative = InitiativeSpeaker(
@@ -539,10 +546,21 @@ class TouhouWorld:
         )
 
     async def _greet(self) -> None:
-        """打出角色开场白（若有）"""
+        """打出角色开场白（若有；风格禁开场白时跳过——群聊场景不需要入场介绍）"""
         greeting = self.character.card.greeting
-        if greeting:
+        if greeting and self.reply_style.send_greeting:
             await self.mouth.send(self.character.name, greeting)
+
+    def _styled_persona(self) -> str:
+        """responder 人设：卡面 system prompt + 风格的【输出格式】尾注。
+
+        尾注只给开口的 Responder——brain 的思考/草稿不是用户可见输出，
+        不需要格式约束；无约束风格返回空块，人设与旧行为逐字节一致。
+        """
+        block = self.reply_style.format_block()
+        if not block:
+            return self.character.prompt
+        return f"{self.character.prompt}\n\n{block}"
 
     def _user_importance(self, snapshot: SceneSnapshot) -> float:
         """用户消息的记忆 importance：显著性分层开启时按打分分级（附和 0.2 /

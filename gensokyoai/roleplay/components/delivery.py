@@ -24,8 +24,9 @@ from ...schemas.brain_schema import BrainConclusion
 from ...schemas.event_schema import EventTopic, ReplyPayload
 from ...schemas.memory_schema import MemoryItem
 from ...schemas.scene_schema import SceneSnapshot
+from ...schemas.style_schema import ReplyStyle
 from ...utils.logger import LoggerManager
-from ...utils.text import strip_control_chars
+from ...utils.text import NarrationStripper, strip_control_chars, strip_narration
 from .ooc_guard import OOCGuard
 from .parrot import ParrotGuard
 
@@ -43,6 +44,7 @@ class DeliveryService:
         parrot: ParrotGuard,
         ooc: OOCGuard,
         bus: EventBus | None = None,
+        reply_style: ReplyStyle | None = None,
     ) -> None:
         """初始化。
 
@@ -55,6 +57,9 @@ class DeliveryService:
             parrot: 防复读守门（事前提示 / 出口纠偏 / 收尾去重 / 文风窗口）
             ooc: 出戏守门（blocking 审查 / 硬规则 / 可疑标记）
             bus: 事件总线（None = 不发 REPLY 事件；语音渲染等旁路需要时传入）
+            reply_style: 回复风格（None = free 不限制；禁叙述时投递层剥括号块，
+                剥过的文本才投递、才进记忆——既拦当次输出，也防描写入库当风格
+                few-shot 造成记忆风格污染）
         """
         self._logger = LoggerManager.get_logger("DELIVERY")
         self._responder = responder
@@ -65,6 +70,7 @@ class DeliveryService:
         self._parrot = parrot
         self._ooc = ooc
         self._bus = bus
+        self._strip_narration = reply_style is not None and not reply_style.allow_narration
 
     async def deliver(
         self,
@@ -111,6 +117,11 @@ class DeliveryService:
             reply = await self._parrot.guard(reply)
         await self._ooc.note_suspicious(reply)
         final = self._parrot.dedup_ending(reply)
+        if self._strip_narration:
+            stripped = strip_narration(final)
+            if stripped != final:
+                self._logger.info("禁叙述风格：剥掉括号叙述块")
+                final = stripped
         await self._mouth.send(self._character_name, strip_control_chars(final))
         self._presence.record(from_bot=True)
         if self._energy is not None:
@@ -156,13 +167,15 @@ class DeliveryService:
         """
         await self._mouth.begin(self._character_name)
         parts: list[str] = []
+        stripper = NarrationStripper() if self._strip_narration else None
         try:
             async for delta in self._responder.respond_stream(
                 conclusion, snapshot, memories, avoid, state_hint=state_hint
             ):
-                parts.append(delta)
-                if delta:
-                    await self._mouth.delta(strip_control_chars(delta))
+                shown = stripper.feed(delta) if stripper is not None else delta
+                parts.append(shown)
+                if shown:
+                    await self._mouth.delta(strip_control_chars(shown))
         except Exception:
             self._logger.exception("流式生成失败（结束投递，回退为已产出文本）")
         finally:

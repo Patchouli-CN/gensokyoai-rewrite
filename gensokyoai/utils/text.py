@@ -52,6 +52,66 @@ def strip_control_chars(text: str) -> str:
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
 
 
+_NARRATION_BLOCK = re.compile(r"（[^（）]*）|\([^()]*\)")
+""" 括号叙述块（全角/半角，不嵌套——模型产出极少嵌套括号） """
+
+
+def strip_narration(text: str) -> str:
+    """禁叙述风格（如 pure_dialogue）的出口兜底：剥掉括号包裹的动作/神态/场景
+    描写（缓冲路径用）。
+
+    只负责「括号块」这一最主流的动作描写形态；独立成段的无括号叙述句
+    识别不了也不乱猜（误伤正常对话比漏放一条描写更伤体验）。
+    剥离后清理因此产生的空行与行首空白。
+
+    Args:
+        text: 完整回复文本
+
+    Returns:
+        剥离叙述块后的文本
+    """
+    stripped = _NARRATION_BLOCK.sub("", text)
+    lines = [line.strip() for line in stripped.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
+class NarrationStripper:
+    """流式括号叙述剥离器（禁叙述风格的流式路径用）。
+
+    叙述块可能横跨多个 delta（「（抬」+「头）」），逐块过滤需要一个深度状态机：
+    遇开括号入块（内容全部吞掉），遇闭括号出块，块外文本原样放行。
+    末尾括号未闭合 = 叙述块没写完，剩余内容全部吞掉（宁缺勿滥）。
+    """
+
+    _OPEN = "（("
+    _CLOSE = "）)"
+
+    def __init__(self) -> None:
+        self._depth = 0
+
+    def feed(self, delta: str) -> str:
+        """喂入一块流式增量，返回可投递的部分（块内内容被吞）。
+
+        Args:
+            delta: 流式文本增量
+
+        Returns:
+            过滤后可投递的文本（可能为空串——整块都在叙述里）
+        """
+        out: list[str] = []
+        for ch in delta:
+            if ch in self._OPEN:
+                self._depth += 1
+            elif ch in self._CLOSE:
+                if self._depth > 0:
+                    self._depth -= 1
+                else:
+                    out.append(ch)  # 落单闭括号：不在块内，原样放行
+            elif self._depth == 0:
+                out.append(ch)
+        return "".join(out)
+
+
 def truncate(text: str, max_length: int, suffix: str = "...") -> str:
     """
     按字符数截断文本，超长时追加后缀。

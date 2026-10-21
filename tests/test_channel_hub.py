@@ -61,7 +61,7 @@ def _build_hub(clock=None) -> tuple[ChannelHub, list[_FakeWorld]]:
     """构建用假世界工厂的枢纽，返回 (hub, 创建过的世界列表)。"""
     worlds: list[_FakeWorld] = []
 
-    def factory(channel_id, perceiver, mouth):
+    def factory(channel_id, perceiver, mouth, style):
         world = _FakeWorld(perceiver, mouth)
         worlds.append(world)
         return world
@@ -374,7 +374,7 @@ async def test_hub_replacement_channel_survives_old_world_exit():
     log: list[str] = []
     made: list[_SlowStopWorld] = []
 
-    def factory(channel_id, perceiver, mouth):
+    def factory(channel_id, perceiver, mouth, style):
         world = _SlowStopWorld(perceiver, log, f"w{len(made)}")
         made.append(world)
         return world
@@ -406,7 +406,7 @@ async def test_hub_crashed_world_hands_sinks_to_replacement():
                 raise RuntimeError("boom")
             await super().start()
 
-    def factory(channel_id, perceiver, mouth):
+    def factory(channel_id, perceiver, mouth, style):
         return _CrashOnce(perceiver, mouth)
 
     hub = ChannelHub(sessions=SessionManager(), character=_char(), world_factory=factory)

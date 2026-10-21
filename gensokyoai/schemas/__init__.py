@@ -16,6 +16,7 @@ from .model_schema import (
 from .prompt_schema import Prompt
 from .quota_schema import TenantQuota
 from .scene_schema import SceneEvent, SceneSnapshot, SceneType
+from .style_schema import REPLY_STYLES, NarrativePOV, ReplyStyle, resolve_reply_style
 
 __all__ = [
     "BaseEvent",
@@ -33,6 +34,9 @@ __all__ = [
     "ModelConfig",
     "OOCVerdict",
     "Prompt",
+    "REPLY_STYLES",
+    "NarrativePOV",
+    "ReplyStyle",
     "SceneEvent",
     "SceneSnapshot",
     "SceneType",
@@ -42,4 +46,5 @@ __all__ = [
     "ToolSpec",
     "Usage",
     "Verdict",
+    "resolve_reply_style",
 ]

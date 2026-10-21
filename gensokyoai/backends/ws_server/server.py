@@ -16,6 +16,10 @@
 - **JSON 信封**：`{"text": ..., "user": ..., "direct": true}`——群场景里
   「谁发的」和「是否直接针对角色（如 QQ @bot）」是**每条消息**的属性，
   长连复用时不能绑死在连接 query 上，故用信封逐条覆盖
+
+连接级 query 还有 `?style=<预设名>`：接入侧声明该频道的回复风格
+（pure_dialogue / tavern / rpg / free，见 schemas/style_schema.py），
+只信直连本机进程，首连生效。
 """
 
 import argparse
@@ -39,6 +43,7 @@ from ...core.config import WorldSettings, load_config
 from ...core.resource import IngressLimiter
 from ...roleplay.hub import ChannelHub, ChannelLimitError
 from ...schemas.scene_schema import SceneType
+from ...schemas.style_schema import resolve_reply_style
 from ...utils.logger import LoggerManager, setup_logging
 from ...utils.text import is_safe_channel_id, strip_control_chars
 from .commands import WsCommandState, build_executor, role_level
@@ -161,18 +166,29 @@ def build_app(
         scene_type: SceneType = (
             "private_chat" if request.query.get("type") == "private" else "group_chat"
         )
+        # 回复风格自报与 role 同一信任边界：只信直连本机进程（见下方 trusted_peer）。
+        # 场景归属是接入侧插件的职责（群聊 → pure_dialogue、酒馆 → tavern…），
+        # 未知名 fail fast——拼错词静默降级成 free，插件作者要查半天
+        style = None
+        style_name = request.query.get("style")
+        if style_name and _is_trusted_peer(request):
+            try:
+                style = resolve_reply_style(style_name)
+            except KeyError as err:
+                raise web.HTTPBadRequest(text=str(err)) from err
 
         ws = web.WebSocketResponse(heartbeat=heartbeat)
         await ws.prepare(request)
         sink = WsSink(ws)
         try:
-            hub.attach(channel_id, sink)
+            hub.attach(channel_id, sink, style=style)
         except ChannelLimitError:
             _logger.warning(f"频道满员，拒绝连接: channel={channel_id} user={user}")
             await ws.close(code=1013, message=b"channel limit reached")
             return ws
         _logger.info(
-            f"WS 连接: channel={channel_id} user={user} 在线={hub.online_count(channel_id)}"
+            f"WS 连接: channel={channel_id} user={user} style={style_name or 'free'} "
+            f"在线={hub.online_count(channel_id)}"
         )
 
         # 私聊必直通；群场景里客户端可用 ?direct=1 在连接级标记「直接针对角色」

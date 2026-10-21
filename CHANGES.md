@@ -9,6 +9,21 @@
 ## [Unreleased]
 
 ### 新增
+  - **回复风格（`ReplyStyle`，`schemas/style_schema.py`）——场景归插件、机制归框架**：
+    叙事视角（第一/第三/不限）+ 叙述许可 + 开场白开关三原语，具名预设
+    `pure_dialogue`（群聊：第一人称纯对话、禁叙述、免开场白）/ `tavern`
+    （视角叙述全自由）/ `rpg`（第三人称旁白）/ `free`（默认，与旧行为逐字节
+    一致）。人设卡不参与风格，同一张卡任意场景复用。框架侧两个手段：
+    responder 人设尾注框架统一文本的【输出格式】块（无约束风格不注入）+
+    投递层算法兜底剥离括号叙述块（缓冲路径 `utils/text.py::strip_narration`，
+    流式路径 `NarrationStripper` 状态机，剥过的文本才投递、才进记忆——
+    防描写入库当风格 few-shot 造成记忆污染）；开场白按 `send_greeting` 门控。
+    声明链路：WS 连接 query `?style=<预设名>`（与 role 同一信任边界，只信
+    直连本机进程；未知名握手 400 fail fast）→ `ChannelHub.attach(style=...)`
+    → 世界构造（首连生效，后来的不同声明告警忽略）；`WorldFactory` 工厂签名
+    随之加第四参。nb2 桥接插件新增 `GSK_REPLY_STYLE`（默认 pure_dialogue）。
+    新增 21 例测试（预设解析 / 格式块 / 剥离双路径 / 世界装配 / 首连生效 /
+    WS 声明链路与信任边界）。
   - **`/doctor` 体检指令（ws_server 斜杠指令，别名 /体检，USER 权限）**：
     四科体检报告——【前缀缓存】逐频道逐 owner（brain.think / responder）的
     命中率（cached/prompt tok、调用次数）与稳定段漂移计数 + 全局输入/命中合计；【健康指标】逐频道记忆

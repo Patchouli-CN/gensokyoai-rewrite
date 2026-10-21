@@ -22,14 +22,15 @@ from ..core.session_manager import SessionManager
 from ..mouth.broadcast import BroadcastMouth, DeliverSink
 from ..satori.queue import QueuePerceiver
 from ..schemas.scene_schema import SceneSnapshot, SceneType
+from ..schemas.style_schema import ReplyStyle
 from ..utils.logger import LoggerManager
 from .loop import TouhouWorld
 
 if TYPE_CHECKING:
     from .character import Character
 
-type WorldFactory = Callable[[str, QueuePerceiver, BroadcastMouth], TouhouWorld]
-""" 由 channel_id + 感知器 + 口层 造一个世界的工厂 """
+type WorldFactory = Callable[[str, QueuePerceiver, BroadcastMouth, ReplyStyle], TouhouWorld]
+""" 由 channel_id + 感知器 + 口层 + 回复风格 造一个世界的工厂 """
 
 _DEFAULT_STOP_TIMEOUT = 5.0
 """ 回收时等世界优雅关闭的秒数，超时才强杀 """
@@ -117,7 +118,11 @@ class ChannelHub:
             self._persistence = JsonFilePersistence(storage_dir)
 
     def _default_world(
-        self, channel_id: str, perceiver: QueuePerceiver, mouth: BroadcastMouth
+        self,
+        channel_id: str,
+        perceiver: QueuePerceiver,
+        mouth: BroadcastMouth,
+        reply_style: ReplyStyle,
     ) -> TouhouWorld:
         """默认世界工厂：每频道一个会话 ID，持久化天然隔离。
 
@@ -137,22 +142,33 @@ class ChannelHub:
             session_id=channel_id,
             storage_dir=self._storage_dir,
             settings=self._world_settings,
+            reply_style=reply_style,
             **kwargs,
         )
 
     # ---------------------------------------------------------------- 挂载
 
-    def attach(self, channel_id: str, sink: DeliverSink) -> Channel:
+    def attach(
+        self, channel_id: str, sink: DeliverSink, style: ReplyStyle | None = None
+    ) -> Channel:
         """把一个连接（订阅者）挂到频道；频道不存在则创建（含世界启动）。
 
         Args:
             channel_id: 频道标识
             sink: 可接收投递帧的订阅者
+            style: 接入侧声明的回复风格（None = free 不限制）。**首连生效**：
+                频道已存活时声明与现存世界不一致只告警不更改——风格是世界
+                构造期的属性，热换要重建世界，代价远大于重启接入侧
 
         Returns:
             Channel: 该频道的运行时对象
         """
-        channel = self._get_or_create(channel_id)
+        channel = self._get_or_create(channel_id, style)
+        if style is not None and channel.world.reply_style != style:
+            self._logger.warning(
+                f"频道 {channel_id} 风格声明被忽略: "
+                f"声明={style} 现存={channel.world.reply_style}（首连生效）"
+            )
         channel.mouth.attach(sink)
         channel.last_active = self._clock()
         self._logger.info(f"连接加入频道: {channel_id}（在线 {channel.mouth.subscriber_count}）")
@@ -305,7 +321,7 @@ class ChannelHub:
         channel = self._channels.get(channel_id)
         return channel.mouth.subscriber_count if channel else 0
 
-    def _get_or_create(self, channel_id: str) -> Channel:
+    def _get_or_create(self, channel_id: str, style: ReplyStyle | None = None) -> Channel:
         """取频道；不存在则建世界并启动其主循环（满员抛 `ChannelLimitError`）。"""
         channel = self._channels.get(channel_id)
         if channel is not None:
@@ -320,7 +336,7 @@ class ChannelHub:
         mouth = BroadcastMouth()
         for sink in self._orphaned.pop(channel_id, []):
             mouth.attach(sink)
-        world = self._factory(channel_id, perceiver, mouth)
+        world = self._factory(channel_id, perceiver, mouth, style or ReplyStyle())
         now = self._clock()
         task = asyncio.create_task(
             self._run_world(channel_id, world, self._stopping.get(channel_id))
