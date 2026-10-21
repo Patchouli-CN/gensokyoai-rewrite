@@ -32,8 +32,8 @@ _DEFAULT_WINDOW = 30
 _MAX_LOG_BYTES = 4 * 1024 * 1024
 """ 单房间日志的大小上界，超了轮转到 .1（只留一份备份） """
 
-_HISTORY = 10
-""" 重启后一次性补给模型的最近几条上下文 """
+_CONTEXT = 12
+""" 每轮附带多少条上下文（含自己的发言） """
 
 
 class Event(msgspec.Struct, frozen=True):
@@ -184,8 +184,6 @@ class Room:
         self._gaps: dict[int, list[Event]] = {}
         self._next_gap = 0
         self._next_msg = max((event.msg_id for event in self.events), default=0) + 1
-        self._history: list[Event] = self.events[-_HISTORY:] if log is not None else []
-        """ 从盘上回放出来的最近几条，只补给模型一次 """
 
     @property
     def unread(self) -> int:
@@ -288,10 +286,21 @@ class Room:
         if events:
             self._unread = [*events, *self._unread]
 
-    def take_history(self) -> list[Event]:
-        """取出重启前的上下文（只给一次）。"""
-        history, self._history = self._history, []
-        return history
+    def context(self, exclude: list[Event], limit: int = _CONTEXT) -> list[Event]:
+        """这一批之前的最近几条，含自己的发言——模型要靠它接得上话、不重复。
+
+        Args:
+            exclude: 这一批已经投递给模型的事件（不重复给）
+            limit: 最多给几条（0 = 不给）
+
+        Returns:
+            list[Event]: 按时间顺序的上下文
+        """
+        if limit <= 0:
+            return []
+        skip = {event.msg_id for event in exclude if event.msg_id}
+        recent = [event for event in self.events if event.msg_id not in skip]
+        return recent[-limit:]
 
     def _trim(self) -> None:
         """超出上界时丢弃最老的整条。"""

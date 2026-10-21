@@ -7,6 +7,7 @@
 
 import asyncio
 import time
+from collections import deque
 
 from .api import call_tool, spec_of
 from .health import HealthCenter
@@ -31,6 +32,9 @@ _MAX_STEPS = 4
 
 _IMPORTANCE = 0.6
 """ 记忆写入强度 """
+
+_DEDUP_WINDOW_S = 20.0
+""" 同一句话在这个窗口内不重复发（秒） """
 
 
 class SceneContext:
@@ -60,6 +64,7 @@ class Loop:
         retry_backoff: float = _BACKOFF_S,
         retry_backoff_max: float = _BACKOFF_MAX_S,
         bubble_gap: float | None = None,
+        dedup_window: float = _DEDUP_WINDOW_S,
     ) -> None:
         """组装。
 
@@ -75,6 +80,7 @@ class Loop:
             retry_backoff: 首轮失败后的重试间隔（秒）
             retry_backoff_max: 退避上限（秒）
             bubble_gap: 连发间隔（None = 用场景声明的）
+            dedup_window: 同一句话多少秒内不重复发（0 = 不拦）
         """
         self.room = room
         self.mind = mind
@@ -98,6 +104,9 @@ class Loop:
         self._revealed: list[Event] = []
         self._revealed_gap: dict | None = None
         self._results: list[dict] = []
+        self._dedup_window = max(0.0, dedup_window)
+        self._said: deque[tuple[float, str]] = deque()
+        """ 最近发出去的（时间, 文本），防同一句在短时间里说两遍 """
 
     def notify(
         self,
@@ -156,6 +165,11 @@ class Loop:
                 if not shown:
                     return
                 reply = await self.mind.step(await self._feed(shown, gap), self._scene)
+                if not reply.calls and reply.text:
+                    _logger.debug(
+                        f"{self.room.name} 模型只写了正文、没调工具"
+                        f"（协议要求工具调用，正文会被丢弃）: {reply.text[:40]!r}"
+                    )
                 waited = None
                 said = 0
                 for call in reply.calls:
@@ -204,7 +218,7 @@ class Loop:
             "now": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "events": events,
             "gap": gap,
-            "history": [event.wire() for event in self.room.take_history()],
+            "history": [event.wire() for event in self.room.context(shown)],
             "memories": await self._recall(shown),
             "results": results,
         }
@@ -214,11 +228,26 @@ class Loop:
         text = _text_of(segments)
         if not text:
             return
+        if hasattr(self._scene, "clean"):
+            text = self._scene.clean(text) or text
+        if self._is_repeat(text):
+            _logger.debug(f"{self.room.name} 同一句刚说过，丢弃: {text[:30]!r}")
+            return
         await self._scene.say(segments, reply_to)
+        self._said.append((time.monotonic(), text))
         self.room.append("reply", self.mind.name, text)
         if self._health is not None:
             self._health.count(f"{self.room.name}.says")
         await self._remember(text)
+
+    def _is_repeat(self, text: str) -> bool:
+        """这句话是不是刚说过（窗口内逐字相同）。"""
+        if self._dedup_window <= 0:
+            return False
+        now = time.monotonic()
+        while self._said and now - self._said[0][0] > self._dedup_window:
+            self._said.popleft()
+        return any(previous == text for _, previous in self._said)
 
     async def _remember(self, text: str) -> None:
         """记忆是旁路：写失败只告警，不重试（否则发言会重播）。"""

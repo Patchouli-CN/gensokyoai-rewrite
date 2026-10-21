@@ -32,6 +32,8 @@ ws 接入：`ws://127.0.0.1:8082/ws/{频道名}?style=pure_dialogue&user=你的�
 发 `{"text": "...", "user": "...", "direct": true}`，收 `{"type": "message", "speaker": "...", "text": "..."}`。
 `style` 可选 `free / pure_dialogue / tavern / rpg`——只投递、不投递叙述，这层管。
 
+接 QQ / 换宿主 / 排错见 [DEPLOY.md](DEPLOY.md)。
+
 ## 角色卡
 
 一份 YAML 三个字段，设定全在 `detail` 里，不做花哨键值对：

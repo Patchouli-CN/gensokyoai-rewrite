@@ -234,8 +234,8 @@ async def test_run_retries_after_failure():
     assert mouth.sent == [("觉", "在。")], "重试不该把已经发出去的那条再发一遍"
 
 
-async def test_restored_room_gets_history_once(tmp_path):
-    """重启后第一次投递带上 history，之后不再重复"""
+async def test_feed_carries_recent_context(tmp_path):
+    """每轮都给上下文：重启前聊过什么、自己刚说了什么都要看得到"""
     from gensokyoai.bgtasks import BgTasks
     from gensokyoai.room import RoomLog
 
@@ -248,16 +248,39 @@ async def test_restored_room_gets_history_once(tmp_path):
 
     room = Room("g1", log=RoomLog(path, tasks))
     room.append("message", "帕秋莉", "我又来了", user_id="u1")
-    mind = _ScriptedMind(Reply(), Reply())
+    mind = _ScriptedMind(_say("在的。"), Reply())
     loop = Loop(room, mind, _Mouth())
 
     await loop._turn()
     room.append("message", "帕秋莉", "还在吗", user_id="u1")
     await loop._turn()
 
+    # 重启前的对话作为上下文
     assert [event["text"] for event in mind.feeds[0]["history"]] == [
         "上次说的那本书",
         "记着",
     ]
+    # 当前批次不重复出现在上下文里
     assert [event["text"] for event in mind.feeds[0]["events"]] == ["我又来了"]
-    assert mind.feeds[1]["history"] == [], "history 只给一次"
+    # 第二轮：上下文接上了上一轮的问与答（更早的也在，窗口内）
+    tail = [event["text"] for event in mind.feeds[1]["history"]][-2:]
+    assert tail == ["我又来了", "在的。"]
+    assert "还在吗" not in [event["text"] for event in mind.feeds[1]["history"]]
+    assert [event["text"] for event in mind.feeds[1]["events"]] == ["还在吗"]
+
+
+async def test_same_line_is_not_repeated(tmp_path):
+    """同一句在去重窗口里只发一次（模型抽风时的兜底）"""
+    mouth = _Mouth()
+    loop = Loop(
+        _room("在吗"),
+        _ScriptedMind(Reply()),
+        mouth,
+        dedup_window=60.0,
+    )
+
+    await loop._say([{"type": "text", "text": "天人的效率总是惊人。"}])
+    await loop._say([{"type": "text", "text": "天人的效率总是惊人。"}])
+    await loop._say([{"type": "text", "text": "另一句。"}])
+
+    assert [text for _, text in mouth.sent] == ["天人的效率总是惊人。", "另一句。"]
