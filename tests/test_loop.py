@@ -16,9 +16,11 @@ class _ScriptedMind:
     def __init__(self, *replies: Reply) -> None:
         self._replies = list(replies)
         self.feeds: list[dict] = []
+        self.images: list[list] = []
 
-    async def step(self, feed: dict, scene=None) -> Reply:
+    async def step(self, feed: dict, scene=None, images=None) -> Reply:
         self.feeds.append(feed)
+        self.images.append(list(images or []))
         return self._replies.pop(0) if self._replies else Reply()
 
 
@@ -237,7 +239,7 @@ async def test_run_retries_after_failure():
         def __init__(self) -> None:
             self.calls = 0
 
-        async def step(self, feed, scene=None):
+        async def step(self, feed, scene=None, images=None):
             self.calls += 1
             if self.calls == 1:
                 raise ConnectionError("后端断线")
@@ -345,3 +347,47 @@ async def test_cooldown_blocks_unmentioned_after_speaking():
     assert not loop._wake.is_set(), "冷却期内不许醒"
     loop.notify("message", "帕秋莉", "觉，你呢", user_id="u1", mentioned=True)
     assert loop._wake.is_set(), "点名可以穿透冷却"
+
+
+async def test_images_reach_the_model():
+    """带图的消息：房间事件记了图，图片作为多模态附件给模型"""
+    mind = _ScriptedMind(Reply())
+    loop = Loop(Room("g1"), mind, _Mouth())
+
+    loop.notify(
+        "message",
+        "帕秋莉",
+        "看这张 [图片×1]",
+        user_id="u1",
+        images=("data:image/png;base64,AAAA",),
+    )
+    await loop._turn()
+
+    assert mind.feeds[0]["events"][0]["images"] == 1
+    assert mind.images[0] == [("帕秋莉 发的第 1 张图：", "data:image/png;base64,AAAA")]
+
+
+async def test_prose_is_dropped_by_default():
+    """没调工具、只写正文：默认丢掉（协议优先）"""
+    mouth = _Mouth()
+    mind = _ScriptedMind(Reply(text="我在。"))
+    loop = Loop(Room("g1"), mind, mouth)
+
+    loop.notify("message", "帕秋莉", "在吗", user_id="u1")
+    await loop._turn()
+
+    assert mouth.sent == []
+
+
+async def test_prose_fallback_sends_when_scene_allows():
+    """场景声明 on_prose=send：正文当作一句话发出去，别让用户干等"""
+    mouth = _Mouth()
+    scene = _quiet_scene(mouth)
+    scene._gensokyo_scene = {**scene._gensokyo_scene, "on_prose": "send"}
+    loop = Loop(Room("g1"), _ScriptedMind(Reply(text="绿色。")), mouth, scene=scene)
+
+    loop.notify("message", "帕秋莉", "这图什么颜色", user_id="u1")
+    await loop._turn()
+
+    assert mouth.sent == [("觉", "绿色。")]
+    assert loop.room.events[-1].kind == "reply"

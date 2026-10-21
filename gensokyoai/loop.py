@@ -112,6 +112,7 @@ class Loop:
         self._said: deque[tuple[float, str]] = deque()
         """ 最近发出去的（时间, 文本），防同一句在短时间里说两遍 """
         wake = spec_of(self._scene)["wake"]
+        self._prose_policy = spec_of(self._scene).get("on_prose", "drop")
         self._wake_on_mention = _chance(wake.get("on_mention", 1.0))
         self._wake_on_others = _chance(wake.get("on_others", 1.0))
         self._wake_cooldown = max(0.0, float(wake.get("cooldown_s", 0.0)))
@@ -127,17 +128,26 @@ class Loop:
         *,
         user_id: str = "",
         mentioned: bool = False,
+        images: tuple[str, ...] = (),
     ) -> None:
         """消息入房，按场景的唤醒策略决定开不开一轮。
 
         Args:
             kind: message 或 reply
             sender: 发送者
-            text: 内容
+            text: 内容（可以是空的，只要带图）
             user_id: 发送者的稳定标识
             mentioned: 是否点名了角色
+            images: 图片（data URL；只活在内存里，不落盘）
         """
-        self.room.append(kind, sender, text, user_id=user_id, mentioned=mentioned)
+        self.room.append(
+            kind,
+            sender,
+            text,
+            user_id=user_id,
+            mentioned=mentioned,
+            images=images,
+        )
         if self._should_wake(mentioned):
             self._wake.set()
 
@@ -186,12 +196,12 @@ class Loop:
             for _ in range(self._max_steps):
                 if not shown:
                     return
-                reply = await self.mind.step(await self._feed(shown, gap), self._scene)
-                if not reply.calls and reply.text:
-                    _logger.debug(
-                        f"{self.room.name} 模型只写了正文、没调工具"
-                        f"（协议要求工具调用，正文会被丢弃）: {reply.text[:40]!r}"
-                    )
+                reply = await self.mind.step(
+                    await self._feed(shown, gap), self._scene, images=_images_of(shown)
+                )
+                if not reply.calls:
+                    await self._on_prose(reply.text)
+                    return
                 waited = None
                 said = 0
                 for call in reply.calls:
@@ -244,6 +254,22 @@ class Loop:
             "memories": await self._recall(shown),
             "results": results,
         }
+
+    async def _on_prose(self, text: str) -> None:
+        """模型没调工具、只写了正文：按场景策略丢掉，或者当作一句话发出去。"""
+        text = text.strip()
+        if not text:
+            return
+        if self._prose_policy == "send":
+            _logger.warning(
+                f"{self.room.name} 模型只写了正文、没调工具，按场景策略直接发出"
+            )
+            await self._say([{"type": "text", "text": text}])
+            return
+        _logger.warning(
+            f"{self.room.name} 模型只写了正文、没调工具（协议要求工具调用，已丢弃）: "
+            f"{text[:40]!r}"
+        )
 
     async def _say(self, segments: list[dict], reply_to: int | None = None) -> None:
         """经场景出口投递，入房，记一笔。"""
@@ -337,6 +363,15 @@ def _last_message(events: list[Event]) -> str:
         if event.kind == "message":
             return event.text
     return ""
+
+
+def _images_of(shown: list[Event]) -> list[tuple[str, str]]:
+    """把这一批里的图收集成 [(说明, data URL)]，顺序与 events 一致。"""
+    found: list[tuple[str, str]] = []
+    for event in shown:
+        for index, url in enumerate(event.images, 1):
+            found.append((f"{event.sender} 发的第 {index} 张图：", url))
+    return found
 
 
 def _chance(value) -> float:

@@ -61,6 +61,7 @@ class ChatModel:
         user: str,
         *,
         tools: list[dict] | None = None,
+        images: list[tuple[str, str]] | None = None,
         max_tokens: int = 512,
         temperature: float = 0.8,
     ) -> Reply:
@@ -70,6 +71,7 @@ class ChatModel:
             system: 系统提示（协议 + 人设）
             user: 这一轮的输入（一般是 JSON）
             tools: 原生工具声明（None = 不给工具）
+            images: 附带的图片 `[(说明, data URL), ...]`（None = 纯文本）
             max_tokens: 生成上限
             temperature: 采样温度
 
@@ -81,10 +83,17 @@ class ChatModel:
             TimeoutError: 超过 timeout
             RuntimeError: 响应不是预期的 chat completion 形状
         """
+        content: object = user
+        if images:
+            parts: list[dict] = [{"type": "text", "text": user}]
+            for label, url in images:
+                parts.append({"type": "text", "text": label})
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+            content = parts
         payload: dict = {
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": content},
             ],
             "max_tokens": max_tokens,
             "temperature": temperature,

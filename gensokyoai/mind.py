@@ -21,7 +21,8 @@ _FEED_DOC = """\
 每次输入是一段 JSON：
 
 - now：现在的时间
-- events：刚到的消息，只给未读。每条有 msgId / name / userId / text / time / mentioned
+- events：刚到的消息，只给未读。每条有 msgId / name / userId / text / time / mentioned；
+  带图的会多一个 images 字段（数字 = 张数），图本身以附件形式跟在后面
 - gap：你没看到的一段消息。skipped 是里面的条数，mentioned 表示里面有人提到你
 - history：你回来之前这里聊过的几句（只在你刚回来时给一次）
 - memories：你想起的旧事，可能和现在的话题有关
@@ -107,12 +108,18 @@ class Mind:
         """底层模型端点（静息整理压缩记忆用）。"""
         return self._model
 
-    async def step(self, feed: dict, scene=None) -> Reply:
+    async def step(
+        self,
+        feed: dict,
+        scene=None,
+        images: list[tuple[str, str]] | None = None,
+    ) -> Reply:
         """把这一轮的输入交给模型。
 
         Args:
-            feed: {now, events, gap, memories, results}
+            feed: {now, events, gap, history, memories, results}
             scene: 场景实例（None = 只用内核默认动作）
+            images: 这一批消息里带的图 `[(说明, data URL), ...]`
 
         Returns:
             Reply: 正文与工具调用
@@ -121,6 +128,7 @@ class Mind:
             self._system(scene),
             json.dumps(feed, ensure_ascii=False),
             tools=self._tools(scene),
+            images=images,
             max_tokens=_MAX_TOKENS,
             temperature=0.85,
         )

@@ -166,3 +166,21 @@ async def test_close_is_idempotent_and_reopens(monkeypatch):
     assert fake.instances[0].closed is True
     assert len(fake.instances) == 2
     await model.close()
+
+
+async def test_images_become_content_parts(monkeypatch):
+    """带图时 user 消息变成 content 数组：文本 + 说明 + image_url"""
+    fake = _install(monkeypatch)
+    model = ChatModel("http://127.0.0.1:8080/v1")
+
+    await model.chat(
+        "sys", "{}", images=[("帕秋莉 发的第 1 张图：", "data:image/png;base64,AAAA")]
+    )
+
+    content = fake.instances[0].posts[0][1]["messages"][1]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "{}"}
+    assert content[1]["type"] == "text" and "帕秋莉" in content[1]["text"]
+    assert content[2]["type"] == "image_url"
+    assert content[2]["image_url"]["url"].startswith("data:image/png")
+    await model.close()

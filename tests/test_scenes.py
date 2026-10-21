@@ -21,7 +21,7 @@ class _ScriptedMind:
         self._replies = list(replies)
         self.feeds: list[dict] = []
 
-    async def step(self, feed: dict, scene=None) -> Reply:
+    async def step(self, feed: dict, scene=None, images=None) -> Reply:
         self.feeds.append(feed)
         return self._replies.pop(0) if self._replies else Reply()
 

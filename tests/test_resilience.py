@@ -18,7 +18,7 @@ from gensokyoai.ws_server import Gateway
 class _Mind:
     name = "觉"
 
-    async def step(self, feed: dict, scene=None) -> Reply:
+    async def step(self, feed: dict, scene=None, images=None) -> Reply:
         return Reply()
 
 
@@ -200,7 +200,7 @@ class _SayMind:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def step(self, feed: dict, scene=None) -> Reply:
+    async def step(self, feed: dict, scene=None, images=None) -> Reply:
         self.calls += 1
         return Reply(calls=(ToolCall(name="send_message", arguments={"text": "在。"}),))
 

@@ -46,15 +46,18 @@ class Event(msgspec.Struct, frozen=True):
     msg_id: int = 0
     user_id: str = ""
     mentioned: bool = False
+    images: tuple[str, ...] = ()
+    """ 图片（data URL）。只活在内存里，不落盘 """
 
     def line(self) -> str:
         """一行纯文本（控制台回显用）。"""
         stamp = time.strftime("%H:%M", time.localtime(self.ts))
-        return f"[{stamp}] {self.sender}: {self.text}"
+        pictures = f" [图×{len(self.images)}]" if self.images else ""
+        return f"[{stamp}] {self.sender}: {self.text}{pictures}"
 
     def wire(self) -> dict:
-        """给模型看的形状。"""
-        return {
+        """给模型看的形状（图片只报数量，数据本身走多模态附件）。"""
+        payload = {
             "msgId": self.msg_id,
             "name": self.sender,
             "userId": self.user_id,
@@ -62,6 +65,9 @@ class Event(msgspec.Struct, frozen=True):
             "time": time.strftime("%H:%M", time.localtime(self.ts)),
             "mentioned": self.mentioned,
         }
+        if self.images:
+            payload["images"] = len(self.images)
+        return payload
 
 
 class RoomLog:
@@ -198,10 +204,11 @@ class Room:
         *,
         user_id: str = "",
         mentioned: bool = False,
+        images: tuple[str, ...] = (),
     ) -> Event:
-        """追加一条事件（唯一的写入口）。空文本不入房。"""
+        """追加一条事件（唯一的写入口）。空文本且无图不入房。"""
         text = text.strip()
-        if not text:
+        if not text and not images:
             return Event(kind=kind, sender=sender, text="")
         event = Event(
             kind=kind,
@@ -210,6 +217,7 @@ class Room:
             msg_id=self._next_msg,
             user_id=user_id or sender,
             mentioned=mentioned,
+            images=tuple(images),
         )
         self._next_msg += 1
         self.events.append(event)
@@ -217,7 +225,10 @@ class Room:
         if kind == "message":
             self._unread.append(event)
         if self._log is not None:
-            self._log.note(event)
+            # 图片数据不进日志：重放时只剩文字里的 [图片] 标记
+            self._log.note(
+                msgspec.structs.replace(event, images=()) if event.images else event
+            )
         return event
 
     def take_feed(

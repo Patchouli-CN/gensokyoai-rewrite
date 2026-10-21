@@ -38,6 +38,9 @@ _ALL_ACTIONS = ("say", "wait", "read_events")
 _WAKE_DEFAULTS = {"on_mention": 1.0, "on_others": 1.0, "cooldown_s": 0.0}
 """ 唤醒策略默认值：点名必醒、别的消息也必醒、无冷却（= 不节流） """
 
+_ON_PROSE = ("drop", "send")
+""" 模型只写了正文、没调工具时怎么办：丢掉 / 当作一句话发出去 """
+
 
 class SceneContext(Protocol):
     """库交给场景实例的东西（每个房间一份）。"""
@@ -59,6 +62,7 @@ def scene(
     bubbles: dict | None = None,
     actions: tuple[str, ...] = ("say",),
     wake: dict | None = None,
+    on_prose: str = "drop",
 ) -> Callable[[type], type]:
     """把一个类注册成场景。
 
@@ -83,6 +87,7 @@ def scene(
             "bubbles": bubbles or {},
             "actions": _clean_actions(actions),
             "wake": wake or {},
+            "on_prose": on_prose if on_prose in _ON_PROSE else "drop",
         }
         _SCENES[name] = cls
         return cls
@@ -132,6 +137,7 @@ def spec_of(scene_object) -> dict:
         "bubbles": {"max": 1, "gap_s": 0.0, **raw.get("bubbles", {})},
         "actions": _clean_actions(raw.get("actions", ())),
         "wake": {**_WAKE_DEFAULTS, **raw.get("wake", {})},
+        "on_prose": raw.get("on_prose", "drop"),
     }
 
 
