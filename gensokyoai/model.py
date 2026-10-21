@@ -9,6 +9,10 @@ import json
 import aiohttp
 import msgspec
 
+from .utils.logger import LoggerManager
+
+_logger = LoggerManager.get_logger("MODEL")
+
 DEFAULT_TIMEOUT_S = 120.0
 """ 单次补全的总时限（秒） """
 
@@ -111,9 +115,12 @@ class ChatModel:
             resp.raise_for_status()
             data = await resp.json()
         try:
-            message = data["choices"][0]["message"]
+            choice = data["choices"][0]
+            message = choice["message"]
         except (KeyError, IndexError, TypeError) as err:
             raise RuntimeError(f"模型响应形状异常: {data!r:.200}") from err
+        if choice.get("finish_reason") == "length":
+            _logger.warning("模型被 max_tokens 截断，这一轮的动作可能不完整")
         return Reply(
             text=(message.get("content") or "").strip(),
             calls=_calls_of(message.get("tool_calls")),

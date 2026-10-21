@@ -24,7 +24,7 @@ _FEED_DOC = """\
 - events：刚到的消息，只给未读。每条有 msgId / name / userId / text / time / mentioned；
   带图的会多一个 images 字段（数字 = 张数），图本身以附件形式跟在后面
 - gap：你没看到的一段消息。skipped 是里面的条数，mentioned 表示里面有人提到你
-- history：你回来之前这里聊过的几句（只在你刚回来时给一次）
+- history：这一批之前的最近几句，含你自己刚说过的话——别重复，也别接不上
 - memories：你想起的旧事，可能和现在的话题有关
 - results：你刚才调用工具拿到的结果
 

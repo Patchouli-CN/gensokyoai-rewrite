@@ -6,7 +6,9 @@
 """
 
 import asyncio
+import json
 import random
+import re
 import time
 from collections import deque
 from collections.abc import Callable
@@ -256,20 +258,33 @@ class Loop:
         }
 
     async def _on_prose(self, text: str) -> None:
-        """模型没调工具、只写了正文：按场景策略丢掉，或者当作一句话发出去。"""
-        text = text.strip()
-        if not text:
+        """模型没调工具、只写了正文。
+
+        常见的两种情况：真写了句话（带图时尤其容易），或者把工具调用写成了
+        正文——`send_message text ...`、`{"name": "send_message", ...}` 这种。
+        后者要先抢救出真正要说的话，抢救不出来就当它什么也没说。
+        """
+        raw = text.strip()
+        if not raw:
             return
-        if self._prose_policy == "send":
+        salvaged = _salvage(raw)
+        if not salvaged:
             _logger.warning(
-                f"{self.room.name} 模型只写了正文、没调工具，按场景策略直接发出"
+                f"{self.room.name} 模型写成了工具调用格式却没调工具，已丢弃: "
+                f"{raw[:40]!r}"
             )
-            await self._say([{"type": "text", "text": text}])
+            return
+        if self._prose_policy != "send":
+            _logger.warning(
+                f"{self.room.name} 模型只写了正文、没调工具（协议要求工具调用，"
+                f"已丢弃）: {salvaged[:40]!r}"
+            )
             return
         _logger.warning(
-            f"{self.room.name} 模型只写了正文、没调工具（协议要求工具调用，已丢弃）: "
-            f"{text[:40]!r}"
+            f"{self.room.name} 模型只写了正文、没调工具，按场景策略直接发出"
+            + ("（已从工具调用格式里抢救）" if salvaged != raw else "")
         )
+        await self._say([{"type": "text", "text": salvaged}])
 
     async def _say(self, segments: list[dict], reply_to: int | None = None) -> None:
         """经场景出口投递，入房，记一笔。"""
@@ -363,6 +378,68 @@ def _last_message(events: list[Event]) -> str:
         if event.kind == "message":
             return event.text
     return ""
+
+
+def _salvage(text: str) -> str:
+    """从"写成正文的工具调用"里抠出真正要说的话；抠不出来返回空串。
+
+    认这些形状：`send_message text 你好`、`send_message("你好")`、
+    裸 JSON、`<tool_call>{...}</tool_call>`。普通句子原样返回。
+    """
+    raw = text.strip()
+    if not raw:
+        return ""
+    if re.fullmatch(r"(send_message|wait|read_events)", raw, re.I):
+        return ""
+
+    block = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", raw, re.S)
+    if block:
+        return _payload_of(block.group(1))
+    if raw.startswith("{") and raw.endswith("}"):
+        return _payload_of(raw)
+
+    match = re.match(
+        r"(?:send_message|wait|read_events)\s*(?P<open>[(（:：])?\s*"
+        r"(?:text|message|content)?\s*[:=]?\s*(?P<body>.+)$",
+        raw,
+        re.S | re.I,
+    )
+    if match:
+        body = match.group("body")
+        if match.group("open") in ("(", "（"):
+            body = body.rstrip(")）").rstrip()
+        return _unquote(body)
+    return raw
+
+
+def _payload_of(raw: str) -> str:
+    """从 JSON 里取要说的话（认 text / message / content，或嵌在 arguments 里）。"""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("text", "message", "content"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return _unquote(value)
+    arguments = data.get("arguments")
+    if isinstance(arguments, dict):
+        return _payload_of(json.dumps(arguments, ensure_ascii=False))
+    if isinstance(arguments, str):
+        return _salvage(arguments)
+    return ""
+
+
+def _unquote(text: str) -> str:
+    """去掉包裹的引号/括号，别把标点当内容。"""
+    cleaned = text.strip()
+    for left, right in (('"', '"'), ("'", "'"), ("「", "」"), ("“", "”"), ("`", "`")):
+        if len(cleaned) > 1 and cleaned.startswith(left) and cleaned.endswith(right):
+            cleaned = cleaned[1:-1].strip()
+            break
+    return cleaned
 
 
 def _images_of(shown: list[Event]) -> list[tuple[str, str]]:

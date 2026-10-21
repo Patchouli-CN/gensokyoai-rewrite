@@ -391,3 +391,59 @@ async def test_prose_fallback_sends_when_scene_allows():
 
     assert mouth.sent == [("觉", "绿色。")]
     assert loop.room.events[-1].kind == "reply"
+
+
+def test_salvage_extracts_payload_from_fake_tool_call():
+    """模型把工具调用写成正文：抢救出真正要说的话"""
+    from gensokyoai.loop import _salvage
+
+    cases = {
+        "send_message": "",
+        "send_message text 「thsss」的复数……是「thssss」啊。": (
+            "「thsss」的复数……是「thssss」啊。"
+        ),
+        'send_message("在的。")': "在的。",
+        '{"name": "send_message", "arguments": {"text": "在的。"}}': "在的。",
+        '<tool_call>{"name": "send_message", "arguments": {"text": "在的。"}}'
+        "</tool_call>": "在的。",
+        "在的。": "在的。",
+        "wait": "",
+    }
+    for raw, want in cases.items():
+        assert _salvage(raw) == want, raw
+
+
+async def test_protocol_leak_is_never_sent():
+    """写成工具调用格式的正文，宁可丢掉也不发到群里"""
+    mouth = _Mouth()
+    scene = _quiet_scene(mouth)
+    scene._gensokyo_scene = {**scene._gensokyo_scene, "on_prose": "send"}
+    loop = Loop(
+        Room("g1"),
+        _ScriptedMind(Reply(text="send_message")),
+        mouth,
+        scene=scene,
+    )
+
+    loop.notify("message", "帕秋莉", "在吗", user_id="u1")
+    await loop._turn()
+
+    assert mouth.sent == []
+
+
+async def test_protocol_leak_is_salvaged_when_possible():
+    """写得像工具调用但有真内容：抠出来照发"""
+    mouth = _Mouth()
+    scene = _quiet_scene(mouth)
+    scene._gensokyo_scene = {**scene._gensokyo_scene, "on_prose": "send"}
+    loop = Loop(
+        Room("g1"),
+        _ScriptedMind(Reply(text="send_message text 在的。")),
+        mouth,
+        scene=scene,
+    )
+
+    loop.notify("message", "帕秋莉", "在吗", user_id="u1")
+    await loop._turn()
+
+    assert mouth.sent == [("觉", "在的。")]
