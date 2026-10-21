@@ -78,12 +78,15 @@ def brain_think_user(persona, sender, content, context, memory, tools="", **_) -
 @prompt_mgr.prompt("brain.think")
 def brain_think(tool_style: str = "shout") -> str:
     # 工具约定双版本：原生模式不教喊话（模型会优先听 prompt 而放弃结构化通道）；
-    # 备胎模式明文教「调用 工具名 {...}」（不支持 tool_calls 的本地小模型靠这个）
-    tool_rule = (
-        "6. 需要外部信息时，直接使用系统提供的工具（原生 tool_calls），不要在 thought 里手写调用语句；工具结果会自动补充到下一轮思考中。"
-        if tool_style == "native"
-        else '6. 需要调用工具时，直接在 thought 里写：调用 工具名 {"参数": "值"}（例如：调用 days_until {"target_date": "2026-12-22"}；只有无参工具才写 {}）。参数必须写全，不许省略。系统会识别这句话、执行工具并把结果补充给你，不要自己在脑袋里假装执行结果。'
-    )
+    # 备胎模式明文教「调用 工具名 {...}」（不支持 tool_calls 的本地小模型靠这个）。
+    # 收尾行也分版本：原生 tool_calls 轮 content 本来就是空的，一刀切的
+    # 「只输出 JSON」会逼得模型把工具意图写成 JSON 文本（真机三轮喊话实证）
+    if tool_style == "native":
+        tool_rule = "6. 需要外部信息时，直接发起原生 tool_calls（该轮可以不输出 JSON），不要在 thought 里手写调用语句；工具结果会自动补充到下一轮思考中。"
+        closing = "不需要工具时只输出 JSON 对象，不要输出任何其他内容。"
+    else:
+        tool_rule = '6. 需要调用工具时，直接在 thought 里写：调用 工具名 {"参数": "值"}（例如：调用 days_until {"target_date": "2026-12-22"}；只有无参工具才写 {}）。参数必须写全，不许省略。系统会识别这句话、执行工具并把结果补充给你，不要自己在脑袋里假装执行结果。'
+        closing = "只输出 JSON 对象，不要输出任何其他内容。"
     return f"""你是角色扮演引擎的决策模块。你拥有“接力思考”能力，可以分多轮逐步深入推理。
 你每轮输出必须是一个 JSON 对象，包含以下字段：
 {{"thought": "当前回合的思考内容", "intent": "意图", "emotion": "情绪", "action_hint": "当前的行动指令（为 Responder 提供简短指导，不超过 30 字）", "confidence": 0.0, "need_continue_think": false}}
@@ -95,7 +98,7 @@ def brain_think(tool_style: str = "shout") -> str:
 4. 工具调用（如查询记忆）不计入思考轮数。当需要外部信息时，你可以直接调用工具；工具结果会自动补充到下一轮思考中。
 5. 如果思考超过了系统给定的最大轮数限制，系统会强制结束思考，你不需要关心这个限制。
 {tool_rule}
-只输出 JSON 对象，不要输出任何其他内容。"""
+{closing}"""
 
 
 @prompt_mgr.prompt("gate.system")

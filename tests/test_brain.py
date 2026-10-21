@@ -392,3 +392,96 @@ async def test_relay_think_survives_null_and_string_fields():
     assert conclusion.draft is None
     assert conclusion.confidence == 0.5
     assert len(sm._get_backend("brain.think").calls) == 1, '"false" 应读作不续轮'
+
+
+# ---------- 接力思考的动态温度（格式翻车 → 下一轮降温求稳） ----------
+
+
+def web_search(query: str) -> str:
+    """联网搜索"""
+    return "搜索结果"
+
+
+class _TempScriptedBackend:
+    """记录每轮温度、按脚本回话的假后端（带真后端同款的喊话识别）"""
+
+    def __init__(self, script: list[CompletionResult]) -> None:
+        self.script = script
+        self.temps: list[float] = []
+
+    async def chat(self, messages, *, temperature=0.7, **kw):
+        self.temps.append(temperature)
+        return self.script[len(self.temps) - 1]
+
+    def normalize_tool_calls(self, result, parsed_content=None):
+        from gensokyoai.models.llama_cpp import extract_text_tool_calls
+
+        text = ""
+        if parsed_content:
+            text = f"{parsed_content.get('thought', '')} {parsed_content.get('action_hint', '')}"
+        calls = extract_text_tool_calls(text)
+        if calls:
+            return CompletionResult(content=result.content, tool_calls=calls)
+        return result
+
+
+def _shout_json(thought: str) -> CompletionResult:
+    return CompletionResult(
+        content=f'{{"thought": "{thought}", "intent": "查", "emotion": "平静", '
+        '"action_hint": "", "confidence": 0.8, "need_continue_think": true}}'
+    )
+
+
+async def test_think_cools_down_after_tool_failure():
+    """工具翻车（喊话缺参 → 缺参错误回填）的下一轮：温度降到 0.2 求稳"""
+    from gensokyoai.schemas.model_schema import ToolSpec
+
+    backend = _TempScriptedBackend(
+        [
+            _shout_json("调用 web_search 查一下"),  # 无参喊话 → 缺参错误
+            CompletionResult(content=_think_json(action_hint="收尾")),
+        ]
+    )
+    sm = SessionManager()
+    sm.set_default_backend(backend)
+    engine = BrainEngine(sm, tools=[ToolSpec(web_search)])
+
+    await engine.think(_snapshot("查点东西"), [], BrainThinkEffort.MID)
+
+    assert backend.temps == [0.4, 0.2], "工具失败的下一轮应降温"
+
+
+async def test_think_cools_down_after_bad_json():
+    """输出非 JSON（纠偏重写）的下一轮：温度降到 0.2 求稳"""
+    backend = _TempScriptedBackend(
+        [
+            CompletionResult(content="这不是 JSON，是模型的碎碎念"),
+            CompletionResult(content=_think_json(action_hint="收尾")),
+        ]
+    )
+    sm = SessionManager()
+    sm.set_default_backend(backend)
+    engine = BrainEngine(sm)
+
+    await engine.think(_snapshot("随便聊聊"), [], BrainThinkEffort.MID)
+
+    assert backend.temps == [0.4, 0.2], "坏 JSON 的下一轮应降温"
+
+
+async def test_think_keeps_temperature_after_tool_success():
+    """工具调用成功：下一轮保持基准温度（降温只压格式翻车）"""
+    from gensokyoai.schemas.model_schema import ToolSpec
+
+    backend = _TempScriptedBackend(
+        [
+            _shout_json('调用 web_search {\\"query\\": \\"幻想乡\\"}'),  # 参数齐全 → 执行成功
+            CompletionResult(content=_think_json(action_hint="收尾")),
+        ]
+    )
+    sm = SessionManager()
+    sm.set_default_backend(backend)
+    engine = BrainEngine(sm, tools=[ToolSpec(web_search)])
+
+    await engine.think(_snapshot("查点东西"), [], BrainThinkEffort.MID)
+
+    assert backend.temps == [0.4, 0.4], "工具成功不降温"

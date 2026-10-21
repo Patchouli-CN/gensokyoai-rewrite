@@ -415,11 +415,10 @@ class ThinkPipeline(FluentAPI[ThinkStep]):
         # content——否则第一个引号匹配永远是 JSON 字段名（真机填进去过 'thought'）
         parsed = try_extract_json_object(result.content or "") or {}
         source = "\n".join(str(parsed.get(k, "")) for k in ("note", "thought", "action_hint"))
-        result_text = "\n".join(
-            await run_tool_calls(
-                calls, tools, source_text=source, timeout=timeout, max_result_chars=max_result_chars
-            )
+        outcomes = await run_tool_calls(
+            calls, tools, source_text=source, timeout=timeout, max_result_chars=max_result_chars
         )
+        result_text = "\n".join(o.to_model_text() for o in outcomes)
         return [
             *messages,
             Message(role="assistant", content=result.content or "", tool_calls=calls),

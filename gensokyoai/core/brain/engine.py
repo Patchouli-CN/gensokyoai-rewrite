@@ -27,6 +27,13 @@ _logger = LoggerManager.get_logger("BRAIN")
 _TOOL_RESULT_MARK = "\n【工具结果】"
 """ 行动指令里工具结果的起始标记：OOC 规则预筛只看它之前的模型自写部分 """
 
+_THINK_TEMPERATURE = 0.4
+""" 接力思考基准温度：想清楚需要一点发散 """
+
+_ERROR_COOLDOWN_TEMPERATURE = 0.2
+""" 格式翻车（输出非 JSON / 工具执行失败）后下一轮的降温值：
+重写格式是确定性任务，低温求稳；只压一轮，下下轮恢复基准 """
+
 # 情感/剧情词表集中在 salience.py（显著性打分与档位路由共用）
 _EMOTION_WORDS = EMOTION_WORDS
 _PLOT_WORDS = PLOT_WORDS
@@ -270,6 +277,8 @@ class BrainEngine:
         """ 上一轮输出不是合法 JSON 时的纠偏指令（与思考链同款 corrective retry） """
         fact_nudge_pending = force_tools
         """ 查证兜底只发一次：首轮没碰工具就想收尾时强制续轮查证 """
+        cool_next_round = False
+        """ 上一轮格式翻车（坏 JSON / 工具失败）→ 本轮降温求稳（只压一轮）"""
 
         while True:
             current_round += 1
@@ -310,11 +319,15 @@ class BrainEngine:
             messages = pc.render()
 
             try:
+                temperature = _ERROR_COOLDOWN_TEMPERATURE if cool_next_round else _THINK_TEMPERATURE
+                if cool_next_round:
+                    self._logger.info(f"上一轮格式翻车，本轮降温求稳（{temperature}）")
+                cool_next_round = False
                 result = await self._sessions.call(
                     "brain.think",
                     messages,
                     stateless=True,
-                    temperature=0.4,
+                    temperature=temperature,
                     max_new_tokens=400,
                     tools=self._tools,
                     # 原生调用也由脑层统一执行：与文本喊话同一条【工具执行结果】
@@ -344,6 +357,7 @@ class BrainEngine:
                 self._logger.warning(f"推理输出 JSON 解析失败: {result.content!r}")
                 if current_round < max_rounds:
                     json_correction = JSON_CORRECTION
+                    cool_next_round = True
                     continue
                 if steps or tool_result_cache:
                     break  # 最后一轮坏了：按此前的思考与工具结果收尾，不整轮作废
@@ -386,18 +400,21 @@ class BrainEngine:
                 # 抢救源文本用 thought + action_hint（字段值），不能用 result.content
                 # 原始 JSON——第一个引号匹配永远是字段名 "thought"（真机填进去过：
                 # days_until 收到 target_date='thought'）
-                tool_result_cache = "\n".join(
-                    await run_tool_calls(
-                        calls,
-                        self._tools,
-                        source_text=(
-                            f"{as_str(parsed.get('thought'))}\n{as_str(parsed.get('action_hint'))}"
-                        ),
-                        timeout=self._tool_timeout,
-                        max_result_chars=self._tool_max_result_chars,
-                    )
+                outcomes = await run_tool_calls(
+                    calls,
+                    self._tools,
+                    source_text=(
+                        f"{as_str(parsed.get('thought'))}\n{as_str(parsed.get('action_hint'))}"
+                    ),
+                    timeout=self._tool_timeout,
+                    max_result_chars=self._tool_max_result_chars,
                 )
+                tool_result_cache = "\n".join(o.to_model_text() for o in outcomes)
                 tool_used = True
+                if any(not o.ok for o in outcomes):
+                    # 工具翻车（缺参/错参/超时/异常）：错误文本会喂给下一轮，
+                    # 下一轮的任务是「按正确格式重写」——降温求稳
+                    cool_next_round = True
                 self._logger.info(f"工具调用结果: {tool_result_cache[:200]!r}")
                 if current_round >= max_rounds:
                     # 没有下一轮消化了：结果由循环后的兜底直接嵌进行动指令

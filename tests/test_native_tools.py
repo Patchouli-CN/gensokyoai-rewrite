@@ -466,3 +466,46 @@ async def test_probe_concurrent_first_calls_send_one_request():
     results = await asyncio.gather(*(provider.probe_native_tools() for _ in range(5)))
     assert results == [True] * 5
     assert len(provider.payloads) == 1
+
+
+def test_fill_single_param_bare_value():
+    """「调用 web_search 查询 Python 3.15 的最新状态。」——引号都不打时捞裸值"""
+    from gensokyoai.core.toolkit import fill_single_param_calls
+
+    def _search(query: str) -> str:
+        """搜索"""
+
+    spec = ToolSpec(tool_func=_search, name="web_search")
+    calls = [ToolCall(id="c1", name="web_search", arguments="{}")]
+    filled = fill_single_param_calls(
+        calls, [spec], "上一轮格式错误。现在重新调用 web_search 查询 Python 3.15 的最新状态。"
+    )
+    assert filled[0].arguments == '{"query": "Python 3.15 的最新状态"}'
+
+
+def test_fill_single_param_bare_value_quoted_wins():
+    """引号值与裸值同在：引号值优先（裸值可能捞到引导动词后的废话）"""
+    from gensokyoai.core.toolkit import fill_single_param_calls
+
+    def _needs_arg(target_date: str) -> str:
+        """倒计时"""
+
+    spec = ToolSpec(tool_func=_needs_arg, name="days_until")
+    calls = [ToolCall(id="c1", name="days_until", arguments="{}")]
+    filled = fill_single_param_calls(
+        calls, [spec], '调用 days_until 算一下还有几天，目标 "2026-12-22"。'
+    )
+    assert filled[0].arguments == '{"target_date": "2026-12-22"}'
+
+
+def test_fill_single_param_bare_value_garbage_rejected():
+    """工具名后只剩动词/过短残渣：不填，走缺参教学路径"""
+    from gensokyoai.core.toolkit import fill_single_param_calls
+
+    def _needs_arg(target_date: str) -> str:
+        """倒计时"""
+
+    spec = ToolSpec(tool_func=_needs_arg, name="days_until")
+    calls = [ToolCall(id="c1", name="days_until", arguments="{}")]
+    filled = fill_single_param_calls(calls, [spec], "我用 days_until 算一下")
+    assert filled[0].arguments == "{}"

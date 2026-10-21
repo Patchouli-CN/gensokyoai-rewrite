@@ -34,16 +34,43 @@ _TRUNCATED_MARK = "…（结果过长已截断）"
 _LONE_QUOTED_VALUE = re.compile(r"[\"“'‘]([^\"”'’]{1,120})[\"”'’]")
 """ 文本里孤零零的引号值（直/弯/单引号）——唯一必填参数工具的最后抢救对象 """
 
+_BARE_PARAM_LEADING = re.compile(
+    r"^(?:工具)?[，,：:\s]*(?:(?:查询|搜索|检索|查找|查一下|查|搜|找|算一下|算|一下)[，,：:\s]*)*"
+)
+""" 工具名之后的引导废话（动词与停顿），裸值抢救时剥掉 """
+
+_BARE_PARAM_TAIL = re.compile(r"[。！？!?；;，,、\n]")
+""" 裸值的终止边界（句读或换行）：模型的参数一口气写完，写到句读就停 """
+
+
+def _rescue_bare_value(source_text: str, tool_name: str) -> str:
+    """裸值抢救：工具名之后、无引号无花括号的自然语言参数。
+
+    真机写法：「调用 web_search 查询 Python 3.15 的最新状态。」——模型连引号
+    都懒得打，引号抢救和缺参教学都救不了（教学了三轮还是这么写）。剥掉工具名
+    后的动词停顿，截到句读为止；太短/太长都不可信，放弃（走缺参教学路径）。
+    """
+    idx = source_text.find(tool_name)
+    if idx == -1:
+        return ""
+    tail = _BARE_PARAM_LEADING.sub("", source_text[idx + len(tool_name) :])
+    if cut := _BARE_PARAM_TAIL.search(tail):
+        tail = tail[: cut.start()]
+    tail = tail.strip()
+    return tail if 2 <= len(tail) <= 60 else ""
+
 
 def fill_single_param_calls(
     tool_calls: list[ToolCall], tools: list[ToolSpec], source_text: str
 ) -> list[ToolCall]:
-    """spec 感知的最后一级参数抢救：唯一必填参数 + 空参调用 + 文本里有孤引号值 -> 填上。
+    """spec 感知的参数抢救：唯一必填参数 + 空参调用 -> 从文本里把值捞出来填上。
 
-    真机写法：「参数是 "2026-12-22"」——连参数名都不提，llama_cpp 的文本级
-    抢救救不了（它不知道参数名）。这一级在执行前做，因为这里有 spec：
-    当前带参工具（days_until / fetch_url / web_search）全是唯一必填参数，
-    引号值就是那个参数的值。填错了也不过工具报错 + 自教学重试，不会更糟。
+    两级打捞，引号优先：先找孤引号值（「参数是 "2026-12-22"」——连参数名都
+    不提，llama_cpp 的文本级抢救救不了，因为它不知道参数名；这一级在执行前做，
+    因为这里有 spec：当前带参工具（days_until / fetch_url / web_search）全是
+    唯一必填参数，引号值就是那个参数的值）；找不到再捞裸值
+    （「调用 web_search 查询 Python 3.15」——引号都不打，剥动词截句读）。
+    填错了也不过工具报错 + 自教学重试，不会更糟。
     """
     if not source_text:
         return tool_calls
@@ -58,17 +85,18 @@ def fill_single_param_calls(
             except ValueError:
                 args = None
         required = spec.required_params if spec is not None else []
-        if (
-            isinstance(args, dict)
-            and not args
-            and len(required) == 1
-            and (match := _LONE_QUOTED_VALUE.search(source_text))
-        ):
-            call = ToolCall(
-                id=call.id,
-                name=call.name,
-                arguments=json.dumps({required[0]: match.group(1)}, ensure_ascii=False),
-            )
+        if isinstance(args, dict) and not args and len(required) == 1:
+            value = ""
+            if match := _LONE_QUOTED_VALUE.search(source_text):
+                value = match.group(1)
+            else:
+                value = _rescue_bare_value(source_text, call.name)
+            if value:
+                call = ToolCall(
+                    id=call.id,
+                    name=call.name,
+                    arguments=json.dumps({required[0]: value}, ensure_ascii=False),
+                )
         filled.append(call)
     return filled
 
@@ -277,22 +305,24 @@ async def run_tool_calls(
     source_text: str = "",
     timeout: float = DEFAULT_TIMEOUT,
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
-) -> list[str]:
-    """参数抢救 -> 执行 -> 转成回填给模型的文本（接力思考与思考链共用）。
+) -> list[ToolResult]:
+    """参数抢救 -> 执行（接力思考与思考链共用）。
+
+    返回结构化结果而非回填文本——`ok` 标志留给调用方做决策（接力思考据此
+    在格式翻车的下一轮降温求稳）；回填文本由各调用方 `to_model_text()` 自拼。
 
     Args:
         calls: 待执行的工具调用（应已过 `known_calls`）
-        tools: 工具声明
+        tools: 本次可用的工具声明
         source_text: 参数抢救的源文本（模型 JSON 的字段值，不是原始 content）
         timeout: 单次执行超时（秒）
         max_result_chars: 结果最大字符数
 
     Returns:
-        list[str]: 与调用一一对应的回填文本
+        list[ToolResult]: 与调用一一对应的结构化结果
     """
     executor = build_executor(tools, timeout=timeout, max_result_chars=max_result_chars)
-    outcomes = await executor.execute_many(fill_single_param_calls(calls, tools, source_text))
-    return [outcome.to_model_text() for outcome in outcomes]
+    return await executor.execute_many(fill_single_param_calls(calls, tools, source_text))
 
 
 __all__ = [
