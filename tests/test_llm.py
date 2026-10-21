@@ -17,8 +17,13 @@ from gensokyoai.llm import (
 
 
 class _Resp:
-    def __init__(self, payload) -> None:
+    def __init__(self, payload, status: int = 200) -> None:
         self._payload = payload
+        self.status = status
+        self.reason = "OK"
+
+    async def text(self) -> str:
+        return ""
 
     async def __aenter__(self):
         return self

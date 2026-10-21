@@ -2,7 +2,7 @@
 
 import json
 
-from .base import HttpProvider, text_of
+from .base import HttpProvider, ModelError, read_error, text_of
 from .billing import Billing, FlatBilling, Rates
 from .types import Completion, Image, Text, ToolCall, Turn, Usage
 
@@ -154,7 +154,10 @@ class OpenAIProvider(HttpProvider):
         async with self.session().post(
             self._url, json=payload, headers=self._headers
         ) as response:
-            response.raise_for_status()
+            if response.status >= 400:
+                raise ModelError(
+                    response.status, await read_error(response, self._url), self._url
+                )
             data = await response.json()
         try:
             choice = data["choices"][0]

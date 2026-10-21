@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from .api import call_tool, spec_of
 from .health import HealthCenter
+from .llm.base import ModelError
 from .memory import Memory
 from .mind import Mind
 from .room import Event, Room
@@ -36,6 +37,9 @@ _MAX_STEPS = 4
 
 _IMPORTANCE = 0.6
 """ 记忆写入强度 """
+
+_MAX_ATTEMPTS = 3
+""" 同一批消息最多试几次（4xx 直接放弃，不纠缠） """
 
 _DEDUP_WINDOW_S = 20.0
 """ 同一句话在这个窗口内不重复发（秒） """
@@ -65,6 +69,7 @@ class Loop:
         scene=None,
         window: int = _WINDOW,
         max_steps: int = _MAX_STEPS,
+        max_attempts: int = _MAX_ATTEMPTS,
         retry_backoff: float = _BACKOFF_S,
         retry_backoff_max: float = _BACKOFF_MAX_S,
         bubble_gap: float | None = None,
@@ -103,6 +108,8 @@ class Loop:
         )
         self._window = max(0, window)
         self._max_steps = max(1, max_steps)
+        self._max_attempts = max(1, max_attempts)
+        self._attempts = 0
         self._retry_backoff = max(0.0, retry_backoff)
         self._retry_backoff_max = max(self._retry_backoff, retry_backoff_max)
         self._backoff = self._retry_backoff
@@ -150,18 +157,26 @@ class Loop:
             mentioned=mentioned,
             images=images,
         )
-        if self._should_wake(mentioned):
+        woke, reason = self._decide_wake(mentioned)
+        _logger.debug(f"{self.room.name} {'唤醒' if woke else '不唤醒'}（{reason}）")
+        if woke:
             self._wake.set()
+
+    def _decide_wake(self, mentioned: bool) -> tuple[bool, str]:
+        """要不要因为这条消息开一轮，以及理由（日志里要说清是哪种原因）。"""
+        if mentioned:
+            return True, "点名"
+        if self._wake_cooldown > 0:
+            gap = time.monotonic() - self._last_spoke
+            if gap < self._wake_cooldown:
+                return False, f"冷却中（还差 {self._wake_cooldown - gap:.0f}s）"
+        if self._rng() < self._wake_on_others:
+            return True, f"概率命中 {self._wake_on_others:g}"
+        return False, f"概率没中 {self._wake_on_others:g}"
 
     def _should_wake(self, mentioned: bool) -> bool:
         """要不要因为这条消息开一轮（消息本身已经入房，不影响上下文）。"""
-        if mentioned:
-            return self._rng() < self._wake_on_mention
-        if self._wake_cooldown > 0 and (
-            time.monotonic() - self._last_spoke < self._wake_cooldown
-        ):
-            return False
-        return self._rng() < self._wake_on_others
+        return self._decide_wake(mentioned)[0]
 
     async def run(self) -> None:
         """常驻循环（被取消退出；单轮失败退避重试）。"""
@@ -174,21 +189,52 @@ class Loop:
                     await self._turn()
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # 单轮失败不退出循环
-                    _logger.exception(
-                        f"{self.room.name} 回合失败，{self._backoff:.1f}s 后重试"
-                    )
+                except Exception as err:  # noqa: BLE001 - 单轮任何失败都不该让房间死掉
                     if self._health is not None:
                         self._health.count(f"{self.room.name}.turn_errors")
+                    self._attempts += 1
+                    if self._give_up(err):
+                        _logger.error(
+                            f"{self.room.name} 放弃这一批"
+                            f"（第 {self._attempts} 次）：{err}"
+                        )
+                        self._attempts = 0
+                        self.room.take_feed(self._window)  # 别拿坏输入卡死房间
+                        break
+                    _logger.warning(
+                        f"{self.room.name} 回合失败，{self._backoff:.1f}s 后重试"
+                        f"（{err}）"
+                    )
                     await asyncio.sleep(self._backoff)
                     self._backoff = min(self._backoff * 2, self._retry_backoff_max)
                     continue
                 self._backoff = self._retry_backoff
+                self._attempts = 0
                 if self._health is not None:
                     self._health.observe(
                         f"{self.room.name}.turn_s", time.monotonic() - started
                     )
                 break
+
+    async def _step(self, shown: list[Event], gap: dict | None):
+        """问模型一次；带图被端点拒了就去掉图再问一次（图不该让整轮失联）。"""
+        images = _images_of(shown)
+        payload = await self._feed(shown, gap)
+        try:
+            return await self.mind.step(payload, self._scene, images=images)
+        except ModelError as err:
+            if not images or err.retryable:
+                raise
+            _logger.warning(
+                f"{self.room.name} 带图请求被拒（HTTP {err.status}），去掉图重试"
+            )
+            return await self.mind.step(payload, self._scene, images=None)
+
+    def _give_up(self, err: Exception) -> bool:
+        """这一批要不要放弃：请求本身有问题（4xx）重试没用，重试次数到顶也不再纠缠。"""
+        if isinstance(err, ModelError) and not err.retryable:
+            return True
+        return self._attempts >= self._max_attempts
 
     async def _turn(self) -> None:
         """一个回合：投递未读 → 模型选动作 → 照做 → 可能要再来一次。"""
@@ -198,9 +244,7 @@ class Loop:
             for _ in range(self._max_steps):
                 if not shown:
                     return
-                reply = await self.mind.step(
-                    await self._feed(shown, gap), self._scene, images=_images_of(shown)
-                )
+                reply = await self._step(shown, gap)
                 if not reply.calls:
                     await self._on_prose(reply.text)
                     return

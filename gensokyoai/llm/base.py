@@ -8,6 +8,30 @@ from .billing import Balance
 from .types import Completion, Turn
 
 
+class ModelError(RuntimeError):
+    """端点回了错误状态码（带上状态码与响应体，否则排查时只能靠猜）。"""
+
+    def __init__(self, status: int, body: str, url: str = "") -> None:
+        self.status = status
+        self.body = body
+        self.url = url
+        super().__init__(f"HTTP {status}{' ' + url if url else ''}: {body[:300]}")
+
+    @property
+    def retryable(self) -> bool:
+        """429 与 5xx 值得重试；其余 4xx 是请求本身有问题，重试没用。"""
+        return self.status == 429 or self.status >= 500
+
+
+async def read_error(response: aiohttp.ClientResponse, url: str = "") -> str:
+    """把错误响应的正文读出来（原样给日志和用户看）。"""
+    try:
+        body = await response.text()
+    except (aiohttp.ClientError, UnicodeDecodeError):
+        body = ""
+    return body.strip() or response.reason or ""
+
+
 class Provider(Protocol):
     """一家模型厂商的最小接口。"""
 

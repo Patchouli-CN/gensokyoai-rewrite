@@ -21,6 +21,7 @@ class Hub:
         self._factory = factory
         self._loops: dict[str, Loop] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._closing = False
 
     def get(self, room_id: str) -> Loop:
         """取房间循环；不存在则创建并启动，任务已退出则重启。"""
@@ -31,8 +32,9 @@ class Hub:
             self._start(room_id, loop)
             return loop
         task = self._tasks.get(room_id)
-        if task is not None and task.done() and not task.cancelled():
-            _logger.error(f"房间 {room_id} 的循环任务已退出，重启")
+        if task is not None and task.done() and not self._closing:
+            # 被取消也算死了：消息还在进房，任务却不在了，房间会永远不回声
+            _logger.warning(f"房间 {room_id} 的循环任务已退出，重启")
             self._start(room_id, loop)
         return loop
 
@@ -49,11 +51,25 @@ class Hub:
         return list(self._loops)
 
     def _start(self, room_id: str, loop: Loop) -> None:
-        """起一个房间循环任务。"""
-        self._tasks[room_id] = asyncio.create_task(loop.run(), name=f"loop:{room_id}")
+        """起一个房间循环任务，并盯着它——循环悄悄死掉会让房间永远不回话。"""
+        task = asyncio.create_task(loop.run(), name=f"loop:{room_id}")
+        task.add_done_callback(lambda done, rid=room_id: self._on_done(rid, done))
+        self._tasks[room_id] = task
+
+    def _on_done(self, room_id: str, task: asyncio.Task) -> None:
+        """任务结束时把原因说清楚（正常退出、异常、被取消）。"""
+        if task.cancelled():
+            _logger.debug(f"房间 {room_id} 的循环任务被取消")
+            return
+        error = task.exception()
+        if error is not None:
+            _logger.error(f"房间 {room_id} 的循环任务异常退出: {error!r}")
+            return
+        _logger.warning(f"房间 {room_id} 的循环任务自己退出了（下条消息会重启）")
 
     async def shutdown(self) -> None:
         """停掉全部循环任务（进程退出时调）。"""
+        self._closing = True
         for task in self._tasks.values():
             task.cancel()
         if self._tasks:

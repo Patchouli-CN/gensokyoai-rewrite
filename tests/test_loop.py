@@ -3,6 +3,8 @@
 import asyncio
 from typing import ClassVar
 
+import pytest
+
 from gensokyoai.loop import Loop, SceneContext
 from gensokyoai.model import Reply, ToolCall
 from gensokyoai.room import Room
@@ -447,3 +449,60 @@ async def test_protocol_leak_is_salvaged_when_possible():
     await loop._turn()
 
     assert mouth.sent == [("觉", "在的。")]
+
+
+async def test_permanent_error_drops_batch_instead_of_looping():
+    """4xx 是请求本身有问题：放弃这一批，别拿它卡死房间"""
+    from gensokyoai.llm.base import ModelError
+
+    calls = []
+
+    class _Rejecting:
+        name = "觉"
+
+        async def step(self, feed, scene=None, images=None):
+            calls.append(len(feed["events"]))
+            raise ModelError(400, "invalid image", "http://x")
+
+    room = Room("g1")
+    room.append("message", "帕秋莉", "看这张 [图片×1]", user_id="u1")
+    loop = Loop(room, _Rejecting(), _Mouth(), retry_backoff=0.01)
+
+    with pytest.raises(ModelError):
+        await loop._turn()
+
+    assert loop._give_up(ModelError(400, "", "http://x")) is True
+    assert loop._give_up(ModelError(500, "", "http://x")) is False
+    assert loop._give_up(ConnectionError("断网")) is False
+
+
+async def test_image_rejection_retries_without_images():
+    """带图被端点拒（400）：去掉图再问一次，别让整轮失联"""
+    from gensokyoai.llm.base import ModelError
+
+    seen = []
+
+    class _Pickey:
+        name = "觉"
+
+        async def step(self, feed, scene=None, images=None):
+            seen.append(bool(images))
+            if images:
+                raise ModelError(400, "image too large", "http://x")
+            return _say("在。")
+
+    room = Room("g1")
+    room.append(
+        "message",
+        "帕秋莉",
+        "看这张",
+        user_id="u1",
+        images=("data:image/png;base64,AA",),
+    )
+    mouth = _Mouth()
+    loop = Loop(room, _Pickey(), mouth)
+
+    await loop._turn()
+
+    assert seen == [True, False], "先带图、再不带图"
+    assert mouth.sent == [("觉", "在。")]
