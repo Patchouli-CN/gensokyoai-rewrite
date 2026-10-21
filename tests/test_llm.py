@@ -4,15 +4,15 @@ from typing import ClassVar
 
 from gensokyoai.llm import (
     AnthropicProvider,
+    FlatBilling,
     Image,
     OpenAIProvider,
-    Prices,
     Quota,
+    Rates,
     Text,
     Turn,
     Usage,
     UsageLedger,
-    price_for,
 )
 
 
@@ -211,17 +211,23 @@ async def test_anthropic_payload_shape(monkeypatch):
     assert completion.usage.prompt_tokens == 900
 
 
-def test_price_lookup_prefers_longest_prefix():
-    """gpt-4o-mini 不能被 gpt-4o 吃掉"""
-    assert price_for("gpt-4o-mini-2024").input == 0.15
-    assert price_for("gpt-4o-2024").input == 2.50
-    assert price_for("unknown-model").input == 0.0
+def test_vendor_tables_live_with_their_adapter():
+    """价格表跟着适配器：OpenAI 的价不掺别家，最长前缀优先"""
+    from gensokyoai.llm import anthropic, openai
+
+    mini = openai.billing_for("gpt-4o-mini-2024")
+    full = openai.billing_for("gpt-4o-2024")
+    assert mini is not None and mini.rates.input == 0.15
+    assert full is not None and full.rates.input == 2.50
+    assert openai.billing_for("deepseek-flash") is None, "别家的价不该出现在这张表里"
+    assert anthropic.billing_for("claude-sonnet-4") is not None
+    assert anthropic.billing_for("unknown-model") is None, "不认识就不给价"
 
 
 def test_cost_and_ledger():
     """花费按百万 token 算，账本累加"""
-    prices = Prices(input=3.00, output=15.00, cached=0.30)
-    ledger = UsageLedger(prices)
+    billing = FlatBilling(Rates(input=3.00, output=15.00, cached=0.30))
+    ledger = UsageLedger(billing)
 
     spent = ledger.record(
         Usage(prompt_tokens=1_000_000, completion_tokens=1_000_000, cached_tokens=0)
@@ -235,11 +241,21 @@ def test_cost_and_ledger():
 
 def test_cached_tokens_are_cheaper():
     """命中缓存的输入按缓存价算"""
-    prices = Prices(input=1.00, output=0.0, cached=0.10)
+    rates = Rates(input=1.00, output=0.0, cached=0.10)
     assert (
-        round(prices.cost(Usage(prompt_tokens=1_000_000, cached_tokens=1_000_000)), 6)
+        round(rates.cost(Usage(prompt_tokens=1_000_000, cached_tokens=1_000_000)), 6)
         == 0.1
     )
+
+
+def test_ledger_without_billing_records_tokens_only():
+    """厂商不提供计费：只记 token，摘要里说明"""
+    ledger = UsageLedger()
+
+    ledger.record(Usage(prompt_tokens=100, completion_tokens=10))
+
+    assert ledger.cost == 0.0
+    assert "未提供计费" in ledger.summary()
 
 
 class _Unused:

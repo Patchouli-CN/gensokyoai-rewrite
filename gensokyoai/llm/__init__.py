@@ -2,34 +2,48 @@
 
 from .anthropic import AnthropicProvider
 from .base import Provider
-from .billing import BUILTIN, Prices, Quota, UsageLedger, price_for
+from .billing import (
+    BEIJING,
+    Billing,
+    FlatBilling,
+    PeakBilling,
+    Quota,
+    Rates,
+    UsageLedger,
+    symbol,
+)
 from .caps import ALL as ALL_CAPABILITIES
 from .caps import AUDIO, IMAGE, TEXT, VIDEO, detect, normalize
+from .deepseek import DeepSeekProvider
 from .openai import OpenAIProvider
 from .types import Completion, Image, Part, Text, ToolCall, Turn, Usage
 
 PROVIDERS = {
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
+    "deepseek": DeepSeekProvider,
 }
 """ 可选的厂商名 """
 
 __all__ = [
     "ALL_CAPABILITIES",
     "AUDIO",
-    "BUILTIN",
+    "BEIJING",
     "IMAGE",
     "PROVIDERS",
     "TEXT",
     "VIDEO",
     "AnthropicProvider",
+    "Billing",
     "Completion",
+    "DeepSeekProvider",
+    "FlatBilling",
     "Image",
     "OpenAIProvider",
     "Part",
-    "Prices",
-    "Provider",
+    "PeakBilling",
     "Quota",
+    "Rates",
     "Text",
     "ToolCall",
     "Turn",
@@ -38,7 +52,7 @@ __all__ = [
     "build_provider",
     "detect",
     "normalize",
-    "price_for",
+    "symbol",
 ]
 
 

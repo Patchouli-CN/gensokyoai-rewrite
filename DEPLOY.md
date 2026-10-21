@@ -80,15 +80,57 @@ billing:
 - 本地端点不需要模型名和令牌，留空即不发
 - 再加一家：实现 `Provider.complete`，塞进 `gensokyoai/llm/__init__.py` 的 `PROVIDERS`
 
-## 计费：两种口径
+## 计费：价格跟着适配器
 
-**按 token 计费（按量付费）** —— 每次补全按厂商回的 `usage` 记账，输入 / 输出 /
-缓存命中分开算。价格按模型名前缀查内置表（`gpt-4o-mini`、`deepseek-chat`、
-`claude-sonnet`…），也可以在 `billing.price` 里写死。本地模型没有价格 = 只记
-token 不算钱。
+计费是一个 Protocol（`currency` / `cost()` / `describe()`），各家适配器带自己的
+价格，引擎只问「这一次花多少」：
 
-**滚动窗口额度（订阅制的墙）** —— Claude Pro/Max 这种没有单价、只有 5h / 7d 的
-用量墙。写 `billing.quotas` 就能看到自己离墙多远：
+| 适配器 | 价格 | 说明 |
+|---|---|---|
+| `openai` | USD，模型名前缀查官方价 | `gpt-4o-mini` / `gpt-4o` |
+| `anthropic` | USD | `claude-*` |
+| `deepseek` | **CNY + 峰谷** | 空闲半价，缓存命中单独一档 |
+| 其它 | 不提供 | 账本只记 token，摘要写「该厂商未提供计费」 |
+
+换一家不只要改 `base_url`，`provider` 也要跟着换——价格挂在适配器上：
+
+```yaml
+model:
+  provider: deepseek
+  base_url: https://api.deepseek.com/v1
+  name: deepseek-flash
+```
+
+想覆盖适配器的价（比如拿到更低的协议价）：
+
+```yaml
+billing:
+  price:
+    currency: USD
+    input: 1.0            # 平常价（峰谷模型里就是空闲价）
+    output: 4.0
+    cached: 0.02
+    peak:                 # 给了高峰价就启用峰谷
+      input: 2.0
+      output: 8.0
+      cached: 0.04
+    peak_hours: ["9-12", "14-18"]      # 北京时间
+    peak_weekdays: [1, 2, 3, 4, 5]
+    holidays: ["2026-01-01"]           # 这些天全天按平常价
+```
+
+**DeepSeek 的峰谷**（官方口径，已内置）：高峰是北京时间工作日 9-12、14-18，
+其余时间（含周末、法定节假日）算空闲：
+
+| 模型 | 空闲（元/百万） | 高峰（元/百万） |
+|---|---|---|
+| `deepseek-flash` | 1 输入 / 4 输出 / 0.02 缓存 | 2 / 8 / 0.04 |
+| `deepseek-v4-pro` | 4.5 / 13.5 / 0.15 | 9 / 27 / 0.30 |
+
+节假日引擎猜不到，要准确就在 `holidays` 里列出来；不列就按「工作日 9-12、14-18」
+判断。旧名 `deepseek-v4-flash` 按 flash 计费。
+
+**窗口额度（订阅制的墙）** —— Claude Pro/Max 这种没有单价、只有 5h / 7d 的用量墙：
 
 ```yaml
 quotas:
@@ -99,9 +141,13 @@ quotas:
 ```
 
 - 用量过 80% 打一条 warning，过 100% 再打一条，每个窗口每档只喊一次
-- `/doctor` 里能看到累计 `llm.prompt_tokens` / `llm.completion_tokens` / `llm.cost_usd`，
+- `/doctor` 里能看到累计 `llm.prompt_tokens` / `llm.completion_tokens`，
   以及每个窗口已用多少
 - `billing.usage` 落一行一条流水，重启后窗口接着算；超出最长窗口的老流水会被丢掉
+
+**再加一家**：在 `gensokyoai/llm/<vendor>.py` 里实现 `Provider.complete`，
+带一个 `billing`（`FlatBilling` / `PeakBilling` 够用，特殊口径自己实现 `Billing` 协议），
+然后注册进 `PROVIDERS`。
 
 ### 关思考
 

@@ -3,7 +3,23 @@
 import json
 
 from .base import HttpProvider, text_of
+from .billing import Billing, FlatBilling, Rates
 from .types import Completion, Image, Text, ToolCall, Turn, Usage
+
+_TABLE: dict[str, Rates] = {
+    "gpt-4o-mini": Rates(input=0.15, output=0.60),
+    "gpt-4o": Rates(input=2.50, output=10.00),
+}
+""" OpenAI 官方价（USD / 百万 token） """
+
+
+def billing_for(model: str) -> Billing | None:
+    """按模型名找官方价；表里没有就返回 None（当成不支持计费）。"""
+    hits = [key for key in _TABLE if model and model.lower().startswith(key.lower())]
+    if not hits:
+        return None
+    key = max(hits, key=len)
+    return FlatBilling(_TABLE[key], currency="USD", label=key)
 
 
 def _arguments(raw) -> dict:
@@ -46,6 +62,7 @@ class OpenAIProvider(HttpProvider):
         think: bool | None = False,
         extra: dict | None = None,
         timeout: float = 120.0,
+        billing: Billing | None = None,
     ) -> None:
         """初始化。
 
@@ -57,6 +74,7 @@ class OpenAIProvider(HttpProvider):
             think: 是否开思考；None = 不发这个厂商专有字段
             extra: 原样并进请求体（厂商专有参数）
             timeout: 单次补全时限（秒）
+            billing: 计费口径（None = 按模型名查官方价，查不到就算不支持）
         """
         super().__init__(timeout)
         self._url = f"{base_url.rstrip('/')}/chat/completions"
@@ -66,6 +84,8 @@ class OpenAIProvider(HttpProvider):
             self._headers.setdefault("Authorization", f"Bearer {api_key}")
         self._think = think
         self._extra = extra or {}
+        self.billing = billing if billing is not None else billing_for(model)
+        """ 计费口径（None = 这家不给价，只记 token） """
 
     def _content(self, turn: Turn):
         """内容块 -> OpenAI 的 content（纯文字给字符串，带图给数组）。"""

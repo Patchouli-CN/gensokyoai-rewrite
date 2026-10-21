@@ -14,7 +14,7 @@ def test_no_default_file_falls_back_to_local_defaults(tmp_path, monkeypatch):
 
     assert settings.model.base_url.endswith("8080/v1")
     assert settings.model.name == ""
-    assert settings.prices().input == 0.0, "没配单价、模型名不在内置表里 = 不算钱"
+    assert settings.billing_of() is None, "没写价 -> 交给适配器（本地模型就是没有）"
     assert settings.quotas() == ()
 
 
@@ -81,7 +81,9 @@ billing:
     assert settings.model.api_key == "sk-ant-test"
     assert settings.model.think is None, "null = 不发厂商专有字段"
     assert settings.model.timeout == 90
-    assert settings.prices().output == 15.0
+    billing = settings.billing_of()
+    assert billing is not None and billing.currency == "USD"
+    assert billing.rates.output == 15.0
     quotas = settings.quotas()
     assert [quota.label for quota in quotas] == ["5h", "7d"]
     assert quotas[1].tokens == 1_000_000
@@ -93,7 +95,7 @@ def test_zero_quota_entries_are_ignored():
     assert settings.quotas() == ()
 
 
-def test_ledger_path_is_made_absolute_against_base_dir(tmp_path):
+def test_usage_path_is_made_absolute_against_base_dir(tmp_path):
     """相对路径按给定的基准目录解析（两个宿主的 cwd 不一样）"""
     path = tmp_path / "settings.yaml"
     path.write_text(
@@ -106,8 +108,8 @@ def test_ledger_path_is_made_absolute_against_base_dir(tmp_path):
     )
     settings = load_settings(path)
 
-    ledger = settings.build_ledger(base_dir=tmp_path)
-    ledger.record(_usage(50))
+    model = settings.build_model(usage_path=settings.usage_path(base_dir=tmp_path))
+    model.ledger.record(_usage(50))
 
     assert (tmp_path / "data" / "usage.jsonl").exists()
 
@@ -118,12 +120,17 @@ def _usage(tokens: int):
     return Usage(prompt_tokens=tokens)
 
 
-def test_model_name_lookup_when_price_absent(tmp_path):
-    """文件里没写单价，但模型名在内置表里 -> 按内置价算"""
+def test_provider_supplies_price_when_config_has_none(tmp_path):
+    """文件里没写单价：适配器按模型名给官方价"""
     path = tmp_path / "settings.yaml"
-    path.write_text("model:\n  name: deepseek-chat\n", encoding="utf-8")
+    path.write_text(
+        "model:\n  provider: deepseek\n  name: deepseek-flash\n", encoding="utf-8"
+    )
 
     settings = load_settings(path)
+    model = settings.build_model()
 
-    assert settings.prices().input == 0.27
+    assert settings.billing_of() is None, "配置没写价"
+    assert model.billing is not None, "适配器带了自己的价"
+    assert model.billing.currency == "CNY"
     assert isinstance(settings, Settings)

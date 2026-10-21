@@ -8,7 +8,7 @@ from pathlib import Path
 import msgspec
 import yaml
 
-from .llm import Prices, Quota, UsageLedger, price_for
+from .llm import Billing, FlatBilling, PeakBilling, Quota, Rates
 from .model import DEFAULT_TIMEOUT_S, ChatModel
 
 
@@ -45,18 +45,47 @@ class ModelSettings(msgspec.Struct, frozen=True):
     """ 启动时问端点要一次能力（问不到就按名字猜，再不行用上面的声明） """
 
 
-class PriceSettings(msgspec.Struct, frozen=True):
-    """单价（USD / 百万 token）；全 0 = 不记钱。"""
+class RatesSettings(msgspec.Struct, frozen=True):
+    """一档价（每百万 token）。"""
 
     input: float = 0.0
     output: float = 0.0
     cached: float = 0.0
 
-    def to_prices(self) -> Prices | None:
-        """全 0 表示没配，交给内置表按模型名查。"""
-        if not (self.input or self.output or self.cached):
+    def to_rates(self) -> Rates:
+        """转成计费层用的数字。"""
+        return Rates(input=self.input, output=self.output, cached=self.cached)
+
+
+class PriceSettings(msgspec.Struct, frozen=True):
+    """自定义单价；全 0 = 用适配器自带的价（厂商官方价）。"""
+
+    currency: str = "USD"
+    input: float = 0.0
+    output: float = 0.0
+    cached: float = 0.0
+    peak: RatesSettings | None = None
+    """ 高峰价（不给就是不分时段的一口价） """
+    peak_weekdays: tuple[int, ...] = (1, 2, 3, 4, 5)
+    peak_hours: tuple[str, ...] = ("9-12", "14-18")
+    holidays: tuple[str, ...] = ()
+    """ 法定节假日（这些天按平常价，不分时段） """
+
+    def to_billing(self) -> Billing | None:
+        """全 0 表示没配，交给适配器自己的价。"""
+        if not (self.input or self.output or self.cached or self.peak):
             return None
-        return Prices(input=self.input, output=self.output, cached=self.cached)
+        off = Rates(input=self.input, output=self.output, cached=self.cached)
+        if self.peak is None:
+            return FlatBilling(off, currency=self.currency)
+        return PeakBilling(
+            off,
+            self.peak.to_rates(),
+            currency=self.currency,
+            weekdays=self.peak_weekdays,
+            hours=parse_hours(self.peak_hours),
+            holidays=self.holidays,
+        )
 
 
 class QuotaSettings(msgspec.Struct, frozen=True):
@@ -86,13 +115,9 @@ class Settings(msgspec.Struct, frozen=True):
     model: ModelSettings = msgspec.field(default_factory=ModelSettings)
     billing: BillingSettings = msgspec.field(default_factory=BillingSettings)
 
-    def prices(self) -> Prices | None:
-        """配了单价就用配的，否则按模型名查内置表。"""
-        return self.model_price() or price_for(self.model.name)
-
-    def model_price(self) -> Prices | None:
-        """只看配置文件里写的单价。"""
-        return self.billing.price.to_prices()
+    def billing_of(self) -> Billing | None:
+        """配置里写死价就用它；没写就用适配器自带的官方价。"""
+        return self.billing.price.to_billing()
 
     def quotas(self) -> tuple[Quota, ...]:
         """窗口额度（额度和钱都为 0 的条目忽略）。"""
@@ -102,17 +127,23 @@ class Settings(msgspec.Struct, frozen=True):
             if quota.tokens or quota.cost
         )
 
-    def build_ledger(self, base_dir: Path | None = None) -> UsageLedger:
-        """按配置造账本（含窗口与流水路径）。"""
-        path = None
-        if self.billing.usage:
-            path = Path(self.billing.usage)
-            if base_dir is not None and not path.is_absolute():
-                path = base_dir / path
-        return UsageLedger(self.prices(), quotas=self.quotas(), path=path)
+    def usage_path(self, base_dir: Path | None = None) -> Path | None:
+        """用量流水路径（相对路径按 base_dir 解析）。"""
+        if not self.billing.usage:
+            return None
+        path = Path(self.billing.usage)
+        if base_dir is not None and not path.is_absolute():
+            path = base_dir / path
+        return path
 
-    def build_model(self, health=None, *, ledger=None, base_url: str = "") -> ChatModel:
-        """按配置造模型端点。"""
+    def build_model(
+        self,
+        health=None,
+        *,
+        base_url: str = "",
+        usage_path: Path | None = None,
+    ) -> ChatModel:
+        """按配置造模型端点（顺带建账本）。"""
         model = self.model
         return ChatModel(
             base_url or model.base_url,
@@ -123,7 +154,9 @@ class Settings(msgspec.Struct, frozen=True):
             timeout=model.timeout,
             extra=model.extra or None,
             capabilities=model.capabilities,
-            ledger=ledger or self.build_ledger(),
+            billing=self.billing_of(),
+            quotas=self.quotas(),
+            usage_path=usage_path or self.usage_path(),
             health=health,
         )
 
@@ -186,3 +219,23 @@ def load_settings(path: str | Path | None = None) -> Settings:
         return msgspec.convert(raw, Settings, strict=False)
     except msgspec.ValidationError as err:
         raise ValueError(f"配置文件字段不对（{target}）: {err}") from err
+
+
+def parse_hours(items) -> tuple[tuple[int, int], ...]:
+    """`["9-12", "14-18"]` -> `((9, 12), (14, 18))`。
+
+    Raises:
+        ValueError: 写法不对，或起止反了
+    """
+    found: list[tuple[int, int]] = []
+    for item in items or ():
+        raw = str(item).replace("：", ":").replace("-", "-").strip()
+        start, _, end = raw.partition("-")
+        try:
+            left, right = int(start), int(end)
+        except ValueError as err:
+            raise ValueError(f"时段写法不对（应形如 9-12）: {item!r}") from err
+        if not (0 <= left < right <= 24):
+            raise ValueError(f"时段不合法（0 ≤ 起 < 止 ≤ 24）: {item!r}")
+        found.append((left, right))
+    return tuple(found) or ((9, 12), (14, 18))

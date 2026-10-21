@@ -1,9 +1,26 @@
 """Anthropic 适配器 —— POST /messages（工具与图片的块结构都跟 OpenAI 不一样）。"""
 
 from .base import HttpProvider, text_of
+from .billing import Billing, FlatBilling, Rates
 from .types import Completion, Image, Text, ToolCall, Turn, Usage
 
 _API_VERSION = "2023-06-01"
+
+_TABLE: dict[str, Rates] = {
+    "claude-3-5-haiku": Rates(input=0.80, output=4.00),
+    "claude-sonnet": Rates(input=3.00, output=15.00),
+    "claude-opus": Rates(input=15.00, output=75.00),
+}
+""" Anthropic 官方价（USD / 百万 token） """
+
+
+def billing_for(model: str) -> Billing | None:
+    """按模型名找官方价；表里没有就不支持计费。"""
+    hits = [key for key in _TABLE if model and model.lower().startswith(key.lower())]
+    if not hits:
+        return None
+    key = max(hits, key=len)
+    return FlatBilling(_TABLE[key], currency="USD", label=key)
 
 
 def _split_data_url(url: str) -> tuple[str, str]:
@@ -75,6 +92,8 @@ class AnthropicProvider(HttpProvider):
         if api_key:
             self._headers.setdefault("x-api-key", api_key)
         self._extra = extra or {}
+        self.billing = billing_for(model)
+        """ 计费口径（None = 这家不给价，只记 token） """
 
     def _blocks(self, turn: Turn) -> list[dict]:
         """内容块 -> Anthropic 的 content 数组。"""

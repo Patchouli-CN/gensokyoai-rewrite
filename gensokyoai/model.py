@@ -4,15 +4,15 @@ import msgspec
 
 from .llm import (
     IMAGE,
+    Billing,
     Image,
-    Prices,
+    Quota,
     Text,
     Turn,
     UsageLedger,
     build_provider,
     detect,
     normalize,
-    price_for,
 )
 from .llm.types import ToolCall
 from .utils.logger import LoggerManager
@@ -46,7 +46,9 @@ class ChatModel:
         think: bool | None = False,
         timeout: float = DEFAULT_TIMEOUT_S,
         extra: dict | None = None,
-        prices: Prices | None = None,
+        billing: Billing | None = None,
+        quotas: tuple[Quota, ...] = (),
+        usage_path=None,
         ledger: UsageLedger | None = None,
         capabilities=None,
         health=None,
@@ -55,15 +57,17 @@ class ChatModel:
 
         Args:
             base_url: 端点地址（llama-server 的 /v1、各家的 API 根路径）
-            provider: 厂商名（openai / anthropic）
+            provider: 厂商名（openai / anthropic / deepseek）
             name: 模型名（云端必填，llama-server 可空）
             api_key: 令牌（空 = 不带鉴权头）
             headers: 额外请求头
             think: 思考开关；None = 连这个厂商专有字段都不发
             timeout: 单次补全时限（秒）
             extra: 原样并进请求体的厂商专有参数
-            prices: 价格（None = 按模型名查内置表）
-            ledger: 共用的用量账本（None = 自建一个只算钱的）
+            billing: 覆盖厂商自带的计费口径（None = 用适配器的）
+            quotas: 滚动窗口额度
+            usage_path: 用量流水路径（None = 不落盘）
+            ledger: 现成的账本（None = 自建）
             capabilities: 能力声明（None = text + image）
             health: 健康中心（None = 不记账）
         """
@@ -85,7 +89,15 @@ class ChatModel:
         self._endpoint = base_url
         self._api_key = api_key
         self._headers = headers
-        self.ledger = ledger or UsageLedger(prices or price_for(name))
+        self.billing = (
+            billing if billing is not None else getattr(self._provider, "billing", None)
+        )
+        """ 计费口径（None = 这家不给价，只记 token） """
+        if self.billing is None:
+            _logger.debug(f"{kind} 没有提供计费口径，只记 token")
+        self.ledger = ledger or UsageLedger(
+            self.billing, quotas=quotas, path=usage_path
+        )
         self._health = health
         self._warned_reasoning = False
 

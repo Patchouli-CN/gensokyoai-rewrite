@@ -4,13 +4,20 @@
 # 订阅制（Claude Pro/Max）没有单价、只有窗口墙：跳过 price，填 quotas。
 
 model:
-  provider: openai                        # openai（兼容端点）/ anthropic
+  provider: openai                        # openai / anthropic / deepseek
   base_url: http://127.0.0.1:8080/v1
-  name: ""                                # 云端必填：deepseek-chat / gpt-4o-mini / claude-sonnet-4-...
+  name: ""                                # 云端必填：deepseek-flash / gpt-4o-mini / claude-sonnet-4-...
   api_key: ""                             # 本地留空；云端填令牌
   think: false                            # null = 连这个厂商专有字段都不发
   timeout: 120
   extra: {}                               # 原样并进请求体（厂商专有参数）
+
+  # 换 DeepSeek 长这样（provider 换成 deepseek，价和峰谷它自己带）：
+  #   provider: deepseek
+  #   base_url: https://api.deepseek.com/v1
+  #   name: deepseek-flash
+  #   think: null
+  #   extra: {thinking: {type: disabled}}   # 它默认开思考，会把输出 token 烧一半
 
   # 能干哪些活：text / image（audio、video 只是占位，传输还没做）。
   # 启动时会先问端点（有的服务在 /v1/models 里自报），问不到再按模型名猜，
@@ -19,11 +26,20 @@ model:
   auto_detect: true
 
 billing:
-  # 按 token 计费（USD / 百万 token）。全 0 = 按模型名查内置价格表；本地模型就是 0。
+  # 价格跟着适配器走：openai / anthropic 带官方美元价，deepseek 带人民币峰谷价。
+  # 想覆盖就在这里写，全 0 = 用适配器自带的。
   price:
+    currency: USD
     input: 0
     output: 0
     cached: 0
+    # peak:            # 给了高峰价就启用峰谷（北京时间的工作时段）
+    #   input: 0
+    #   output: 0
+    #   cached: 0
+    # peak_hours: ["9-12", "14-18"]
+    # peak_weekdays: [1, 2, 3, 4, 5]
+    # holidays: ["2026-01-01"]
 
   # 滚动窗口额度（订阅制的墙）。token 与 cost 都为 0 的条目会被忽略。
   quotas: []

@@ -226,8 +226,7 @@ async def main() -> None:
             settings,
             model=msgspec.structs.replace(settings.model, timeout=args.model_timeout),
         )
-    ledger = settings.build_ledger()
-    model = settings.build_model(ledger=ledger, base_url=args.model)
+    model = settings.build_model(base_url=args.model)
     capabilities = await settings.adopt_capabilities(model)
     LoggerManager.get_logger("SETTINGS").info(
         f"模型能力: {', '.join(sorted(capabilities))}（{model.name or '未命名'}）"
