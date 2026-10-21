@@ -120,3 +120,127 @@ class _Clock:
 
     def tick(self, seconds: float) -> None:
         self.now += seconds
+
+
+# ---------- 合并重复（同房间、同命令、同参数） ----------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def tick(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _counting_executor(clock: _Clock, *, coalesce_s: float = 3.0):
+    calls: list[str] = []
+
+    async def handler(ctx, args: str) -> str:
+        calls.append(f"{ctx.room}:{args}")
+        return f"结果{len(calls)}"
+
+    executor = CommandExecutor(clock=clock)
+    executor.register(Command(name="balance", handler=handler, coalesce_s=coalesce_s))
+    return executor, calls
+
+
+async def test_same_room_repeats_are_coalesced():
+    """A、B、C 在同一个群连查余额：只查一次"""
+    clock = _Clock()
+    executor, calls = _counting_executor(clock)
+
+    first = await executor.execute("/balance", CommandContext(room="g1"))
+    second = await executor.execute("/balance", CommandContext(room="g1"))
+    clock.tick(0.5)
+    third = await executor.execute("/balance", CommandContext(room="g1"))
+
+    assert first == "结果1"
+    assert second is None and third is None, "回复大家看得见，后来的静默"
+    assert calls == ["g1:"], "只真查了一次"
+
+
+async def test_different_rooms_are_not_coalesced():
+    """不同群互相看不见，各查各的"""
+    clock = _Clock()
+    executor, calls = _counting_executor(clock)
+
+    await executor.execute("/balance", CommandContext(room="g1"))
+    await executor.execute("/balance", CommandContext(room="g2"))
+
+    assert calls == ["g1:", "g2:"]
+
+
+async def test_window_expires():
+    """过了窗口还是可以再查"""
+    clock = _Clock()
+    executor, calls = _counting_executor(clock, coalesce_s=3.0)
+
+    await executor.execute("/balance", CommandContext(room="g1"))
+    clock.tick(3.5)
+    again = await executor.execute("/balance", CommandContext(room="g1"))
+
+    assert again is not None
+    assert len(calls) == 2
+
+
+async def test_different_args_are_not_coalesced():
+    """参数不同算不同请求"""
+    clock = _Clock()
+    executor, calls = _counting_executor(clock)
+
+    await executor.execute("/balance 今天", CommandContext(room="g1"))
+    await executor.execute("/balance 昨天", CommandContext(room="g1"))
+
+    assert calls == ["g1:今天", "g1:昨天"]
+
+
+async def test_commands_without_window_never_coalesce():
+    """没声明窗口的命令（/help 这类）照常每次都执行"""
+    clock = _Clock()
+    executor = CommandExecutor(clock=clock)
+    calls = []
+
+    async def handler(ctx, args: str) -> str:
+        calls.append(1)
+        return "ok"
+
+    executor.register(Command(name="help", handler=handler))
+
+    await executor.execute("/help", CommandContext(room="g1"))
+    await executor.execute("/help", CommandContext(room="g1"))
+
+    assert len(calls) == 2
+
+
+async def test_in_flight_query_also_coalesces():
+    """A 的查询还没回来，B 又来一次：B 也该被吞掉"""
+    clock = _Clock()
+    started: list[str] = []
+    release = None
+
+    async def handler(ctx, args: str) -> str:
+        started.append(ctx.issuer)
+        if release is not None:
+            await release.wait()
+        return "余额"
+
+    executor = CommandExecutor(clock=clock)
+    executor.register(Command(name="balance", handler=handler, coalesce_s=3.0))
+
+    import asyncio
+
+    release = asyncio.Event()
+    task = asyncio.create_task(
+        executor.execute("/balance", CommandContext(issuer="A", room="g1"))
+    )
+    await asyncio.sleep(0)
+    second = await executor.execute("/balance", CommandContext(issuer="B", room="g1"))
+    release.set()
+    await task
+
+    assert second is None
+    assert started == ["A"], "B 没触发第二次查询"

@@ -4,6 +4,9 @@ from ..health import HealthCenter
 from ..model import ChatModel
 from .core import Command, CommandExecutor
 
+_BALANCE_COALESCE_S = 3.0
+""" 同一房间里这段时间内只查一次（回复大家都看得见） """
+
 
 def build_executor(
     health: HealthCenter | None = None, model: ChatModel | None = None
@@ -42,6 +45,7 @@ def build_executor(
                 permission="admin",
                 aliases=("余额",),
                 desc="查剩余额度",
+                coalesce_s=_BALANCE_COALESCE_S,
             )
         )
 
