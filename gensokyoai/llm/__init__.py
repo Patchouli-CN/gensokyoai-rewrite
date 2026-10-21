@@ -3,6 +3,8 @@
 from .anthropic import AnthropicProvider
 from .base import Provider
 from .billing import BUILTIN, Prices, Quota, UsageLedger, price_for
+from .caps import ALL as ALL_CAPABILITIES
+from .caps import AUDIO, IMAGE, TEXT, VIDEO, detect, normalize
 from .openai import OpenAIProvider
 from .types import Completion, Image, Part, Text, ToolCall, Turn, Usage
 
@@ -13,8 +15,13 @@ PROVIDERS = {
 """ 可选的厂商名 """
 
 __all__ = [
+    "ALL_CAPABILITIES",
+    "AUDIO",
     "BUILTIN",
+    "IMAGE",
     "PROVIDERS",
+    "TEXT",
+    "VIDEO",
     "AnthropicProvider",
     "Completion",
     "Image",
@@ -29,6 +36,8 @@ __all__ = [
     "Usage",
     "UsageLedger",
     "build_provider",
+    "detect",
+    "normalize",
     "price_for",
 ]
 

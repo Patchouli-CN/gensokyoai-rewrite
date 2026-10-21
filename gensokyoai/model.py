@@ -3,12 +3,15 @@
 import msgspec
 
 from .llm import (
+    IMAGE,
     Image,
     Prices,
     Text,
     Turn,
     UsageLedger,
     build_provider,
+    detect,
+    normalize,
     price_for,
 )
 from .llm.types import ToolCall
@@ -45,6 +48,7 @@ class ChatModel:
         extra: dict | None = None,
         prices: Prices | None = None,
         ledger: UsageLedger | None = None,
+        capabilities=None,
         health=None,
     ) -> None:
         """初始化。
@@ -60,6 +64,7 @@ class ChatModel:
             extra: 原样并进请求体的厂商专有参数
             prices: 价格（None = 按模型名查内置表）
             ledger: 共用的用量账本（None = 自建一个只算钱的）
+            capabilities: 能力声明（None = text + image）
             health: 健康中心（None = 不记账）
         """
         kind = provider.lower()
@@ -75,8 +80,25 @@ class ChatModel:
         self._provider = build_provider(kind, base_url, **kwargs)
         self.name = name or kind
         self.think = think
+        self.capabilities = normalize(capabilities or ("text", "image"))
+        """ 这个模型能干哪些活（看得了图、听得了声） """
+        self._endpoint = base_url
+        self._api_key = api_key
+        self._headers = headers
         self.ledger = ledger or UsageLedger(prices or price_for(name))
         self._health = health
+
+    async def refresh_capabilities(self) -> frozenset[str]:
+        """问端点要一次能力；问不到就保持现有声明。"""
+        found = await detect(
+            self._endpoint,
+            model=self.name,
+            api_key=self._api_key,
+            headers=self._headers,
+        )
+        if found:
+            self.capabilities = found
+        return self.capabilities
 
     async def chat(
         self,
@@ -107,6 +129,12 @@ class ChatModel:
             RuntimeError: 响应不是预期的形状
         """
         parts: list = [Text(user)]
+        if images and IMAGE not in self.capabilities:
+            _logger.debug(
+                f"{self.name or '模型'} 不支持看图，"
+                f"{len(images)} 张图降级成正文里的标记"
+            )
+            images = None
         for label, url in images or ():
             parts.append(Image(url=url, label=label))
         turns = [

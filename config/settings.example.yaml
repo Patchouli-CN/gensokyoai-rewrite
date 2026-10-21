@@ -12,6 +12,12 @@ model:
   timeout: 120
   extra: {}                               # 原样并进请求体（厂商专有参数）
 
+  # 能干哪些活：text / image（audio、video 只是占位，传输还没做）。
+  # 启动时会先问端点（有的服务在 /v1/models 里自报），问不到再按模型名猜，
+  # 都猜不出才用这里的声明。猜不出又写着 image 的话，图片会降级成文字标记。
+  capabilities: [text, image]
+  auto_detect: true
+
 billing:
   # 按 token 计费（USD / 百万 token）。全 0 = 按模型名查内置价格表；本地模型就是 0。
   price:

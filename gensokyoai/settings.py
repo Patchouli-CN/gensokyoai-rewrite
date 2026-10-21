@@ -39,6 +39,10 @@ class ModelSettings(msgspec.Struct, frozen=True):
     think: bool | None = False
     timeout: float = DEFAULT_TIMEOUT_S
     extra: dict = msgspec.field(default_factory=dict)
+    capabilities: tuple[str, ...] = ("text", "image")
+    """ 能干哪些活：text / image（audio、video 只是占位，传输还没做） """
+    auto_detect: bool = True
+    """ 启动时问端点要一次能力（问不到就按名字猜，再不行用上面的声明） """
 
 
 class PriceSettings(msgspec.Struct, frozen=True):
@@ -118,9 +122,16 @@ class Settings(msgspec.Struct, frozen=True):
             think=model.think,
             timeout=model.timeout,
             extra=model.extra or None,
+            capabilities=model.capabilities,
             ledger=ledger or self.build_ledger(),
             health=health,
         )
+
+    async def adopt_capabilities(self, model: ChatModel) -> frozenset[str]:
+        """启动时探测一次能力（配了 auto_detect 才问）。"""
+        if self.model.auto_detect:
+            return await model.refresh_capabilities()
+        return model.capabilities
 
 
 def parse_span(text: str) -> float:
