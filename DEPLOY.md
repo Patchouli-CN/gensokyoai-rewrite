@@ -19,7 +19,7 @@
 - 模型端点：OpenAI 兼容，**必须支持原生 tool_call**
   - 引擎请求带 `chat_template_kwargs.thinking / enable_thinking = false`。
     模板不认这两个键、思考没关掉时，输出会被思考段吃光，模型一个工具都不会调
-  - 单次补全默认 120 s 超时（`--model-timeout` / `GSK_MODEL_TIMEOUT`）
+  - 单次补全默认 120 s 超时（`model.timeout`，CLI 上可用 `--model-timeout` 临时覆盖）
 - 角色卡：`version / name / detail` 三字段，缺任意一个 `load_card` 直接 `ValueError`
 - 落盘（可选）：`--data` / `GSK_DATA` 指定根目录，每个房间两个文件
 
@@ -30,19 +30,34 @@ data/<房间名>/memory.jsonl    记忆条目
 
 不给这个参数 = 纯内存，进程一退就忘。
 
-## 换模型 / 多家厂商
+## 模型与计费：`config/settings.yaml`
 
-引擎只认一套**厂商无关的消息**（文字块 / 图片块 + 工具调用），各家适配器负责翻译。
-换一家只改配置，不动代码。
+模型、单价、窗口额度都写在这一个文件里，**CLI 与 nb2 插件共用**。改完重启生效。
 
-```dotenv
-GSK_PROVIDER=openai          # openai（兼容端点）/ anthropic
-GSK_MODEL=https://api.deepseek.com/v1
-GSK_MODEL_NAME=deepseek-chat
-GSK_MODEL_KEY=sk-xxx
+```yaml
+model:
+  provider: openai                      # openai（兼容端点）/ anthropic
+  base_url: http://127.0.0.1:8080/v1
+  name: ""                              # 云端必填：deepseek-chat / gpt-4o-mini / ...
+  api_key: ""                           # 本地留空；云端填令牌
+  think: false                          # null = 连 chat_template_kwargs 都不发
+  timeout: 120
+  extra: {}                             # 原样并进请求体（厂商专有参数）
+
+billing:
+  price:                                # USD / 百万 token；全 0 = 按模型名查内置表
+    input: 0
+    output: 0
+    cached: 0
+  quotas:                               # 滚动窗口额度（订阅制的墙）
+    - span: 5h
+      tokens: 200000
+    - span: 7d
+      tokens: 1000000
+  usage: data/usage.jsonl               # 用量流水；空 = 不落盘
 ```
 
-| 端点 | PROVIDER | MODEL | 模型名 |
+| 端点 | provider | base_url | name |
 |---|---|---|---|
 | llama-server / vLLM / Ollama | `openai` | `http://127.0.0.1:8080/v1` | 留空 |
 | DeepSeek | `openai` | `https://api.deepseek.com/v1` | `deepseek-chat` |
@@ -50,20 +65,34 @@ GSK_MODEL_KEY=sk-xxx
 | OpenRouter | `openai` | `https://openrouter.ai/api/v1` | 它给的名字 |
 | Claude | `anthropic` | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` |
 
-- 切换是全局的：改配置、重启进程
-- 本地端点不需要模型名和令牌，这两项留空即不发
-- `chat_template_kwargs`（关思考）只往 openai 形状发；云端点若嫌它多余，用 `think=None` 关掉
+- 切换是全局的：改这个文件、重启进程
+- CLI 用 `--settings` 指定别处的配置；`--model` 只是临时覆盖 base_url
+- nb2 插件用 `GSK_SETTINGS` 指向它（默认 `../config/settings.yaml`）；流水落在它的 `GSK_DATA` 下
+- 本地端点不需要模型名和令牌，留空即不发
 - 再加一家：实现 `Provider.complete`，塞进 `gensokyoai/llm/__init__.py` 的 `PROVIDERS`
 
-## 计费
+## 计费：两种口径
 
-每次补全按厂商回的 `usage` 记账，输入 / 输出 / 缓存命中分开算：
+**按 token 计费（按量付费）** —— 每次补全按厂商回的 `usage` 记账，输入 / 输出 /
+缓存命中分开算。价格按模型名前缀查内置表（`gpt-4o-mini`、`deepseek-chat`、
+`claude-sonnet`…），也可以在 `billing.price` 里写死。本地模型没有价格 = 只记
+token 不算钱。
 
-- 价格按**模型名前缀**匹配内置表（`gpt-4o-mini`、`deepseek-chat`、`claude-sonnet`…）
-- 要覆盖就填 `GSK_PRICE_INPUT` / `GSK_PRICE_OUTPUT`，单位是 **USD / 百万 token**
-- 本地模型没价格 = 只记 token 不算钱
-- `/doctor` 里直接能看到 `llm.prompt_tokens` / `llm.completion_tokens` / `llm.cost_usd`
-- CLI 形态对应 `--provider` / `--model-name` / `--api-key` / `--price-in` / `--price-out`
+**滚动窗口额度（订阅制的墙）** —— Claude Pro/Max 这种没有单价、只有 5h / 7d 的
+用量墙。写 `billing.quotas` 就能看到自己离墙多远：
+
+```yaml
+quotas:
+  - span: 5h          # 支持 m / h / d / w
+    tokens: 200000
+  - span: 7d
+    tokens: 1000000
+```
+
+- 用量过 80% 打一条 warning，过 100% 再打一条，每个窗口每档只喊一次
+- `/doctor` 里能看到累计 `llm.prompt_tokens` / `llm.completion_tokens` / `llm.cost_usd`，
+  以及每个窗口已用多少
+- `billing.usage` 落一行一条流水，重启后窗口接着算；超出最长窗口的老流水会被丢掉
 
 ## 形态 A：控制台
 
@@ -121,7 +150,7 @@ DRIVER=~fastapi
 HOST=127.0.0.1
 PORT=8090
 
-GSK_MODEL=http://127.0.0.1:8080/v1
+GSK_SETTINGS=../config/settings.yaml
 GSK_CHARACTER=../config/roles/KomeijiSatori.yaml
 GSK_DATA=../data
 GSK_WINDOW=30

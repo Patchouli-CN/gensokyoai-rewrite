@@ -7,6 +7,7 @@ from gensokyoai.llm import (
     Image,
     OpenAIProvider,
     Prices,
+    Quota,
     Text,
     Turn,
     Usage,
@@ -245,3 +246,82 @@ class _Unused:
     """保持 ClassVar 导入不被 lint 判成多余。"""
 
     items: ClassVar[list[int]] = []
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def tick(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_window_only_counts_recent_usage():
+    """5h 窗口只算最近 5 小时：更早的不该混进来"""
+    clock = _Clock()
+    ledger = UsageLedger(quotas=(Quota(span_s=5 * 3600, tokens=100_000),), clock=clock)
+
+    ledger.record(Usage(prompt_tokens=10_000, completion_tokens=0))
+    clock.tick(4 * 3600)
+    ledger.record(Usage(prompt_tokens=20_000, completion_tokens=0))
+
+    assert ledger.window(5 * 3600)[0] == 30_000
+    clock.tick(2 * 3600)  # 第一条出了 5h 窗口
+    assert ledger.window(5 * 3600)[0] == 20_000
+    assert ledger.prompt_tokens == 30_000, "累计值不受窗口影响"
+
+
+def test_quota_status_shows_usage_against_limit():
+    """窗口额度按用量给百分比（/doctor 用）"""
+    clock = _Clock()
+    ledger = UsageLedger(quotas=(Quota(span_s=7 * 86400, tokens=50_000),), clock=clock)
+
+    ledger.record(Usage(prompt_tokens=40_000, completion_tokens=0))
+
+    line = ledger.status()[0]
+    assert "7d" in line
+    assert "40000" in line and "80%" in line
+
+
+def test_quota_warns_once_per_window():
+    """过线只喊一次，别每次补全都刷屏"""
+    clock = _Clock()
+    ledger = UsageLedger(quotas=(Quota(span_s=5 * 3600, tokens=10_000),), clock=clock)
+
+    ledger.record(Usage(prompt_tokens=9_000, completion_tokens=0))
+    assert (5 * 3600, "high") in ledger._warned
+
+    ledger._warned.clear()
+    ledger.record(Usage(prompt_tokens=2_000, completion_tokens=0))
+    assert (5 * 3600, "full") in ledger._warned
+
+
+def test_usage_survives_restart(tmp_path):
+    """用量流水落盘：重启后 7 天窗口接着算"""
+    clock = _Clock()
+    path = tmp_path / "usage.jsonl"
+    quota = (Quota(span_s=7 * 86400, tokens=1_000_000),)
+
+    first = UsageLedger(quotas=quota, path=path, clock=clock)
+    first.record(Usage(prompt_tokens=1_000, completion_tokens=500), "deepseek-chat")
+
+    second = UsageLedger(quotas=quota, path=path, clock=clock)
+    assert second.window(7 * 86400)[0] == 1_500
+
+    clock.tick(8 * 86400)
+    third = UsageLedger(quotas=quota, path=path, clock=clock)
+    assert third.window(7 * 86400)[0] == 0, "超出窗口的老流水要丢掉"
+
+
+def test_broken_usage_lines_are_skipped(tmp_path):
+    """流水里混进坏行不该让账本起不来"""
+    path = tmp_path / "usage.jsonl"
+    path.write_text('{"ts": 1000000, "prompt": 10, "completion": 5}\n坏行\n', "utf-8")
+    clock = _Clock()
+
+    ledger = UsageLedger(path=path, clock=clock)
+
+    assert ledger.window(7 * 86400)[0] == 15

@@ -2,7 +2,7 @@
 
 from .anthropic import AnthropicProvider
 from .base import Provider
-from .billing import BUILTIN, Prices, UsageLedger, price_for
+from .billing import BUILTIN, Prices, Quota, UsageLedger, price_for
 from .openai import OpenAIProvider
 from .types import Completion, Image, Part, Text, ToolCall, Turn, Usage
 
@@ -22,6 +22,7 @@ __all__ = [
     "Part",
     "Prices",
     "Provider",
+    "Quota",
     "Text",
     "ToolCall",
     "Turn",

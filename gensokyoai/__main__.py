@@ -10,6 +10,8 @@ import argparse
 import asyncio
 from pathlib import Path
 
+import msgspec
+
 from . import scenes as _builtin_scenes  # noqa: F401  注册内置场景
 from .api import scenes as registered_scenes
 from .bgtasks import BgTasks
@@ -18,44 +20,18 @@ from .command.builtin import build_executor
 from .dmn import DmnKeeper
 from .health import HealthCenter
 from .hub import Hub
-from .llm import Prices
 from .loop import Loop, SceneContext
 from .memory import Memory
 from .mind import Mind
-from .model import DEFAULT_TIMEOUT_S, ChatModel
 from .mouth import ConsoleMouth, WsMouth
 from .network.aiohttp_ws import AiohttpWebsocketServer
 from .plugin import discover, load
 from .room import Room, RoomLog
+from .settings import DEFAULT_PATH, load_settings
 from .utils.logger import LoggerManager, setup_logging
 from .ws_server import Gateway
 
 _scene_log = LoggerManager.get_logger("SCENE")
-
-
-def _build_mind(
-    model_url: str,
-    persona: str,
-    name: str,
-    *,
-    timeout: float = DEFAULT_TIMEOUT_S,
-    provider: str = "openai",
-    model_name: str = "",
-    api_key: str = "",
-    prices=None,
-    health=None,
-) -> Mind:
-    """组装心智（人设 + 模型端点）。"""
-    model = ChatModel(
-        model_url,
-        provider=provider,
-        name=model_name,
-        api_key=api_key,
-        timeout=timeout,
-        prices=prices,
-        health=health,
-    )
-    return Mind(model, name, persona)
 
 
 async def _tidy(loop: Loop) -> None:
@@ -186,23 +162,17 @@ async def main() -> None:
     """入口：默认控制台；--serve 起 ws 服务。"""
     parser = argparse.ArgumentParser(prog="gensokyoai", description="GensokyoAI v2")
     parser.add_argument("--character", help="角色卡 YAML 路径")
-    parser.add_argument("--model", default="http://127.0.0.1:8080/v1", help="模型端点")
     parser.add_argument(
-        "--provider", default="openai", help="厂商适配器（openai / anthropic）"
+        "--settings",
+        default=str(DEFAULT_PATH),
+        help="模型与计费配置（默认 config/settings.yaml）",
     )
-    parser.add_argument("--model-name", default="", help="模型名（云端必填）")
-    parser.add_argument("--api-key", default="", help="令牌（空 = 不带鉴权头）")
-    parser.add_argument(
-        "--price-in", type=float, default=None, help="输入价（USD / 百万 token）"
-    )
-    parser.add_argument(
-        "--price-out", type=float, default=None, help="输出价（USD / 百万 token）"
-    )
+    parser.add_argument("--model", default="", help="临时覆盖配置里的端点地址")
     parser.add_argument(
         "--model-timeout",
         type=float,
-        default=DEFAULT_TIMEOUT_S,
-        help="单次补全的时限（秒），超时按退避重试",
+        default=0.0,
+        help="临时覆盖配置里的补全时限（秒）",
     )
     parser.add_argument("--user", default="你", help="控制台里你的称呼")
     parser.add_argument("--data", default="data/rooms", help="记忆与房间日志落盘根目录")
@@ -250,21 +220,17 @@ async def main() -> None:
         raise SystemExit("缺少 --character")
 
     card = load_card(args.character)
-    prices = None
-    if args.price_in is not None or args.price_out is not None:
-        prices = Prices(
-            input=args.price_in or 0.0,
-            output=args.price_out or 0.0,
+    settings = load_settings(args.settings)
+    if args.model_timeout:
+        settings = msgspec.structs.replace(
+            settings,
+            model=msgspec.structs.replace(settings.model, timeout=args.model_timeout),
         )
-    mind = _build_mind(
-        args.model,
-        card.persona,
+    ledger = settings.build_ledger()
+    mind = Mind(
+        settings.build_model(ledger=ledger, base_url=args.model),
         card.name,
-        timeout=args.model_timeout,
-        provider=args.provider,
-        model_name=args.model_name,
-        api_key=args.api_key,
-        prices=prices,
+        card.persona,
     )
     try:
         if args.serve:

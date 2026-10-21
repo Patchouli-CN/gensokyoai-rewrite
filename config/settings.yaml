@@ -1,0 +1,31 @@
+# 模型与计费 —— CLI 与 nb2 插件共用这一份；改完重启才生效。
+#
+# 本地 llama-server 用默认值就行；换云端只改 model 段。
+# 订阅制（Claude Pro/Max）没有单价、只有窗口墙：跳过 price，填 quotas。
+
+model:
+  provider: openai                        # openai（兼容端点）/ anthropic
+  base_url: http://127.0.0.1:8080/v1
+  name: ""                                # 云端必填：deepseek-chat / gpt-4o-mini / claude-sonnet-4-...
+  api_key: ""                             # 本地留空；云端填令牌
+  think: false                            # null = 连这个厂商专有字段都不发
+  timeout: 120
+  extra: {}                               # 原样并进请求体（厂商专有参数）
+
+billing:
+  # 按 token 计费（USD / 百万 token）。全 0 = 按模型名查内置价格表；本地模型就是 0。
+  price:
+    input: 0
+    output: 0
+    cached: 0
+
+  # 滚动窗口额度（订阅制的墙）。token 与 cost 都为 0 的条目会被忽略。
+  quotas: []
+  # quotas:
+  #   - span: 5h
+  #     tokens: 200000
+  #   - span: 7d
+  #     tokens: 1000000
+
+  # 用量流水（相对本文件所在仓库根）。空 = 不落盘，重启后窗口从头算。
+  usage: data/usage.jsonl

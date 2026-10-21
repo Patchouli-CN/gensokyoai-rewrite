@@ -1,0 +1,157 @@
+"""配置 —— 模型与计费写在 `config/settings.yaml`，两个宿主共用一份。
+
+命令行只留一次性覆盖（`--model`），长期设置都进文件：改一次，CLI 与 nb2 插件
+都按它走。
+"""
+
+from pathlib import Path
+
+import msgspec
+import yaml
+
+from .llm import Prices, Quota, UsageLedger, price_for
+from .model import DEFAULT_TIMEOUT_S, ChatModel
+
+DEFAULT_PATH = Path("config/settings.yaml")
+""" 默认配置文件位置（相对 cwd） """
+
+_SPANS = {"m": 60.0, "h": 3600.0, "d": 86400.0, "w": 604800.0}
+
+
+class ModelSettings(msgspec.Struct, frozen=True):
+    """模型端点。"""
+
+    provider: str = "openai"
+    base_url: str = "http://127.0.0.1:8080/v1"
+    name: str = ""
+    api_key: str = ""
+    think: bool | None = False
+    timeout: float = DEFAULT_TIMEOUT_S
+    extra: dict = msgspec.field(default_factory=dict)
+
+
+class PriceSettings(msgspec.Struct, frozen=True):
+    """单价（USD / 百万 token）；全 0 = 不记钱。"""
+
+    input: float = 0.0
+    output: float = 0.0
+    cached: float = 0.0
+
+    def to_prices(self) -> Prices | None:
+        """全 0 表示没配，交给内置表按模型名查。"""
+        if not (self.input or self.output or self.cached):
+            return None
+        return Prices(input=self.input, output=self.output, cached=self.cached)
+
+
+class QuotaSettings(msgspec.Struct, frozen=True):
+    """一个滚动窗口的额度。"""
+
+    span: str = "5h"
+    tokens: int = 0
+    cost: float = 0.0
+
+    def to_quota(self) -> Quota:
+        """跨度写法（5h / 7d / 90m）-> 秒。"""
+        return Quota(span_s=parse_span(self.span), tokens=self.tokens, cost=self.cost)
+
+
+class BillingSettings(msgspec.Struct, frozen=True):
+    """计费与限额。"""
+
+    price: PriceSettings = msgspec.field(default_factory=PriceSettings)
+    quotas: tuple[QuotaSettings, ...] = ()
+    usage: str = ""
+    """ 用量流水路径（空 = 不落盘，重启后窗口从头算） """
+
+
+class Settings(msgspec.Struct, frozen=True):
+    """一份配置。"""
+
+    model: ModelSettings = msgspec.field(default_factory=ModelSettings)
+    billing: BillingSettings = msgspec.field(default_factory=BillingSettings)
+
+    def prices(self) -> Prices | None:
+        """配了单价就用配的，否则按模型名查内置表。"""
+        return self.model_price() or price_for(self.model.name)
+
+    def model_price(self) -> Prices | None:
+        """只看配置文件里写的单价。"""
+        return self.billing.price.to_prices()
+
+    def quotas(self) -> tuple[Quota, ...]:
+        """窗口额度（额度和钱都为 0 的条目忽略）。"""
+        return tuple(
+            quota.to_quota()
+            for quota in self.billing.quotas
+            if quota.tokens or quota.cost
+        )
+
+    def build_ledger(self, base_dir: Path | None = None) -> UsageLedger:
+        """按配置造账本（含窗口与流水路径）。"""
+        path = None
+        if self.billing.usage:
+            path = Path(self.billing.usage)
+            if base_dir is not None and not path.is_absolute():
+                path = base_dir / path
+        return UsageLedger(self.prices(), quotas=self.quotas(), path=path)
+
+    def build_model(self, health=None, *, ledger=None, base_url: str = "") -> ChatModel:
+        """按配置造模型端点。"""
+        model = self.model
+        return ChatModel(
+            base_url or model.base_url,
+            provider=model.provider,
+            name=model.name,
+            api_key=model.api_key,
+            think=model.think,
+            timeout=model.timeout,
+            extra=model.extra or None,
+            ledger=ledger or self.build_ledger(),
+            health=health,
+        )
+
+
+def parse_span(text: str) -> float:
+    """`5h` / `7d` / `90m` / `2w` -> 秒。
+
+    Raises:
+        ValueError: 写法不认识
+    """
+    raw = str(text).strip().lower()
+    if not raw:
+        raise ValueError("窗口跨度不能为空")
+    unit = raw[-1]
+    if unit not in _SPANS:
+        raise ValueError(f"窗口跨度要带单位（m/h/d/w）: {text!r}")
+    try:
+        amount = float(raw[:-1])
+    except ValueError as err:
+        raise ValueError(f"窗口跨度不是数字: {text!r}") from err
+    if amount <= 0:
+        raise ValueError(f"窗口跨度要大于 0: {text!r}")
+    return amount * _SPANS[unit]
+
+
+def load_settings(path: str | Path | None = None) -> Settings:
+    """读配置；文件不存在就用默认值（本地 llama-server、不记钱）。
+
+    Args:
+        path: 配置文件路径（None = `config/settings.yaml`）
+
+    Returns:
+        Settings: 解析好的配置
+
+    Raises:
+        ValueError: YAML 不是 mapping，或窗口跨度写错
+    """
+    target = Path(path) if path is not None else DEFAULT_PATH
+    if not target.exists():
+        return Settings()
+    raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"配置文件不是 mapping: {target}")
+    try:
+        return msgspec.convert(raw, Settings, strict=False)
+    except msgspec.ValidationError as err:
+        raise ValueError(f"配置文件字段不对（{target}）: {err}") from err

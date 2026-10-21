@@ -44,6 +44,7 @@ class ChatModel:
         timeout: float = DEFAULT_TIMEOUT_S,
         extra: dict | None = None,
         prices: Prices | None = None,
+        ledger: UsageLedger | None = None,
         health=None,
     ) -> None:
         """初始化。
@@ -58,6 +59,7 @@ class ChatModel:
             timeout: 单次补全时限（秒）
             extra: 原样并进请求体的厂商专有参数
             prices: 价格（None = 按模型名查内置表）
+            ledger: 共用的用量账本（None = 自建一个只算钱的）
             health: 健康中心（None = 不记账）
         """
         kind = provider.lower()
@@ -73,7 +75,7 @@ class ChatModel:
         self._provider = build_provider(kind, base_url, **kwargs)
         self.name = name or kind
         self.think = think
-        self.ledger = UsageLedger(prices or price_for(name))
+        self.ledger = ledger or UsageLedger(prices or price_for(name))
         self._health = health
 
     async def chat(
@@ -123,7 +125,7 @@ class ChatModel:
 
     def _record(self, completion) -> None:
         """记账：用量、花费、截断告警。"""
-        self.ledger.record(completion.usage)
+        self.ledger.record(completion.usage, completion.model or self.name)
         if completion.finish_reason in ("length", "max_tokens"):
             _logger.warning("模型被 max_tokens 截断，这一轮的动作可能不完整")
         if self._health is None:
