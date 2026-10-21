@@ -143,6 +143,7 @@ class OpenAIProvider(HttpProvider):
             raise RuntimeError(f"模型响应形状异常: {data!r:.200}") from err
 
         usage = data.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
         return Completion(
             text=(message.get("content") or "").strip(),
             calls=_calls_of(message.get("tool_calls")),
@@ -152,6 +153,7 @@ class OpenAIProvider(HttpProvider):
                 cached_tokens=int(
                     (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
                 ),
+                reasoning_tokens=int(details.get("reasoning_tokens") or 0),
             ),
             model=str(data.get("model") or self._model),
             finish_reason=str(choice.get("finish_reason") or ""),

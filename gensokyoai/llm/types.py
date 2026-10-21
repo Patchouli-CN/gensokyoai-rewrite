@@ -44,6 +44,8 @@ class Usage(msgspec.Struct, frozen=True):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    """ 思考 token（多数厂商算在 completion 里，这里只是拆出来看一眼） """
 
     @property
     def total_tokens(self) -> int:

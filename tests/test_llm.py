@@ -325,3 +325,39 @@ def test_broken_usage_lines_are_skipped(tmp_path):
     ledger = UsageLedger(path=path, clock=clock)
 
     assert ledger.window(7 * 86400)[0] == 15
+
+
+async def test_reasoning_tokens_are_parsed(monkeypatch):
+    """思考 token 单独拆出来（它算在 completion 里，但值得看见）"""
+    payload = {
+        "choices": [
+            {
+                "message": {"content": "2"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 38,
+            "completion_tokens_details": {"reasoning_tokens": 36},
+        },
+    }
+    provider = OpenAIProvider("https://api.deepseek.com/v1", model="deepseek-flash")
+    _patch(monkeypatch, provider, payload)
+
+    completion = await provider.complete([Turn(role="user", parts=(Text("1+1"),))])
+
+    assert completion.usage.completion_tokens == 38
+    assert completion.usage.reasoning_tokens == 36
+
+
+def test_summary_shows_reasoning_when_present():
+    """账本摘要里能看到思考花了多少"""
+    ledger = UsageLedger()
+
+    ledger.record(Usage(prompt_tokens=10, completion_tokens=40, reasoning_tokens=36))
+    assert "思考 36" in ledger.summary()
+
+    plain = UsageLedger()
+    plain.record(Usage(prompt_tokens=10, completion_tokens=5))
+    assert "思考" not in plain.summary()

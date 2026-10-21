@@ -97,6 +97,7 @@ class UsageLedger:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.cached_tokens = 0
+        self.reasoning_tokens = 0
         self.cost = 0.0
         self.calls = 0
         self._window: deque[tuple[float, int, float]] = deque()
@@ -116,6 +117,7 @@ class UsageLedger:
         self.prompt_tokens += usage.prompt_tokens
         self.completion_tokens += usage.completion_tokens
         self.cached_tokens += usage.cached_tokens
+        self.reasoning_tokens += usage.reasoning_tokens
         self.cost += spent
         now = self._clock()
         self._window.append((now, usage.total_tokens, spent))
@@ -149,7 +151,9 @@ class UsageLedger:
         """一行摘要。"""
         text = (
             f"{self.calls} 次调用 · 输入 {self.prompt_tokens} / 输出 "
-            f"{self.completion_tokens} tokens · 约 ${self.cost:.4f}"
+            f"{self.completion_tokens} tokens"
+            + (f"（思考 {self.reasoning_tokens}）" if self.reasoning_tokens else "")
+            + f" · 约 ${self.cost:.4f}"
         )
         if self.quotas:
             text += " · " + "；".join(self.status())

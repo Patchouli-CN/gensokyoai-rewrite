@@ -103,6 +103,20 @@ quotas:
   以及每个窗口已用多少
 - `billing.usage` 落一行一条流水，重启后窗口接着算；超出最长窗口的老流水会被丢掉
 
+### 关思考
+
+思考开着会烧输出 token（实测 `deepseek-flash` 答「1+1」：38 tokens 里 36 是思考），
+长一点的问题还可能把 content 挤空。各家开关不一样：
+
+| 端点 | 写法 |
+|---|---|
+| llama-server / vLLM | `think: false`（发 `chat_template_kwargs`） |
+| DeepSeek | `think: null` + `extra: {thinking: {type: disabled}}` |
+| 其他 OpenAI 兼容 | 先跑一次：日志里出现「这个端点开着思考」就翻厂商文档 |
+
+引擎第一次看到思考 token 会打一条 warning，并把它记进账本
+（`/doctor` 里的 `llm.completion_tokens` 含思考，摘要里会单独标出来）。
+
 ## 模型能力（看不看图、听不听声）
 
 没有统一的标准可查，所以按这个顺序定：**端点自报 → 名字猜测 → 配置声明**。

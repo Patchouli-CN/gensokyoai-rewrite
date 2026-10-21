@@ -87,6 +87,7 @@ class ChatModel:
         self._headers = headers
         self.ledger = ledger or UsageLedger(prices or price_for(name))
         self._health = health
+        self._warned_reasoning = False
 
     async def refresh_capabilities(self) -> frozenset[str]:
         """问端点要一次能力；问不到就保持现有声明。"""
@@ -154,6 +155,13 @@ class ChatModel:
     def _record(self, completion) -> None:
         """记账：用量、花费、截断告警。"""
         self.ledger.record(completion.usage, completion.model or self.name)
+        if completion.usage.reasoning_tokens and not self._warned_reasoning:
+            self._warned_reasoning = True
+            _logger.warning(
+                f"这个端点开着思考（上一轮 {completion.usage.reasoning_tokens} tokens "
+                f"花在思考上）。关法各厂商不同：llama-server 用 think: false，"
+                f"DeepSeek 用 extra: {{thinking: {{type: disabled}}}}"
+            )
         if completion.finish_reason in ("length", "max_tokens"):
             _logger.warning("模型被 max_tokens 截断，这一轮的动作可能不完整")
         if self._health is None:
