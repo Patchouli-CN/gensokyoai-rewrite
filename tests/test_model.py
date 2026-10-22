@@ -199,16 +199,20 @@ async def test_mind_routes_images_to_vision_model():
     class _Model:
         ledger = None
 
-        def __init__(self, name, log):
+        def __init__(self, name, log, capabilities=("text",)):
             self.name = name
             self._log = log
+            self.capabilities = frozenset(capabilities)
 
         async def chat(self, system, payload, **kwargs):
             self._log.append(bool(kwargs.get("images")))
             return Reply(text=f"from {self.name}")
 
     mind = Mind(
-        _Model("main", main_calls), "觉", "人设", vision=_Model("vision", vision_calls)
+        _Model("main", main_calls),
+        "觉",
+        "人设",
+        vision=_Model("vision", vision_calls, capabilities=("text", "image")),
     )
     feed = {
         "now": "t",
@@ -233,6 +237,7 @@ async def test_mind_without_vision_keeps_images_on_main():
     class _Model:
         name = "main"
         ledger = None
+        capabilities = frozenset({"text", "image"})
 
         def __init__(self):
             self.seen: list[bool] = []

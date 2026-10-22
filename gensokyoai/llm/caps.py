@@ -5,15 +5,27 @@
 图片降级成文字标记，不报错。
 """
 
+from enum import StrEnum
+
 import aiohttp
 
-TEXT = "text"
-IMAGE = "image"
-AUDIO = "audio"
-VIDEO = "video"
 
-ALL = frozenset({TEXT, IMAGE, AUDIO, VIDEO})
-""" 认得的能力名（audio / video 只是占位，传输还没做） """
+class Capability(StrEnum):
+    """模型能干的活（audio / video 只声明，传输还没做）。"""
+
+    TEXT = "text"
+    IMAGE = "image"
+    AUDIO = "audio"
+    VIDEO = "video"
+
+
+TEXT = Capability.TEXT
+IMAGE = Capability.IMAGE
+AUDIO = Capability.AUDIO
+VIDEO = Capability.VIDEO
+
+ALL = frozenset(Capability)
+""" 认得的能力名 """
 
 BY_NAME: dict[str, frozenset[str]] = {
     # 纯文本

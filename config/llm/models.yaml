@@ -1,0 +1,24 @@
+# 模型：能力（text / image）、单价（每百万 token，人民币）。
+# api_name 是端点上的名字；id 是内部代号（tasks.yaml 引用它）。
+models:
+  - id: flash
+    provider: deepseek
+    api_name: deepseek-flash
+    name: DeepSeek Flash
+    capabilities: [text, image]
+    input_price: 1.0
+    output_price: 4.0
+    cached_price: 0.02
+    extra:
+      thinking: {type: disabled}
+
+  - id: pro
+    provider: deepseek
+    api_name: deepseek-v4-pro
+    name: DeepSeek V4 Pro
+    capabilities: [text]
+    input_price: 4.5
+    output_price: 13.5
+    cached_price: 0.15
+    extra:
+      thinking: {type: disabled}

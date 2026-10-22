@@ -7,6 +7,7 @@
 import json
 
 from .api import schema_of, spec_of, tools_of
+from .llm.caps import Capability
 from .model import ChatModel, Reply
 from .utils.logger import LoggerManager
 
@@ -97,6 +98,7 @@ class Mind:
         name: str,
         persona: str,
         vision: ChatModel | None = None,
+        manager=None,
     ) -> None:
         """初始化。
 
@@ -105,9 +107,11 @@ class Mind:
             name: 角色名（房间里的发言署名）
             persona: 人设正文（角色卡提供）
             vision: 带图回合改用它（None = 一直用 model）
+            manager: 模型管理器（有它就让 vlm 转述图片，主模型不必有视觉）
         """
         self._model = model
         self._vision = vision
+        self._manager = manager
         self.name = name
         self._persona = persona
 
@@ -133,11 +137,22 @@ class Mind:
             Reply: 正文与工具调用
         """
         chosen = self._vision if images and self._vision is not None else self._model
+        notes: list[str] = []
+        if (
+            images
+            and Capability.IMAGE not in self._model.capabilities
+            and self._manager
+        ):
+            # 中文房间：主模型看不见，让能看的模型转述成文字放进去
+            story = await self._manager.describe(images, question=_last_text(feed))
+            if story:
+                notes.append(story)
+        payload = {**feed, "images": notes} if notes else feed
         return await chosen.chat(
             self._system(scene),
-            json.dumps(feed, ensure_ascii=False),
+            json.dumps(payload, ensure_ascii=False),
             tools=self._tools(scene),
-            images=images,
+            images=(images if Capability.IMAGE in chosen.capabilities else None),
             max_tokens=_MAX_TOKENS,
             temperature=0.85,
         )
@@ -175,3 +190,12 @@ class Mind:
         if scene is not None:
             tools.extend(schema_of(meta) for meta in tools_of(scene))
         return tools
+
+
+def _last_text(feed: dict) -> str:
+    """这一批里最后一句人话（给转述一点方向）。"""
+    for event in reversed(feed.get("events") or []):
+        text = str(event.get("text") or "").strip()
+        if text:
+            return text
+    return ""

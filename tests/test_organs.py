@@ -163,6 +163,8 @@ def test_unknown_style_raises():
 
 
 class _FakeModel:
+    capabilities = frozenset({"text"})
+
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.closed = False
