@@ -18,7 +18,7 @@ from .health import HealthCenter
 from .llm.base import ModelError
 from .memory import Memory
 from .mind import Mind
-from .room import Event, Room
+from .room import Event, EventKind, Room
 from .utils.logger import LoggerManager
 
 _logger = LoggerManager.get_logger("LOOP")
@@ -150,7 +150,7 @@ class Loop:
             images: 图片（data URL；只活在内存里，不落盘）
         """
         self.room.append(
-            kind,
+            _kind(kind),
             sender,
             text,
             user_id=user_id,
@@ -510,3 +510,8 @@ def _int(value, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _kind(kind: str) -> EventKind:
+    """把字符串收成事件类型（只认 message / reply）。"""
+    return "reply" if kind == "reply" else "message"

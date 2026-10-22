@@ -347,12 +347,13 @@ class UsageLedger:
 
     def _load(self) -> None:
         """读回窗口内的历史用量（坏的行走跳过）。"""
-        if not self._path.exists():
+        path = self._path
+        if path is None or not path.exists():
             return
         now = self._clock()
         kept: list[tuple[float, int, float]] = []
         try:
-            for line in self._path.read_text(encoding="utf-8").splitlines():
+            for line in path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
                     continue
                 try:

@@ -151,8 +151,9 @@ async def _serve(args, card, mind: Mind, scene_cls) -> None:
     consumer = asyncio.create_task(gateway.run(server))
     try:
         await asyncio.wait({consumer, serving}, return_when=asyncio.FIRST_COMPLETED)
-        if serving.done() and not serving.cancelled() and serving.exception():
-            raise serving.exception()  # 监听起不来（端口占用等）就别假装在服务
+        failure = serving.exception() if serving.done() else None
+        if failure is not None:  # 监听起不来（端口占用等）就别假装在服务
+            raise failure
     finally:
         consumer.cancel()
         serving.cancel()

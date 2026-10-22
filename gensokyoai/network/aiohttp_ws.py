@@ -145,9 +145,14 @@ class AiohttpWebsocket:
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
 
-    async def _ensure(self) -> None:
+    async def _ensure(self) -> aiohttp.ClientWebSocketResponse:
+        """连上并返回连接（已经连着就直接返回）。
+
+        Returns:
+            aiohttp.ClientWebSocketResponse: 可用的连接
+        """
         if self._ws is not None and not self._ws.closed:
-            return
+            return self._ws
         session = aiohttp.ClientSession()
         try:
             self._ws = await session.ws_connect(self._url, heartbeat=30)
@@ -158,26 +163,28 @@ class AiohttpWebsocket:
         if self._session is not None and not self._session.closed:
             await self._session.close()  # 重连前收掉旧会话
         self._session = session
+        assert self._ws is not None
+        return self._ws
 
     def __aiter__(self) -> AsyncIterator[Frame]:
         return self._frames()
 
     async def _frames(self) -> AsyncIterator[Frame]:
-        await self._ensure()
-        async for msg in self._ws:
+        socket = await self._ensure()
+        async for msg in socket:
             if msg.type is WSMsgType.TEXT:
                 yield classify(msg.data or "")
             elif msg.type is WSMsgType.BINARY:
                 yield Binary(bytes(msg.data))
 
     async def send(self, frame: dict | list | str | bytes) -> None:
-        await self._ensure()
+        socket = await self._ensure()
         if isinstance(frame, dict | list):
-            await self._ws.send_json(frame)
+            await socket.send_json(frame)
         elif isinstance(frame, bytes):
-            await self._ws.send_bytes(frame)
+            await socket.send_bytes(frame)
         else:
-            await self._ws.send_str(frame)
+            await socket.send_str(frame)
 
     async def close(self) -> None:
         if self._ws is not None and not self._ws.closed:

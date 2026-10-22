@@ -113,7 +113,7 @@ async def _assert_public(url: str) -> None:
     except socket.gaierror as err:
         raise ValueError(f"域名解析不了: {host}") from err
     for info in infos:
-        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        address = ipaddress.ip_address(str(info[4][0]).split("%")[0])
         if (
             address.is_private
             or address.is_loopback

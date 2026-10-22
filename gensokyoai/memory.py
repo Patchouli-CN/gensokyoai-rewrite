@@ -74,7 +74,10 @@ class Memory:
             await asyncio.to_thread(self._append_line, line)
 
     def _append_line(self, line: str) -> None:
-        with self._path.open("a", encoding="utf-8") as file:
+        path = self._path
+        if path is None:
+            return
+        with path.open("a", encoding="utf-8") as file:
             file.write(line)
 
     async def recall(self, query: str, limit: int = 3) -> list[str]:
@@ -124,11 +127,14 @@ class Memory:
 
     def _rewrite_atomic(self, payload: str) -> None:
         """写临时文件再原子替换，失败时旧文件保留。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_name(self._path.name + ".tmp")
+        path = self._path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
         try:
             tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, self._path)
+            os.replace(tmp, path)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise

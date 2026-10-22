@@ -46,6 +46,8 @@ def _tools_of(tools: list[dict] | None) -> list[dict]:
     found = []
     for item in tools or ():
         function = item.get("function") if "function" in item else item
+        if not isinstance(function, dict):
+            continue
         found.append(
             {
                 "name": function.get("name", ""),

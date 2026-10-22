@@ -53,7 +53,11 @@ class Hub:
     def _start(self, room_id: str, loop: Loop) -> None:
         """起一个房间循环任务，并盯着它——循环悄悄死掉会让房间永远不回话。"""
         task = asyncio.create_task(loop.run(), name=f"loop:{room_id}")
-        task.add_done_callback(lambda done, rid=room_id: self._on_done(rid, done))
+
+        def _done(done: asyncio.Task, rid: str = room_id) -> None:
+            self._on_done(rid, done)
+
+        task.add_done_callback(_done)
         self._tasks[room_id] = task
 
     def _on_done(self, room_id: str, task: asyncio.Task) -> None:

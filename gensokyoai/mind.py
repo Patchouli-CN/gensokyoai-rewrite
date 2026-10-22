@@ -190,11 +190,8 @@ class Mind:
         lines.append("")
         lines.append(_HARD)
         body = "\n".join(lines)
-        return "\n\n".join(
-            part.strip()
-            for part in (self._persona, spec["prompt"], body)
-            if part.strip()
-        )
+        parts = (self._persona, str(spec.get("prompt") or ""), body)
+        return "\n\n".join(part.strip() for part in parts if part.strip())
 
     def _tools(self, scene) -> list[dict]:
         """按场景启用的动作拼工具声明，再挂上场景自己的工具。"""

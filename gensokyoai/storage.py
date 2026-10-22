@@ -53,12 +53,14 @@ class Storage:
         self._max_dirty = max(0.0, max_dirty_s)
         self._clock = clock
         self._log = log
-        self._queue = asyncio.Queue()
-        self._file = None
+        self._queue: asyncio.Queue[tuple[str | None, asyncio.Future | None]] = (
+            asyncio.Queue()
+        )
+        self._file: ayafileio.AsyncFile[str] | None = None
         self._size = 0
         self._dirty = False
         self._first_dirty = 0.0
-        self._worker = None
+        self._worker: asyncio.Task | None = None
         self._closing = False
         if tasks is not None:
             tasks.on_idle(self.sync)
@@ -188,7 +190,10 @@ class Storage:
             return await self._queue.get()
 
     async def _drain(self, batch) -> None:
-        """把这一批写下去，然后按需要落盘。"""
+        """把这一批写下去，然后按需要落盘。
+
+        句柄每轮重新取：轮转会换掉 `self._file`，抓旧句柄会写到已关闭的文件上。
+        """
         await self._ensure_open()
         pending = []
         for text, future in batch:
@@ -199,7 +204,7 @@ class Storage:
             payload = text.encode()
             if self._size + len(payload) > self._max_bytes:
                 await self._rotate()
-            await self._file.write(text)
+            await self._write_locked(text)
             self._size += len(payload)
             self._mark_dirty()
             if future is not None:
@@ -220,6 +225,12 @@ class Storage:
         if not self._dirty:
             self._first_dirty = self._clock()
             self._dirty = True
+
+    async def _write_locked(self, text: str) -> None:
+        """写进当前句柄（句柄不存在就开一个）。"""
+        await self._ensure_open()
+        if self._file is not None:
+            await self._file.write(text)
 
     async def _ensure_open(self) -> None:
         if self._file is not None and not self._file.closed:
