@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..character import load_card
 from ..mind import Mind
+from ..settings import PromptSettings
 from .manager import LLMManager
 from .prompt_cache import PromptCache
 
@@ -53,7 +54,12 @@ async def build_mind(
         tuple[Mind, LLMManager | None]: 心智与管理器（老路径时为 None）
     """
     card = load_card(card_path)
-    cache = PromptCache(log=log)  # 系统提示词冻住，前缀缓存才可能命中
+    prompt = settings.prompt if settings is not None else PromptSettings()
+    cache = (
+        PromptCache(log=log, fixed=prompt.fixed, name="提示词前缀")
+        if prompt.cache
+        else None
+    )
     base = llm_root(root)
     if base is not None:
         manager = LLMManager(base, health=health, usage_path=usage_path, log=log)

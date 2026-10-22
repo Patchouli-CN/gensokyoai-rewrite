@@ -112,11 +112,39 @@ class BillingSettings(msgspec.Struct, frozen=True):
     """ 用量流水路径（空 = 不落盘，重启后窗口从头算） """
 
 
+class PromptSettings(msgspec.Struct, frozen=True):
+    """前缀缓存与压缩的旋钮。"""
+
+    cache: bool = True
+    """ 关掉就每轮重拼提示词（不保证命中，也不压缩） """
+
+    fixed: int = 64
+    """ 对齐粒度（token）：云端缓存按 64 对齐 """
+
+    compact_ratio: float = 0.75
+    """ 上下文用到多少才压缩（1.0 = 塞满才压） """
+
+    compact_keep: int = 8
+    """ 压缩时留几条最近历史不压 """
+
+
+class IdleSettings(msgspec.Struct, frozen=True):
+    """静息整理的节奏。"""
+
+    sleep_s: float = 1800.0
+    """ 房间静默多久算睡着（秒） """
+
+    patrol_s: float = 60.0
+    """ 巡检间隔（秒） """
+
+
 class Settings(msgspec.Struct, frozen=True):
     """一份配置。"""
 
     model: ModelSettings = msgspec.field(default_factory=ModelSettings)
     billing: BillingSettings = msgspec.field(default_factory=BillingSettings)
+    prompt: PromptSettings = msgspec.field(default_factory=PromptSettings)
+    idle: IdleSettings = msgspec.field(default_factory=IdleSettings)
 
     def build_vision_model(
         self,

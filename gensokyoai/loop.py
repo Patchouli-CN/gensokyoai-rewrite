@@ -81,6 +81,8 @@ class Loop:
         window: int = _WINDOW,
         max_steps: int = _MAX_STEPS,
         max_attempts: int = _MAX_ATTEMPTS,
+        compact_ratio: float = _COMPACT_RATIO,
+        compact_keep: int = _COMPACT_KEEP,
         retry_backoff: float = _BACKOFF_S,
         retry_backoff_max: float = _BACKOFF_MAX_S,
         bubble_gap: float | None = None,
@@ -120,6 +122,8 @@ class Loop:
         self._window = max(0, window)
         self._max_steps = max(1, max_steps)
         self._max_attempts = max(1, max_attempts)
+        self._compact_ratio = min(1.0, max(0.1, compact_ratio))
+        self._compact_keep = max(0, compact_keep)
         self._attempts = 0
         self._retry_backoff = max(0.0, retry_backoff)
         self._retry_backoff_max = max(self._retry_backoff, retry_backoff_max)
@@ -321,7 +325,7 @@ class Loop:
             feed["history"] = [event.wire() for event in self.room.context(shown)]
         return feed
 
-    async def compact_cache(self, keep: int = _COMPACT_KEEP) -> int:
+    async def compact_cache(self, keep: int | None = None) -> int:
         """把旧历史压成摘要，只动 _fixed_msg（系统块照旧命中）。
 
         Args:
@@ -333,6 +337,7 @@ class Loop:
         cache = self._cache
         if cache is None:
             return 0
+        keep = self._compact_keep if keep is None else keep
         blocks = list(cache.history_blocks)
         if len(blocks) <= keep:
             return 0
@@ -364,7 +369,7 @@ class Loop:
         context = self.mind.model.context
         if cache is None or context <= 0:
             return 0
-        if cache.total_tokens < context * _COMPACT_RATIO:
+        if cache.total_tokens < context * self._compact_ratio:
             return 0
         return await self.compact_cache()
 
