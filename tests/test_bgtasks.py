@@ -105,8 +105,9 @@ async def test_roomlog_write_and_replay(tmp_path):
     """note 落盘一行；load 回放全部"""
     tasks = BgTasks()
     log = RoomLog(tmp_path / "events.jsonl", tasks)
-    await log.note(Event(kind="message", sender="你", text="你好"))
-    await log.note(Event(kind="reply", sender="觉", text="你好呀"))
+    log.note(Event(kind="message", sender="你", text="你好"))
+    log.note(Event(kind="reply", sender="觉", text="你好呀"))
+    await log.sync()
 
     events = log.load()
 
@@ -133,10 +134,13 @@ async def test_roomlog_task_name_is_per_room(tmp_path):
     first = RoomLog(tmp_path / "g1" / "events.jsonl", tasks)
     second = RoomLog(tmp_path / "g2" / "events.jsonl", tasks)
 
-    task1 = first.note(Event(kind="message", sender="甲", text="x"))
-    task2 = second.note(Event(kind="message", sender="甲", text="y"))
+    first.note(Event(kind="message", sender="甲", text="x"))
+    second.note(Event(kind="message", sender="甲", text="y"))
+    await first.sync()
+    await second.sync()
 
-    assert (task1.get_name(), task2.get_name()) == ("roomlog:g1", "roomlog:g2")
+    names = {first._storage._worker.get_name(), second._storage._worker.get_name()}
+    assert len(names) == 2, f"每个房间一个 worker，实际 {names}"
     await tasks.idle()
     await tasks.shutdown()
 
@@ -147,7 +151,8 @@ async def test_roomlog_rotates_at_size_limit(tmp_path):
     tasks = BgTasks()
     log = RoomLog(path, tasks, max_bytes=1024)
     for i in range(200):
-        await log.note(Event(kind="message", sender="甲", text=f"第{i}条" + "x" * 20))
+        log.note(Event(kind="message", sender="甲", text=f"第{i}条" + "x" * 20))
+    await log.sync()
     await tasks.idle()
 
     assert path.with_name(path.name + ".1").exists()
@@ -161,7 +166,8 @@ async def test_roomlog_load_reads_tail_only(tmp_path):
     tasks = BgTasks()
     log = RoomLog(path, tasks, max_bytes=2048)
     for i in range(120):
-        await log.note(Event(kind="message", sender="甲", text=f"第{i}条" + "y" * 20))
+        log.note(Event(kind="message", sender="甲", text=f"第{i}条" + "y" * 20))
+    await log.sync()
     await tasks.idle()
 
     events = log.load()

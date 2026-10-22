@@ -1,14 +1,12 @@
-"""append-only 存储 —— 业务只管往里塞，什么时候落盘由它自己决定。
+"""append-only 存储 —— 提交者只管塞队列，落盘由后台 worker 负责。
 
-写是顺序追加、带锁保序；落盘走"静默后批量刷"：
+    storage = Storage(path, tasks=tasks, idle_ms=6000, max_dirty_s=30)
+    storage.write(line)          # 同步提交，不阻塞
+    await storage.sync()         # 等队列里这批真的写下去（测试/收尾用）
+    await storage.aclose()       # 排空 + 刷盘 + 关句柄 + 停 worker
 
-    · 有写在动 → 攒着（不刷）
-    · 安静 idle_ms 之后 → 刷一次
-    · 脏数据滞留超过 max_dirty_s → 立刻刷（否则一直有人说话就永远不刷）
-    · aclose() → 刷完再关
-
-flush 的语义跟底层一致（ayafileio 在 Windows 上是 FlushFileBuffers，实测
-40–120 ms），所以绝不能按行刷；按批刷的代价可以忽略。
+flush 跟底层语义一致（ayafileio 在 Windows 上是 FlushFileBuffers，实测
+40–120 ms），所以绝不按行刷；按批刷的成本可以忽略。
 """
 
 import asyncio
@@ -18,123 +16,121 @@ from pathlib import Path
 import ayafileio
 
 _MAX_BYTES = 10 * 1024 * 1024
-""" 单文件大小上界，超了轮转到 .1 """
-
 _IDLE_MS = 6000
-""" 安静多久后自动落盘 """
-
 _MAX_DIRTY_S = 30.0
-""" 脏数据最多滞留多久（防止一直有人说话就永远不刷） """
+_BATCH = 64
 
 
 class Storage:
-    """追加写 + 空闲自动落盘。"""
+    """追加写 + 队列 + 空闲落盘。"""
 
     def __init__(
         self,
-        path: str | Path,
+        path,
         *,
-        max_bytes: int = _MAX_BYTES,
-        idle_ms: int = _IDLE_MS,
-        max_dirty_s: float = _MAX_DIRTY_S,
+        tasks=None,
+        max_bytes=_MAX_BYTES,
+        idle_ms=_IDLE_MS,
+        max_dirty_s=_MAX_DIRTY_S,
         clock=time.monotonic,
         log=None,
     ) -> None:
-        """初始化（不建文件，第一次写才开）。
+        """初始化（第一次写才开文件和 worker）。
 
         Args:
             path: 文件路径
+            tasks: 后台任务登记处（None = 自己 create_task）
             max_bytes: 超过就轮转成 `<path>.1`
-            idle_ms: 安静多久后落盘（0 = 关闭自动落盘）
+            idle_ms: 队列安静多久后落盘（0 = 不做空闲落盘）
             max_dirty_s: 脏数据滞留上限（0 = 不设上限）
             clock: 时间源（测试注入）
             log: 日志器
         """
         self.path = Path(path)
+        self._tasks = tasks
         self._max_bytes = max(1024, max_bytes)
         self._idle = max(0.0, idle_ms / 1000.0)
         self._max_dirty = max(0.0, max_dirty_s)
         self._clock = clock
         self._log = log
-        self._lock = asyncio.Lock()
-        self._file: ayafileio.AsyncFile[str] | None = None
+        self._queue = asyncio.Queue()
+        self._file = None
         self._size = 0
         self._dirty = False
         self._first_dirty = 0.0
-        self._last_write = 0.0
-        self._flusher: asyncio.Task | None = None
-        self._pending: set[asyncio.Task] = set()
+        self._worker = None
         self._closing = False
+        if tasks is not None:
+            tasks.on_idle(self.sync)
 
-    async def append(self, text: str) -> int:
-        """追加一行（保序），必要时轮转；返回写入的字节数。
+    # ---------- 对外 ----------
+
+    def write(self, text):
+        """提交一行（同步、不阻塞）。
 
         Args:
             text: 要写的文本（调用方负责换行）
 
         Returns:
-            int: 写入的字节数
-
-        Raises:
-            RuntimeError: 已经关闭
+            asyncio.Future | None: 这一行写完时 resolve；没有事件循环时为 None
         """
-        payload = text.encode()
-        async with self._lock:
-            if self._closing:
-                raise RuntimeError("storage 已关闭")
-            await self._ensure_open()
-            if self._size + len(payload) > self._max_bytes:
-                await self._rotate_locked()
-            await self._file.write(text)
-            self._size += len(payload)
-            self._mark_dirty()
-
-        await self._flush_if_overdue()
-        self._arm_flusher()
-        return len(payload)
-
-    def write_soon(self, text: str) -> None:
-        """把一行排进事件循环（同步调用点用）；没有循环就当场同步写。
-
-        Args:
-            text: 要写的文本（调用方负责换行）
-        """
+        if self._closing:
+            raise RuntimeError("storage 已关闭")
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             self._write_sync(text)
-            return
-        task = loop.create_task(self.append(text))
-        self._pending.add(task)
-        task.add_done_callback(self._pending.discard)
+            return None
+        future = loop.create_future()
+        self._start_worker()
+        self._queue.put_nowait((text, future))
+        return future
 
-    def _write_sync(self, text: str) -> None:
-        """没有事件循环时的兜底：直接追加（写穿到 OS 即返回）。"""
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as file:
-                file.write(text)
-                self._size += len(text.encode())
-        except OSError as error:
-            if self._log is not None:
-                self._log.warning(f"写 {self.path.name} 失败: {error}")
+    async def append(self, text):
+        """提交一行并等它写完（测试与需要确认的调用方用）。
+
+        Args:
+            text: 要写的文本
+
+        Returns:
+            int: 写入的字节数
+        """
+        future = self.write(text)
+        if future is not None:
+            await future
+        return len(text.encode())
+
+    async def sync(self) -> None:
+        """等队列里的东西都写下去（不等待 fsync）。"""
+        worker = self._worker
+        if worker is None or worker.done():
+            return
+        marker = asyncio.get_running_loop().create_future()
+        self._queue.put_nowait((None, marker))
+        await marker
 
     async def flush(self) -> None:
         """立刻落盘（没脏数据就什么都不做）。"""
-        async with self._lock:
-            await self._flush_locked()
+        if self._file is None or not self._dirty:
+            return
+        await self._file.flush()
+        self._dirty = False
+        self._first_dirty = 0.0
 
     async def aclose(self) -> None:
-        """刷完、关句柄（可重复调用）。"""
+        """排空队列、刷盘、关句柄、停 worker（可重复调用）。"""
+        if self._closing:
+            return
         self._closing = True
-        task, self._flusher = self._flusher, None
-        if task is not None and not task.done():
-            task.cancel()
-        if self._pending:
-            await asyncio.gather(*self._pending, return_exceptions=True)
-        async with self._lock:
-            await self._flush_locked()
-            await self._close_locked()
+        worker, self._worker = self._worker, None
+        if worker is not None and not worker.done():
+            self._queue.put_nowait((None, None))
+            try:
+                await asyncio.wait_for(worker, timeout=5.0)
+            except (TimeoutError, asyncio.CancelledError):
+                worker.cancel()
+        await self.flush()
+        await self._close_file()
 
     @property
     def size(self) -> int:
@@ -146,47 +142,84 @@ class Storage:
         """有没有还没落盘的内容。"""
         return self._dirty
 
+    # ---------- worker ----------
+
+    def _start_worker(self) -> None:
+        worker = self._worker
+        if worker is not None and not worker.done():
+            return
+        name = f"storage:{self.path.parent.name}/{self.path.name}"
+        if self._tasks is not None:
+            self._worker = self._tasks.spawn_worker(name, self._run())
+        else:
+            self._worker = asyncio.get_running_loop().create_task(
+                self._run(), name=name
+            )
+
+    async def _run(self) -> None:
+        """队列循环：取一批 → 写 → 必要时落盘；空闲超时就刷。"""
+        while True:
+            item = await self._next()
+            if item is None:
+                return
+            batch = [item]
+            return_now = False
+            while len(batch) < _BATCH:
+                try:
+                    more = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                batch.append(more)
+                if more[0] is None:
+                    return_now = True
+                    break
+            await self._drain(batch)
+            if return_now:
+                return
+
+    async def _next(self):
+        """等下一件；空闲超过 idle 就先落盘再继续等。"""
+        if self._idle <= 0:
+            return await self._queue.get()
+        try:
+            return await asyncio.wait_for(self._queue.get(), timeout=self._idle)
+        except TimeoutError:
+            await self.flush()
+            return await self._queue.get()
+
+    async def _drain(self, batch) -> None:
+        """把这一批写下去，然后按需要落盘。"""
+        await self._ensure_open()
+        pending = []
+        for text, future in batch:
+            if text is None:
+                if future is not None:
+                    pending.append(future)
+                continue
+            payload = text.encode()
+            if self._size + len(payload) > self._max_bytes:
+                await self._rotate()
+            await self._file.write(text)
+            self._size += len(payload)
+            self._mark_dirty()
+            if future is not None:
+                pending.append(future)
+        if (
+            self._dirty
+            and self._max_dirty > 0
+            and self._clock() - self._first_dirty >= self._max_dirty
+        ):
+            await self.flush()
+        for future in pending:
+            if not future.done():
+                future.set_result(None)
+
     # ---------- 内部 ----------
 
     def _mark_dirty(self) -> None:
-        now = self._clock()
         if not self._dirty:
-            self._first_dirty = now
+            self._first_dirty = self._clock()
             self._dirty = True
-        self._last_write = now
-
-    async def _flush_if_overdue(self) -> None:
-        """脏数据滞留太久就立刻刷（防饿死）。"""
-        if not self._dirty or self._max_dirty <= 0:
-            return
-        if self._clock() - self._first_dirty >= self._max_dirty:
-            await self.flush()
-
-    def _arm_flusher(self) -> None:
-        """重新计时：有新写就把上一轮计时器取消。"""
-        if self._idle <= 0 or self._closing:
-            return
-        task = self._flusher
-        if task is not None and not task.done():
-            task.cancel()
-        self._flusher = asyncio.get_running_loop().create_task(self._flush_when_idle())
-
-    async def _flush_when_idle(self) -> None:
-        """安静够久就刷；期间又被写就退出，由新的计时器接手。"""
-        while True:
-            await asyncio.sleep(self._idle)
-            if not self._dirty:
-                return
-            if self._clock() - self._last_write >= self._idle:
-                await self.flush()
-                return
-
-    async def _flush_locked(self) -> None:
-        if self._file is None or not self._dirty:
-            return
-        await self._file.flush()
-        self._dirty = False
-        self._first_dirty = 0.0
 
     async def _ensure_open(self) -> None:
         if self._file is not None and not self._file.closed:
@@ -198,15 +231,15 @@ class Storage:
         except OSError:
             self._size = 0
 
-    async def _close_locked(self) -> None:
+    async def _close_file(self) -> None:
         if self._file is not None:
             await self._file.close()
             self._file = None
 
-    async def _rotate_locked(self) -> None:
+    async def _rotate(self) -> None:
         """关掉当前文件、备份成 .1、重新打开。"""
-        await self._flush_locked()
-        await self._close_locked()
+        await self.flush()
+        await self._close_file()
         backup = self.path.with_name(self.path.name + ".1")
         try:
             if backup.exists():
@@ -215,11 +248,23 @@ class Storage:
         except OSError as error:
             if self._log is not None:
                 self._log.warning(f"日志轮转失败（{error}），继续写原文件")
+            await self._ensure_open()
             return
         self._size = 0
         await self._ensure_open()
         if self._log is not None:
             self._log.debug(f"日志已轮转: {self.path.name} -> {backup.name}")
+
+    def _write_sync(self, text) -> None:
+        """没有事件循环时的兜底（脚本/同步单测）。"""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as file:
+                file.write(text)
+            self._size += len(text.encode())
+        except OSError as error:
+            if self._log is not None:
+                self._log.warning(f"写 {self.path.name} 失败: {error}")
 
 
 __all__ = ["Storage"]

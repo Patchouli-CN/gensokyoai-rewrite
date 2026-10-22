@@ -7,7 +7,6 @@
 由它自己决定要不要展开。
 """
 
-import asyncio
 import base64
 import time
 from pathlib import Path
@@ -116,7 +115,9 @@ class RoomLog:
         self._max_bytes = max(1024, max_bytes)
         self._name = path.parent.name or path.stem
         self._media_dir = path.parent / "media"
-        self._storage = Storage(path, max_bytes=self._max_bytes, log=_logger)
+        self._storage = Storage(
+            path, tasks=tasks, max_bytes=self._max_bytes, log=_logger
+        )
         tasks.on_shutdown(self.aclose)
 
     def load(self, limit: int | None = None) -> list[Event]:
@@ -211,18 +212,19 @@ class RoomLog:
             text = file.read().decode("utf-8", errors="ignore")
         return text.split("\n", 1)[-1] if start else text
 
-    def note(self, event: Event) -> asyncio.Task:
-        """异步入盘；同房间的写经锁串行，保序。
+    def note(self, event: Event) -> None:
+        """提交落盘（进队列就返回，写由 Storage 的 worker 负责）。
 
         图片写旁边的 `media/`，JSONL 里只留文件名（base64 不进日志）。
-
-        Returns:
-            asyncio.Task: 写盘任务（想确认落盘可以 await 它）
         """
         if event.images:
             event = msgspec.structs.replace(event, images=self._save_media(event))
         line = msgspec.json.encode(event).decode() + "\n"
-        return self._tasks.spawn(f"roomlog:{self._name}", self._storage.append(line))
+        self._storage.write(line)
+
+    async def sync(self) -> None:
+        """等已提交的事件真的写下去（测试与收尾用）。"""
+        await self._storage.sync()
 
     async def aclose(self) -> None:
         """刷完并关句柄（可重复调用）。"""

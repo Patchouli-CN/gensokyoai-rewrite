@@ -338,7 +338,7 @@ class UsageLedger:
             },
             ensure_ascii=False,
         )
-        self._storage.write_soon(line + "\n")
+        self._storage.write(line + "\n")
 
     async def aclose(self) -> None:
         """收尾：把没落盘的流水刷掉、关句柄。"""
