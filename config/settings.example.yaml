@@ -1,39 +1,23 @@
-# 模型与计费 —— CLI 与 nb2 插件共用这一份；改完重启才生效。
+# 配置示例 —— 复制成 settings.yaml 再改（settings.yaml 不进仓库）。
 #
-# 本地 llama-server 用默认值就行；换云端只改 model 段。
-# 订阅制（Claude Pro/Max）没有单价、只有窗口墙：跳过 price，填 quotas。
-
-model:
-  provider: openai                        # openai / anthropic / deepseek
-  base_url: http://127.0.0.1:8080/v1
-  name: ""                                # 云端必填：deepseek-flash / gpt-4o-mini / claude-sonnet-4-...
-  api_key: ""                             # 本地留空；云端填令牌
-  think: false                            # null = 连这个厂商专有字段都不发
-  timeout: 120
-  extra: {}                               # 原样并进请求体（厂商专有参数）
-
-  # 换 DeepSeek 长这样（provider 换成 deepseek，价和峰谷它自己带）：
-  #   provider: deepseek
-  #   base_url: https://api.deepseek.com/v1
-  #   name: deepseek-flash
-  #   think: null
-  #   extra: {thinking: {type: disabled}}   # 它默认开思考，会把输出 token 烧一半
-
-  # 能干哪些活：text / image（audio、video 只是占位，传输还没做）。
-  # 启动时会先问端点（有的服务在 /v1/models 里自报），问不到再按模型名猜，
-  # 都猜不出才用这里的声明。猜不出又写着 image 的话，图片会降级成文字标记。
-  capabilities: [text, image]
-  auto_detect: true
+# 这份文件必须覆盖 gensokyoai.settings.Settings 的**全部字段**：
+# tests/test_settings_example.py 会逐字段核对，加字段忘了更新这里会红。
+#
+# 现在的分工：
+#   config/llm/*.yaml   模型、供应商、任务、价格（唯一来源）
+#   settings.yaml       计费覆盖 + 前缀缓存 + 静息整理
+#
+# model 段只给回退路径用（config/llm 不存在时才会读它），平时不用写。
 
 billing:
-  # 价格跟着适配器走：openai / anthropic 带官方美元价，deepseek 带人民币峰谷价。
+  # 价格跟着适配器走（openai / anthropic 带美元价，deepseek 带人民币峰谷价）。
   # 想覆盖就在这里写，全 0 = 用适配器自带的。
   price:
-    currency: USD
+    currency: CNY
     input: 0
     output: 0
     cached: 0
-    # peak:            # 给了高峰价就启用峰谷（北京时间的工作时段）
+    # peak:                # 给了高峰价就启用峰谷（北京时间的工作时段）
     #   input: 0
     #   output: 0
     #   cached: 0
@@ -49,5 +33,30 @@ billing:
   #   - span: 7d
   #     tokens: 1000000
 
-  # 用量流水（相对本文件所在仓库根）。空 = 不落盘，重启后窗口从头算。
-  usage: data/usage.jsonl
+  # 用量流水。空 = 用 data/usage.jsonl
+  usage: ""
+
+# 前缀缓存与压缩
+prompt:
+  cache: true           # false = 每轮重拼、不压缩（调试/回退用）
+  fixed: 64             # 对齐粒度（token），云端前缀缓存按 64 对齐
+  compact_ratio: 0.75   # 上下文用到多少才压缩（1.0 = 塞满才压）
+  compact_keep: 8       # 压缩时留最近几条历史不压
+
+# 静息整理
+idle:
+  sleep_s: 1800         # 房间静默多久算睡着（秒）
+  patrol_s: 60          # 巡检间隔（秒）
+
+# 只在没有 config/llm 时才用（回退路径）
+model:
+  provider: openai
+  base_url: http://127.0.0.1:8080/v1
+  name: ""
+  api_key: ""
+  think: false
+  timeout: 120
+  extra: {}
+  capabilities: [text, image]
+  auto_detect: true
+  vision: ""
