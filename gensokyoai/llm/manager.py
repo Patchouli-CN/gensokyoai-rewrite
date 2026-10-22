@@ -152,6 +152,7 @@ class LLMManager:
             timeout=provider.timeout,
             extra=model.extra or None,
             capabilities=model.capabilities,
+            context=model.context,
             billing=self._billing_of(model),
             quotas=self.quotas(),
             usage_path=self._usage_path,
