@@ -231,7 +231,8 @@ class Loop:
             if not images or err.retryable:
                 raise
             _logger.warning(
-                f"{self.room.name} 带图请求被拒（HTTP {err.status}），去掉图重试"
+                f"{self.room.name} 带图请求被拒（HTTP {err.status}），去掉图重试："
+                f"{err.body[:160]}"
             )
             return await self.mind.step(payload, self._scene, images=None)
 
