@@ -22,6 +22,7 @@ class _Sink:
 
 
 class _QuietMind:
+    prompt_cache = None
     name = "觉"
 
     async def step(self, feed: dict) -> Reply:

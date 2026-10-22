@@ -1,131 +1,230 @@
-"""PromptCache 的测试：冻住、命中、漂移告警、失效、统计。"""
+"""PromptCache：三区分离、对齐、撤回、压缩、报告、整份重建。"""
 
 import pytest
 
-from gensokyoai.llm.prompt_cache import (
-    NullPromptCache,
-    PromptCache,
-    estimate_tokens,
-)
+from gensokyoai.llm.prompt_cache import PromptCache, estimate_tokens
 
 
-def test_freezes_first_build():
-    """第一次拼好就冻住，之后原样返回"""
+def _talk(cache: PromptCache, count: int, text: str = "帕秋莉：借我书" * 4) -> None:
+    """往尾巴塞 count 条消息。"""
+    for _ in range(count):
+        cache.add(text)
+
+
+def test_fixed_block_rejects_conflict():
+    """同名不同值直接拒绝"""
     cache = PromptCache()
-    calls: list[int] = []
+    cache.stable_fixed("persona", "觉")
 
-    def build() -> str:
-        calls.append(1)
-        return f"人设 v{len(calls)}"
-
-    first = cache.get("qq", build)
-    second = cache.get("qq", build)
-
-    assert first == second == "人设 v1\n"
-    assert cache.stats["hits"] == 1
-    assert cache.stats["misses"] == 1
+    with pytest.raises(ValueError):
+        cache.stable_fixed("persona", "芙兰")
 
 
-def test_normalizes_whitespace():
-    """换行与尾部空白的差异被抹平（对模型没意义，对缓存是致命的）"""
+def test_fixed_block_same_value_is_noop():
+    """同名同值重复设置无害"""
     cache = PromptCache()
+    cache.stable_fixed("persona", "觉")
+    cache.stable_fixed("persona", "觉")
 
-    text = cache.get("k", lambda: "a\r\nb\r\n\r\n")
-
-    assert text == "a\nb\n"
+    assert cache.fixed_names == ("persona",)
 
 
-def test_detects_drift_without_changing_prefix():
-    """有人想改前缀：只记漂移，冻住的那份不动（保住命中）"""
+def test_build_is_plain_concatenation():
+    """拼接不加任何预处理"""
     cache = PromptCache()
-    version = {"value": "v1"}
+    cache.stable_fixed("a", "第一段")
+    cache.add("第二段")
 
-    cache.get("qq", lambda: version["value"])
-    version["value"] = "v2"
-    again = cache.get("qq", lambda: version["value"])
-
-    assert again == "v1\n", "必须继续返回冻住的那份"
-    assert cache.stats["drifts"] == 1
-    assert cache.drifts("qq")
+    assert cache.build() == "第一段\n第二段"
 
 
-def test_drift_recorded_once_per_variant():
-    """同一变体反复出现只记一次，别刷屏"""
+def test_stabilize_moves_messages_into_history():
+    """稳定把消息推进历史区，系统块不动"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人" * 60)
+    _talk(cache, 20)
+
+    moved = cache.stabilize()
+
+    assert moved > 0
+    assert len(cache.history_blocks) == moved
+    assert cache.system_tokens == 60
+    assert cache.tail_tokens > 0
+
+
+def test_stabilize_aligns_to_grid():
+    """切点对齐到 64：已固定部分不超出格子"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人设" * 30)
+    _talk(cache, 15)
+
+    cache.stabilize()
+
+    assert cache.waste_tokens < cache.fixed
+    assert cache.aligned_tokens <= cache.prefix_tokens
+
+
+def test_stabilize_keeps_tail_when_not_enough():
+    """不够一格就不硬塞"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人" * 64)
+    cache.add("尾")
+
+    assert cache.stabilize() == 0
+    assert cache.tail_tokens == 1
+
+
+def test_rollback_removes_tail():
+    """撤回把尾巴整段丢掉"""
     cache = PromptCache()
-    state = {"v": "a"}
-    cache.get("qq", lambda: state["v"])
+    cache.add("a")
+    cache.add("b")
+    cache.add("c")
 
-    for _ in range(5):
-        state["v"] = "b"
-        cache.get("qq", lambda: state["v"])
+    cache.rollback(1)
 
-    assert cache.stats["drifts"] == 1
+    assert cache.build() == "a"
 
 
-def test_build_failure_during_check_is_ignored():
-    """核对时拼前缀抛异常：不影响对话"""
+def test_rollback_cannot_touch_history():
+    """撤不到已稳定的历史（它在另一个区，尾巴下标够不着）"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人" * 60)
+    _talk(cache, 20)
+    moved = cache.stabilize()
+    assert moved > 0
+
+    with pytest.raises(IndexError):
+        cache.rollback(len(cache.history_blocks))
+    with pytest.raises(IndexError):
+        cache.rollback(999)
+
+
+def test_compact_only_touches_history():
+    """压缩只动历史，系统块逐字节不变"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人" * 60)
+    cache.stable_fixed("tools", "工具清单" * 20)
+    _talk(cache, 30)
+    cache.stabilize()
+    system_before = cache.system_tokens
+    history_before = cache.history_tokens
+
+    dropped = cache.compact("（往事概要）今天借了三本书", keep=2)
+
+    assert dropped > 0
+    assert cache.system_tokens == system_before, "系统块不许动"
+    assert cache.history_tokens < history_before, "历史该变小"
+    assert cache.history_blocks[0].startswith("（往事概要）")
+
+
+def test_compact_bumps_epoch_and_resets_baseline():
+    """压缩进入新一代，报告基线清空"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人" * 60)
+    _talk(cache, 30)
+    cache.stabilize()
+
+    cache.compact("概要", keep=1)
+
+    assert cache.epoch == 2
+    assert cache.report() is None, "新基线还没建立，不该报裂痕"
+
+
+def test_compact_without_history_is_noop():
+    """没历史可压时什么都不做"""
     cache = PromptCache()
-    cache.get("qq", lambda: "稳定")
+    cache.stable_fixed("persona", "人" * 10)
 
-    def boom() -> str:
-        raise RuntimeError("炸了")
-
-    assert cache.get("qq", boom) == "稳定\n"
+    assert cache.compact("概要") == 0
+    assert cache.epoch == 1
 
 
-def test_invalidate_allows_rebuild():
-    """确实要改前缀时，invalidate 之后重建"""
-    cache = PromptCache()
-    cache.get("qq", lambda: "v1")
-    cache.invalidate("qq")
+def test_compact_drop_all_when_keep_zero():
+    """keep=0 时旧历史全丢，只留摘要"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人" * 60)
+    _talk(cache, 30)
+    cache.stabilize()
 
-    assert cache.get("qq", lambda: "v2") == "v2\n"
+    cache.compact("完全概要")
 
-
-def test_eviction_when_too_many_keys():
-    """冻的前缀有上限（房间多了不会无限涨）"""
-    cache = PromptCache(max_entries=2)
-    for name in ("a", "b", "c"):
-        cache.get(name, lambda n=name: n)
-
-    assert cache.stats["keys"] == 2
+    assert len(cache.history_blocks) == 1
 
 
-def test_null_cache_always_rebuilds():
-    """NullPromptCache 不冻结：改配置立刻生效"""
-    cache = NullPromptCache()
-    assert cache.get("qq", lambda: "v1") == "v1\n"
-    assert cache.get("qq", lambda: "v2") == "v2\n"
+def test_report_is_none_when_prefix_intact():
+    """前缀只增不改时报告为空"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人" * 60)
+    _talk(cache, 20)
+    cache.stabilize()
+    cache.add("新消息")
+
+    assert cache.report() is None
 
 
-def test_estimate_tokens_covers_cache_threshold():
-    """估算够不够 64 token 的缓存门槛"""
-    short = estimate_tokens("你好")
-    long = estimate_tokens("你好" * 200)
+def test_report_catches_broken_prefix():
+    """固定块被绕过 API 改掉时，报告指出位置"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人" * 60)
+    _talk(cache, 20)
+    cache.stabilize()
 
-    assert short < 64
-    assert long >= 400
+    cache._fixed[0] = ("persona", "换成别人了" * 20)
+    report = cache.report()
+
+    assert report is not None
+
+
+def test_stats_splits_three_regions():
+    """统计能分别看到系统/历史/尾巴"""
+    cache = PromptCache(name="ds模型缓存", fixed=64)
+    cache.stable_fixed("persona", "人" * 100)
+
+    stats = cache.stats()
+    assert stats["name"] == "ds模型缓存"
+    assert stats["fixed"] == 64
+    assert stats["system_tokens"] == 100
+    assert stats["history_tokens"] == 0
+    assert stats["epoch"] == 1
+
+
+def test_estimate_tokens_mixed_text():
+    """中英混排的粗估"""
     assert estimate_tokens("") == 0
+    assert estimate_tokens("你好") == 2
+    assert estimate_tokens("abcd") == 1
 
 
-def test_stats_reports_size():
-    """统计里有 key 数、字符近似 token、命中次数"""
+def test_clear_rebuilds_everything():
+    """系统块变了要能整份重建（人设热更新）"""
+    cache = PromptCache(fixed=64, name="qq")
+    cache.stable_fixed("persona", "旧人设" * 10)
+    cache.add("一条消息")
+
+    cache.clear()
+
+    assert cache.fixed_names == ()
+    assert cache.build() == ""
+    assert cache.epoch == 2
+
+
+def test_transcript_excludes_system_blocks():
+    """transcript 只给消息区（拼在 user 前面），不含系统块"""
+    cache = PromptCache(fixed=64)
+    cache.stable_fixed("persona", "人设正文")
+    cache.add("甲：你好")
+    cache.add("觉：你也好")
+
+    text = cache.transcript()
+
+    assert "甲：你好" in text
+    assert "人设正文" not in text
+
+
+def test_transcript_empty_when_no_messages():
+    """没消息时 transcript 是空串"""
     cache = PromptCache()
-    cache.get("qq", lambda: "人设正文" * 50)
-    cache.get("qq", lambda: "人设正文" * 50)
+    cache.stable_fixed("persona", "人设")
 
-    stats = cache.stats
-    assert stats["keys"] == 1
-    assert stats["hits"] == 1
-    assert stats["tokens"] > 64
-
-
-@pytest.mark.parametrize("key", ["qq", "console"])
-def test_same_prefix_byte_identical(key):
-    """同样的输入永远得到逐字节相同的输出（缓存的前提）"""
-    cache = PromptCache()
-
-    first = cache.get(key, lambda: "人设\n\n场景\n\n机制")
-    second = cache.get(key, lambda: "人设\n\n场景\n\n机制")
-
-    assert first.encode() == second.encode()
+    assert cache.transcript() == ""

@@ -16,6 +16,7 @@ from gensokyoai.ws_server import Gateway
 
 
 class _Mind:
+    prompt_cache = None
     name = "觉"
 
     async def step(self, feed: dict, scene=None, images=None) -> Reply:
@@ -195,6 +196,7 @@ class _FlakyMouth:
 
 
 class _SayMind:
+    prompt_cache = None
     name = "觉"
 
     def __init__(self) -> None:

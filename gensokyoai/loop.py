@@ -115,6 +115,9 @@ class Loop:
         self._backoff = self._retry_backoff
         self._wake = asyncio.Event()
         self._revealed: list[Event] = []
+        self._prompted = 0
+        self._cache = mind.prompt_cache
+        """ 前缀缓存（None = 关着，history 仍走 JSON） """
         self._revealed_gap: dict | None = None
         self._results: list[dict] = []
         self._dedup_window = max(0.0, dedup_window)
@@ -187,6 +190,7 @@ class Loop:
                 started = time.monotonic()
                 try:
                     await self._turn()
+                    await self._sync_cache()
                 except asyncio.CancelledError:
                     raise
                 except Exception as err:  # noqa: BLE001 - 单轮任何失败都不该让房间死掉
@@ -293,14 +297,35 @@ class Loop:
             else [event.wire() for event in shown]
         )
         results, self._results = self._results, []
-        return {
+        feed = {
             "now": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "events": events,
             "gap": gap,
-            "history": [event.wire() for event in self.room.context(shown)],
             "memories": await self._recall(shown),
             "results": results,
         }
+        if self._cache is None:
+            # 没有前缀缓存时，history 仍走 JSON（模型需要它才接得上话）
+            feed["history"] = [event.wire() for event in self.room.context(shown)]
+        return feed
+
+    async def _sync_cache(self) -> None:
+        """把还没进历史的房间事件推入前缀，然后按对齐前移下界。"""
+        cache = self._cache
+        if cache is None:
+            return
+        events = list(self.room.events)
+        if not events:
+            return
+        if self._prompted == 0:
+            events = events[-self._window :]  # 开机第一次：只补最近一窗
+        fresh = [event for event in events if event.msg_id > self._prompted]
+        if not fresh:
+            return
+        for event in fresh:
+            cache.add(f"{event.sender}：{event.text}")
+        self._prompted = fresh[-1].msg_id
+        cache.stabilize()
 
     async def _on_prose(self, text: str) -> None:
         """模型没调工具、只写了正文。

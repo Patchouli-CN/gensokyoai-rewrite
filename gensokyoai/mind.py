@@ -169,9 +169,14 @@ class Mind:
                 notes.append(story)
                 _logger.debug(f"图片已转述（主模型没有视觉）：{story[:40]}")
         payload = {**feed, "images": notes} if notes else feed
+        body = json.dumps(payload, ensure_ascii=False)
+        if self._prompt_cache is not None:
+            transcript = self._prompt_cache.transcript()
+            if transcript:
+                body = f"{transcript}\n\n{body}"
         return await chosen.chat(
             self._system(scene),
-            json.dumps(payload, ensure_ascii=False),
+            body,
             tools=self._tools(scene),
             images=(images if Capability.IMAGE in chosen.capabilities else None),
             max_tokens=_MAX_TOKENS,
@@ -190,8 +195,38 @@ class Mind:
         """
         if self._prompt_cache is None:
             return self._build_system(scene)
-        key = str(spec_of(scene)["name"]) if scene is not None else "core"
-        return self._prompt_cache.get(key, lambda: self._build_system(scene))
+        blocks = self._system_blocks(scene)
+        try:
+            for name, value in blocks:
+                self._prompt_cache.stable_fixed(name, value)
+        except ValueError:
+            # 人设/场景被改了：整份重建一次，别拿旧前缀硬撑
+            self._prompt_cache.clear()
+            for name, value in blocks:
+                self._prompt_cache.stable_fixed(name, value)
+        return self._prompt_cache.build()
+
+    def _system_blocks(self, scene) -> list[tuple[str, str]]:
+        """系统提示词拆成块：人设 / 场景 / 协议与工具。"""
+        spec = (
+            spec_of(scene)
+            if scene is not None
+            else {"prompt": "", "actions": _ALL_ACTIONS}
+        )
+        lines = [_FEED_DOC]
+        for action in spec["actions"]:
+            lines.append(_ACTION_DOC[action])
+        if scene is not None:
+            for meta in tools_of(scene):
+                lines.append(f"- {meta['name']}：{meta['description']}")
+        lines.append("")
+        lines.append(_HARD)
+        found = [("persona", self._persona)]
+        scene_prompt = str(spec.get("prompt") or "")
+        if scene_prompt:
+            found.append((f"scene:{spec['name']}", scene_prompt))
+        found.append(("protocol", "\n".join(lines)))
+        return found
 
     def _build_system(self, scene) -> str:
         spec = (

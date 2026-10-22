@@ -15,6 +15,7 @@ class _Mouth:
 
 
 class _ScriptedMind:
+    prompt_cache = None
     name = "觉"
 
     def __init__(self, *replies: Reply) -> None:

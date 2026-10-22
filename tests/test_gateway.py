@@ -11,6 +11,7 @@ from gensokyoai.ws_server import Gateway, _parse_frame
 
 
 class _Mind:
+    prompt_cache = None
     name = "觉"
 
     async def step(self, feed: dict) -> Reply:

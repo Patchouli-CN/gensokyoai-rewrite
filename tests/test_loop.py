@@ -11,6 +11,7 @@ from gensokyoai.room import Room
 
 
 class _ScriptedMind:
+    prompt_cache = None
     """按脚本返回动作的假心智。"""
 
     name = "觉"
@@ -237,6 +238,7 @@ async def test_run_retries_after_failure():
 
     class _Flaky:
         name = "觉"
+        prompt_cache = None
 
         def __init__(self) -> None:
             self.calls = 0
@@ -458,6 +460,7 @@ async def test_permanent_error_drops_batch_instead_of_looping():
     calls = []
 
     class _Rejecting:
+        prompt_cache = None
         name = "觉"
 
         async def step(self, feed, scene=None, images=None):
@@ -484,6 +487,7 @@ async def test_image_rejection_retries_without_images():
 
     class _Pickey:
         name = "觉"
+        prompt_cache = None
 
         async def step(self, feed, scene=None, images=None):
             seen.append(bool(images))
