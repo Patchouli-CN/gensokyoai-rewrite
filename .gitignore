@@ -29,3 +29,6 @@ dist/
 
 # nb2 桥接插件：独立部署单元（跑在 NoneBot2 进程），不进引擎仓库，避免耦合
 nb2_plugin/
+
+# 模型 key 单独放文件，不进仓库
+config/llm/keys/

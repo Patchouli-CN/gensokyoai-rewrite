@@ -64,6 +64,8 @@ class Provider(msgspec.Struct, frozen=True):
     base_url: str
     api_key: str = ""
     api_key_env: str = ""
+    api_key_file: str = ""
+    """ key 文件（相对 config/llm 或绝对路径；比 env 可靠，且不进 git） """
     client_type: str = "openai"
     timeout: float = 120.0
 
@@ -328,11 +330,20 @@ class LLMManager:
         """厂商的客户端类型（先只认 openai 兼容）。"""
         return provider.client_type or "openai"
 
-    @staticmethod
-    def _key_of(provider: Provider) -> str:
-        """取 key：先看环境变量，再看配置里写死的。"""
+    def _key_of(self, provider: Provider) -> str:
+        """取 key：环境变量 → key 文件 → 配置里写死的。"""
         if provider.api_key_env:
             value = os.environ.get(provider.api_key_env, "").strip()
+            if value:
+                return value
+        if provider.api_key_file:
+            path = Path(provider.api_key_file)
+            if not path.is_absolute():
+                path = self.root / path
+            try:
+                value = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                value = ""
             if value:
                 return value
         return provider.api_key

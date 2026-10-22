@@ -1,7 +1,9 @@
-# 厂商：base_url / 超时。key 只从环境变量取（DEEPSEEK_API_KEY），不写进仓库。
+# 厂商：base_url / key / 超时。
+# key 优先读环境变量（api_key_env），其次读文件（api_key_file，不进 git）。
 providers:
   - name: deepseek
     base_url: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
-    client_type: openai
+    api_key_file: keys/deepseek.key
+    client_type: deepseek        # 用 DeepSeek 适配器：峰谷价 + /user/balance
     timeout: 120
