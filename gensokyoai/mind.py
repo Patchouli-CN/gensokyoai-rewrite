@@ -123,6 +123,10 @@ class Mind:
         """底层模型端点。"""
         return self._model
 
+    def use_cheap(self, model: ChatModel | None) -> None:
+        """换掉便宜活的端点（启动时由宿主填）。"""
+        self._cheap = model
+
     @property
     def cheap_model(self) -> ChatModel:
         """便宜活用的端点（记忆压缩），没配就退回主模型。"""
