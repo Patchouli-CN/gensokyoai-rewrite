@@ -78,6 +78,8 @@ class ModelEntry(msgspec.Struct, frozen=True):
     api_name: str
     name: str = ""
     capabilities: tuple[str, ...] = ("text",)
+    context: int = 0
+    """ 上下文窗口（token）；0 = 未知，不据此触发压缩 """
     input_price: float = 0.0
     output_price: float = 0.0
     cached_price: float = 0.0

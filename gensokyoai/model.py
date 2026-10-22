@@ -53,6 +53,7 @@ class ChatModel:
         ledger: UsageLedger | None = None,
         capabilities=None,
         health=None,
+        context: int = 0,
     ) -> None:
         """初始化。
 
@@ -84,6 +85,7 @@ class ChatModel:
             kwargs["think"] = think
         self._provider = build_provider(kind, base_url, **kwargs)
         self.name = name or kind
+        self.context = max(0, context)
         self.think = think
         self.capabilities = normalize(capabilities or ("text", "image"))
         """ 这个模型能干哪些活（看得了图、听得了声） """

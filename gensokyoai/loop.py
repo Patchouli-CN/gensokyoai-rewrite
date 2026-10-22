@@ -21,6 +21,17 @@ from .mind import Mind
 from .room import Event, EventKind, Room
 from .utils.logger import LoggerManager
 
+_COMPACT_RATIO = 0.75
+""" 上下文用到这么多就压缩前缀（1.0 = 塞满才压，太晚） """
+
+_COMPACT_KEEP = 8
+""" 压缩时留几条最近的历史不压（模型要靠它们接话） """
+
+_COMPACT_PROMPT = (
+    "把下面这段群聊记录压成一段概要，保留人名、约定、事实与情感转折，"
+    "丢掉寒暄和重复。直接输出概要，不要解释。"
+)
+
 _logger = LoggerManager.get_logger("LOOP")
 
 _BACKOFF_S = 1.0
@@ -191,6 +202,7 @@ class Loop:
                 try:
                     await self._turn()
                     await self._sync_cache()
+                    await self.maybe_compact()
                 except asyncio.CancelledError:
                     raise
                 except Exception as err:  # noqa: BLE001 - 单轮任何失败都不该让房间死掉
@@ -308,6 +320,53 @@ class Loop:
             # 没有前缀缓存时，history 仍走 JSON（模型需要它才接得上话）
             feed["history"] = [event.wire() for event in self.room.context(shown)]
         return feed
+
+    async def compact_cache(self, keep: int = _COMPACT_KEEP) -> int:
+        """把旧历史压成摘要，只动 _fixed_msg（系统块照旧命中）。
+
+        Args:
+            keep: 保留最近几条不压
+
+        Returns:
+            int: 被压掉的条数（0 = 没压，条数不够或模型没答）
+        """
+        cache = self._cache
+        if cache is None:
+            return 0
+        blocks = list(cache.history_blocks)
+        if len(blocks) <= keep:
+            return 0
+        old = blocks[:-keep] if keep else blocks
+        summary = ""
+        try:
+            model = self.mind.cheap_model
+            reply = await model.chat(
+                _COMPACT_PROMPT,
+                "\n".join(old),
+                max_tokens=500,
+                temperature=0.3,
+            )
+            summary = f"（往事概要）{reply.text.strip()}"
+        except Exception as err:  # noqa: BLE001 - 压缩失败不该影响对话
+            _logger.warning(f"{self.room.name} 前缀压缩失败，直接丢弃旧历史：{err}")
+        dropped = cache.compact(summary, keep=keep)
+        if dropped and self._health is not None:
+            self._health.count(f"{self.room.name}.prompt_compacts")
+        return dropped
+
+    async def maybe_compact(self) -> int:
+        """接近上下文窗口就压一次（否则什么都不做）。
+
+        Returns:
+            int: 被压掉的条数（0 = 还没到阈值）
+        """
+        cache = self._cache
+        context = self.mind.model.context
+        if cache is None or context <= 0:
+            return 0
+        if cache.total_tokens < context * _COMPACT_RATIO:
+            return 0
+        return await self.compact_cache()
 
     async def _sync_cache(self) -> None:
         """把还没进历史的房间事件推入前缀，然后按对齐前移下界。"""

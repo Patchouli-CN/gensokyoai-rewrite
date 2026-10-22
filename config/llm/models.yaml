@@ -12,6 +12,7 @@ models:
     api_name: deepseek-flash
     name: DeepSeek Flash
     capabilities: [text, image]
+    context: 1000000     # 上下文窗口（token），用于判断何时压缩前缀
     extra:
       thinking: {type: disabled}
     billing:
@@ -25,6 +26,7 @@ models:
     api_name: deepseek-v4-pro
     name: DeepSeek V4 Pro
     capabilities: [text]
+    context: 1000000     # 上下文窗口（token），用于判断何时压缩前缀
     extra:
       thinking: {type: disabled}
     billing:
