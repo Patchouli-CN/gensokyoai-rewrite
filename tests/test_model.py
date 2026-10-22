@@ -186,3 +186,72 @@ async def test_images_become_content_parts(monkeypatch):
     assert content[2]["type"] == "image_url"
     assert content[2]["image_url"]["url"].startswith("data:image/png")
     await model.close()
+
+
+async def test_mind_routes_images_to_vision_model():
+    """带图的回合交给视觉模型，纯文字仍走主模型"""
+    from gensokyoai.mind import Mind
+    from gensokyoai.model import Reply
+
+    main_calls: list[bool] = []
+    vision_calls: list[bool] = []
+
+    class _Model:
+        ledger = None
+
+        def __init__(self, name, log):
+            self.name = name
+            self._log = log
+
+        async def chat(self, system, payload, **kwargs):
+            self._log.append(bool(kwargs.get("images")))
+            return Reply(text=f"from {self.name}")
+
+    mind = Mind(
+        _Model("main", main_calls), "觉", "人设", vision=_Model("vision", vision_calls)
+    )
+    feed = {
+        "now": "t",
+        "events": [],
+        "gap": None,
+        "history": [],
+        "memories": [],
+        "results": [],
+    }
+
+    assert (await mind.step(feed)).text == "from main"
+    assert (await mind.step(feed, images=[("图", "data:,x")])).text == "from vision"
+    assert main_calls == [False], "主模型只接纯文字"
+    assert vision_calls == [True], "视觉模型只接带图"
+
+
+async def test_mind_without_vision_keeps_images_on_main():
+    """没配视觉模型时，带图仍走主模型"""
+    from gensokyoai.mind import Mind
+    from gensokyoai.model import Reply
+
+    class _Model:
+        name = "main"
+        ledger = None
+
+        def __init__(self):
+            self.seen: list[bool] = []
+
+        async def chat(self, system, payload, **kwargs):
+            self.seen.append(bool(kwargs.get("images")))
+            return Reply(text="ok")
+
+    model = _Model()
+    mind = Mind(model, "觉", "人设")
+    feed = {
+        "now": "t",
+        "events": [],
+        "gap": None,
+        "history": [],
+        "memories": [],
+        "results": [],
+    }
+
+    await mind.step(feed, images=[("图", "data:,x")])
+
+    assert model.seen == [True]

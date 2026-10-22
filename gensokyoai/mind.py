@@ -91,15 +91,23 @@ _CORE_TOOLS: dict[str, dict] = {
 class Mind:
     """角色的心智：人设 + 模型端点。"""
 
-    def __init__(self, model: ChatModel, name: str, persona: str) -> None:
+    def __init__(
+        self,
+        model: ChatModel,
+        name: str,
+        persona: str,
+        vision: ChatModel | None = None,
+    ) -> None:
         """初始化。
 
         Args:
             model: 模型端点
             name: 角色名（房间里的发言署名）
             persona: 人设正文（角色卡提供）
+            vision: 带图回合改用它（None = 一直用 model）
         """
         self._model = model
+        self._vision = vision
         self.name = name
         self._persona = persona
 
@@ -124,7 +132,8 @@ class Mind:
         Returns:
             Reply: 正文与工具调用
         """
-        return await self._model.chat(
+        chosen = self._vision if images and self._vision is not None else self._model
+        return await chosen.chat(
             self._system(scene),
             json.dumps(feed, ensure_ascii=False),
             tools=self._tools(scene),

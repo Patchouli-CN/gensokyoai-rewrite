@@ -44,6 +44,9 @@ class ModelSettings(msgspec.Struct, frozen=True):
     auto_detect: bool = True
     """ 启动时问端点要一次能力（问不到就按名字猜，再不行用上面的声明） """
 
+    vision: str = ""
+    """ 带图的回合交给哪个模型（空 = 跟 name 同一个；主模型没视觉时靠它兜底） """
+
 
 class RatesSettings(msgspec.Struct, frozen=True):
     """一档价（每百万 token）。"""
@@ -114,6 +117,42 @@ class Settings(msgspec.Struct, frozen=True):
 
     model: ModelSettings = msgspec.field(default_factory=ModelSettings)
     billing: BillingSettings = msgspec.field(default_factory=BillingSettings)
+
+    def build_vision_model(
+        self,
+        health=None,
+        *,
+        base_url: str = "",
+        usage_path: Path | None = None,
+    ) -> ChatModel | None:
+        """造"带图回合"用的模型（没配 vision 就返回 None）。
+
+        Args:
+            health: 健康中心（记延迟/失败）
+            base_url: 覆盖端点地址（空 = 用配置里的）
+            usage_path: 用量流水落点
+
+        Returns:
+            ChatModel | None: 视觉模型；与主模型同名时为 None（同一个就够用）
+        """
+        name = (self.model.vision or "").strip()
+        if not name or name == self.model.name:
+            return None
+        model = self.model
+        return ChatModel(
+            base_url or model.base_url,
+            provider=model.provider,
+            name=name,
+            api_key=model.api_key,
+            think=model.think,
+            timeout=model.timeout,
+            extra=model.extra or None,
+            capabilities=("text", "image"),
+            billing=self.billing_of(),
+            quotas=self.quotas(),
+            usage_path=usage_path or self.usage_path(),
+            health=health,
+        )
 
     def billing_of(self) -> Billing | None:
         """配置里写死价就用它；没写就用适配器自带的官方价。"""
