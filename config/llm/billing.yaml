@@ -1,0 +1,7 @@
+# 计费窗口：超过就提醒（/doctor 和 /余额 会用到）。
+# span 支持 5h / 7d / 90m；tokens 与 cost 任一超标即触发。
+quotas: []
+# quotas:
+#   - span: 5h
+#     tokens: 200000
+#     cost: 2.0

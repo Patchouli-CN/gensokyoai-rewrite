@@ -18,6 +18,7 @@ import aiohttp
 import msgspec
 
 from ..model import ChatModel
+from .billing import Quota
 from .caps import Capability
 
 DEFAULT_ROOT = Path("config/llm")
@@ -80,6 +81,8 @@ class ModelEntry(msgspec.Struct, frozen=True):
     cached_price: float = 0.0
     think: bool | None = None
     extra: dict = msgspec.field(default_factory=dict)
+    billing: dict = msgspec.field(default_factory=dict)
+    """ 计价方式：{mode: peak|flat, currency, off_peak/peak 或 input/output/cached} """
 
     @property
     def label(self) -> str:
@@ -146,6 +149,7 @@ class LLMManager:
             extra=model.extra or None,
             capabilities=model.capabilities,
             billing=self._billing_of(model),
+            quotas=self.quotas(),
             usage_path=self._usage_path,
             health=self._health,
         )
@@ -225,7 +229,9 @@ class LLMManager:
         provider = self._provider_of(self._pick("asr"))
         endpoint = provider.base_url.rstrip("/") + "/audio/transcriptions"
         form = aiohttp.FormData()
-        form.add_field("file", raw, filename=_AUDIO_NAME.get(mime, "audio.bin"), content_type=mime)
+        form.add_field(
+            "file", raw, filename=_AUDIO_NAME.get(mime, "audio.bin"), content_type=mime
+        )
         form.add_field("model", model.name)
         try:
             async with aiohttp.ClientSession(
@@ -247,6 +253,22 @@ class LLMManager:
             self._warn(f"转写请求失败（{label or mime}）：{error!r}")
             return ""
         return str(data.get("text") or "").strip()
+
+    def quotas(self) -> tuple:
+        """计费窗口（config/llm/billing.yaml 的 quotas；没有就是空）。"""
+        data = self._read("billing.yaml")
+        found = []
+        for item in data.get("quotas") or []:
+            if not isinstance(item, dict):
+                continue
+            found.append(
+                Quota(
+                    span_s=_span_seconds(str(item.get("span") or "5h")),
+                    tokens=int(item.get("tokens") or 0),
+                    cost=float(item.get("cost") or 0.0),
+                )
+            )
+        return tuple(found)
 
     async def aclose(self) -> None:
         """关掉所有建过的端点。"""
@@ -317,18 +339,45 @@ class LLMManager:
 
     @staticmethod
     def _billing_of(model: ModelEntry):
-        """按配置里的单价造计费（全 0 = 不记账）。"""
+        """按配置造计费：峰谷 / 一口价 / 老字段，三选一。"""
+        from .billing import FlatBilling, PeakBilling, Rates
+
+        spec = model.billing or {}
+        mode = str(spec.get("mode") or "").lower()
+        currency = str(spec.get("currency") or "CNY")
+
+        if mode == "peak":
+            off = _rates(spec.get("off_peak") or {})
+            peak = _rates(spec.get("peak") or {})
+            if not (off or peak):
+                return None
+            return PeakBilling(
+                off,
+                peak,
+                currency=currency,
+                hours=tuple(
+                    tuple(pair) for pair in spec.get("hours") or ((9, 12), (14, 18))
+                ),
+                holidays=tuple(spec.get("holidays") or ()),
+                label=model.label,
+            )
+        if mode == "flat":
+            rates = _rates(spec)
+            return (
+                FlatBilling(rates, currency=currency, label=model.label)
+                if rates
+                else None
+            )
         if not (model.input_price or model.output_price or model.cached_price):
             return None
-        from .billing import FlatBilling, Rates
-
         return FlatBilling(
             Rates(
                 input=model.input_price,
                 output=model.output_price,
                 cached=model.cached_price,
             ),
-            currency="CNY",
+            currency=currency,
+            label=model.label,
         )
 
     def _info(self, text: str) -> None:
@@ -338,3 +387,24 @@ class LLMManager:
     def _warn(self, text: str) -> None:
         if self._log is not None:
             self._log.warning(text)
+
+
+def _rates(spec: dict):
+    """{input, output, cached} → Rates（全 0 返回 None）。"""
+    from .billing import Rates
+
+    if not isinstance(spec, dict):
+        return None
+    rates = Rates(
+        input=float(spec.get("input") or 0.0),
+        output=float(spec.get("output") or 0.0),
+        cached=float(spec.get("cached") or 0.0),
+    )
+    return rates if (rates.input or rates.output or rates.cached) else None
+
+
+def _span_seconds(text: str) -> float:
+    """`5h` / `7d` / `90m` -> 秒（跟 settings.parse_span 同一套写法）。"""
+    from ..settings import parse_span
+
+    return parse_span(text)

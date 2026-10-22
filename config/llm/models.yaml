@@ -1,24 +1,34 @@
-# 模型：能力（text / image）、单价（每百万 token，人民币）。
-# api_name 是端点上的名字；id 是内部代号（tasks.yaml 引用它）。
+# 模型：能力、计价方式、单价。
+#
+# billing.mode:
+#   peak  峰谷（DeepSeek 那种：工作日 9-12 / 14-18 按 peak，其余按 off_peak）
+#   flat  一口价
+#   不写  用下面的 input_price / output_price / cached_price
+#
+# 价格单位：每百万 token，人民币。
 models:
   - id: flash
     provider: deepseek
     api_name: deepseek-flash
     name: DeepSeek Flash
     capabilities: [text, image]
-    input_price: 1.0
-    output_price: 4.0
-    cached_price: 0.02
     extra:
       thinking: {type: disabled}
+    billing:
+      mode: peak
+      currency: CNY
+      off_peak: {input: 1.0, output: 4.0, cached: 0.02}
+      peak: {input: 2.0, output: 8.0, cached: 0.04}
 
   - id: pro
     provider: deepseek
     api_name: deepseek-v4-pro
     name: DeepSeek V4 Pro
     capabilities: [text]
-    input_price: 4.5
-    output_price: 13.5
-    cached_price: 0.15
     extra:
       thinking: {type: disabled}
+    billing:
+      mode: peak
+      currency: CNY
+      off_peak: {input: 4.5, output: 13.5, cached: 0.15}
+      peak: {input: 9.0, output: 27.0, cached: 0.30}

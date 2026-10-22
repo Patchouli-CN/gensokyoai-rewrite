@@ -10,8 +10,6 @@ import argparse
 import asyncio
 from pathlib import Path
 
-import msgspec
-
 from . import scenes as _builtin_scenes  # noqa: F401  注册内置场景
 from .api import scenes as registered_scenes
 from .bgtasks import BgTasks
@@ -20,6 +18,7 @@ from .command.builtin import build_executor
 from .dmn import DmnKeeper
 from .health import HealthCenter
 from .hub import Hub
+from .llm.bootstrap import build_mind, close_mind
 from .loop import Loop, SceneContext
 from .memory import Memory
 from .mind import Mind
@@ -198,6 +197,11 @@ async def main() -> None:
         "--scene", default="chat", help="用哪个场景（见 --list-scenes）"
     )
     parser.add_argument(
+        "--llm-config",
+        default="",
+        help="模型配置目录（默认 config/llm）",
+    )
+    parser.add_argument(
         "--tools-config",
         default="",
         help="工具的站点配置目录（默认 config/tools）",
@@ -231,20 +235,15 @@ async def main() -> None:
 
     card = load_card(args.character)
     settings = load_settings(args.settings or None)
-    if args.model_timeout:
-        settings = msgspec.structs.replace(
-            settings,
-            model=msgspec.structs.replace(settings.model, timeout=args.model_timeout),
-        )
-    model = settings.build_model(base_url=args.model)
-    capabilities = await settings.adopt_capabilities(model)
-    LoggerManager.get_logger("SETTINGS").info(
-        f"模型能力: {', '.join(sorted(capabilities))}（{model.name or '未命名'}）"
+    mind, manager = await build_mind(
+        card_path=args.character,
+        settings=settings,
+        root=args.llm_config,
+        log=LoggerManager.get_logger("SETTINGS"),
     )
-    mind = Mind(
-        model,
-        card.name,
-        card.persona,
+    capabilities = await settings.adopt_capabilities(mind.model)
+    LoggerManager.get_logger("SETTINGS").info(
+        f"模型能力: {', '.join(sorted(capabilities))}（{mind.model.name or '未命名'}）"
     )
     try:
         if args.serve:
@@ -252,7 +251,7 @@ async def main() -> None:
         else:
             await _console(args, card, mind, scene_cls)
     finally:
-        await mind.close()
+        await close_mind(mind, manager)
 
 
 if __name__ == "__main__":
