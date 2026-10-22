@@ -13,10 +13,10 @@ import time
 from pathlib import Path
 from typing import Literal
 
-import ayafileio
 import msgspec
 
 from .bgtasks import BgTasks
+from .storage import Storage
 from .utils.logger import LoggerManager
 
 _logger = LoggerManager.get_logger("ROOM")
@@ -97,8 +97,8 @@ class Event(msgspec.Struct, frozen=True):
 class RoomLog:
     """房间事件落盘：append-only JSONL，重启回放文件末尾一段。
 
-    每条写进页缓存即返回，不逐条 flush（一次 flush 约 60 ms）；退出或轮转时
-    关闭句柄收尾，进程被强杀最多丢掉最后几条。
+    文件 IO 交给 `Storage`（写穿、空闲自动落盘、按大小轮转），这里只管
+    事件怎么变成一行、图怎么存旁边。
     """
 
     def __init__(
@@ -116,9 +116,7 @@ class RoomLog:
         self._max_bytes = max(1024, max_bytes)
         self._name = path.parent.name or path.stem
         self._media_dir = path.parent / "media"
-        self._lock = asyncio.Lock()
-        self._file: ayafileio.AsyncFile[str] | None = None
-        self._size = 0
+        self._storage = Storage(path, max_bytes=self._max_bytes, log=_logger)
         tasks.on_shutdown(self.aclose)
 
     def load(self, limit: int | None = None) -> list[Event]:
@@ -224,37 +222,11 @@ class RoomLog:
         if event.images:
             event = msgspec.structs.replace(event, images=self._save_media(event))
         line = msgspec.json.encode(event).decode() + "\n"
-        return self._tasks.spawn(f"roomlog:{self._name}", self._write(line))
+        return self._tasks.spawn(f"roomlog:{self._name}", self._storage.append(line))
 
     async def aclose(self) -> None:
-        """关闭句柄（可重复调用）。"""
-        async with self._lock:
-            await self._close_file()
-
-    async def _write(self, line: str) -> None:
-        size = len(line.encode())
-        async with self._lock:
-            if self._file is None or self._file.closed:
-                await self._open()
-            if self._size + size > self._max_bytes:
-                await self._rotate()
-            await self._file.write(line)
-            self._size += size
-
-    async def _open(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._size = self._path.stat().st_size if self._path.exists() else 0
-        self._file = ayafileio.open(self._path, "a", encoding="utf-8")
-
-    async def _close_file(self) -> None:
-        if self._file is not None and not self._file.closed:
-            await self._file.close()
-        self._file = None
-
-    async def _rotate(self) -> None:
-        await self._close_file()
-        self._path.replace(self._path.with_name(self._path.name + ".1"))
-        await self._open()
+        """刷完并关句柄（可重复调用）。"""
+        await self._storage.aclose()
 
 
 class Room:

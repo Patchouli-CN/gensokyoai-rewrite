@@ -91,11 +91,11 @@ async def test_shutdown_closes_log_handle(tmp_path):
     log = RoomLog(tmp_path / "events.jsonl", tasks)
     Room("g1", log=log).append("message", "甲", "你好")
     await tasks.idle()
-    assert log._file is not None and not log._file.closed
+    assert log._storage._file is not None and not log._storage._file.closed
 
     await tasks.shutdown()
 
-    assert log._file is None
+    assert log._storage._file is None
 
 
 # ---------- roomlog ----------
