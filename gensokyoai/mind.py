@@ -100,6 +100,7 @@ class Mind:
         vision: ChatModel | None = None,
         manager=None,
         cheap: ChatModel | None = None,
+        prompt_cache=None,
     ) -> None:
         """初始化。
 
@@ -110,11 +111,13 @@ class Mind:
             vision: 带图回合改用它（None = 一直用 model）
             manager: 模型管理器（有它就让 vlm 转述图片，主模型不必有视觉）
             cheap: 便宜活用的端点（记忆压缩；None = 跟主模型一样）
+            prompt_cache: 前缀缓存（None = 每轮重拼，不保证命中）
         """
         self._model = model
         self._vision = vision
         self._manager = manager
         self._cheap = cheap
+        self._prompt_cache = prompt_cache
         self.name = name
         self._persona = persona
 
@@ -126,6 +129,11 @@ class Mind:
     def use_cheap(self, model: ChatModel | None) -> None:
         """换掉便宜活的端点（启动时由宿主填）。"""
         self._cheap = model
+
+    @property
+    def prompt_cache(self):
+        """前缀缓存（None = 没装）。"""
+        return self._prompt_cache
 
     @property
     def cheap_model(self) -> ChatModel:
@@ -175,7 +183,17 @@ class Mind:
         await self._model.close()
 
     def _system(self, scene) -> str:
-        """人设 + 场景 + 机制。顺序有讲究：人设在前、硬禁止在最后（实测）。"""
+        """人设 + 场景 + 机制。顺序有讲究：人设在前、硬禁止在最后（实测）。
+
+        有前缀缓存时按场景冻住：同一场景每轮拿到**同一份字符串**，
+        云端的前缀缓存才会命中（一个字符不同就全部重算）。
+        """
+        if self._prompt_cache is None:
+            return self._build_system(scene)
+        key = str(spec_of(scene)["name"]) if scene is not None else "core"
+        return self._prompt_cache.get(key, lambda: self._build_system(scene))
+
+    def _build_system(self, scene) -> str:
         spec = (
             spec_of(scene)
             if scene is not None

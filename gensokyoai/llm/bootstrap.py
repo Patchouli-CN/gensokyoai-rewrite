@@ -9,6 +9,7 @@ from pathlib import Path
 from ..character import load_card
 from ..mind import Mind
 from .manager import LLMManager
+from .prompt_cache import PromptCache
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_LLM = _REPO_ROOT / "config" / "llm"
@@ -52,10 +53,17 @@ async def build_mind(
         tuple[Mind, LLMManager | None]: 心智与管理器（老路径时为 None）
     """
     card = load_card(card_path)
+    cache = PromptCache(log=log)  # 系统提示词冻住，前缀缓存才可能命中
     base = llm_root(root)
     if base is not None:
         manager = LLMManager(base, health=health, usage_path=usage_path, log=log)
-        mind = Mind(await manager.get("chat"), card.name, card.persona, manager=manager)
+        mind = Mind(
+            await manager.get("chat"),
+            card.name,
+            card.persona,
+            manager=manager,
+            prompt_cache=cache,
+        )
         try:
             mind.use_cheap(await manager.get("cheap"))
         except LookupError:
