@@ -56,9 +56,6 @@ def _sniff(data: bytes) -> str | None:
     return None
 
 
-_RECENT_IMAGES = 2
-""" 这批没图时，往回带几张最近的历史图 """
-
 _CONTEXT = 12
 """ 每轮附带多少条上下文（含自己的发言） """
 
@@ -387,29 +384,6 @@ class Room:
         """把没消费完的消息退回未读（回合失败重试时用）。"""
         if events:
             self._unread = [*events, *self._unread]
-
-    def recent_images(
-        self, exclude: list[Event], *, limit: int = _RECENT_IMAGES
-    ) -> list[Event]:
-        """这一批之外最近的几条带图事件。
-
-        图和文字不在同一批里的时候（先发图、下一句才问），模型靠它才接得上
-        "刚才那张"。
-
-        Args:
-            exclude: 这一批已经投递的事件
-            limit: 最多给几条带图事件（0 = 不给）
-
-        Returns:
-            list[Event]: 按时间顺序
-        """
-        if limit <= 0:
-            return []
-        skip = {event.msg_id for event in exclude if event.msg_id}
-        found = [
-            event for event in self.events if event.images and event.msg_id not in skip
-        ]
-        return found[-limit:]
 
     def context(self, exclude: list[Event], limit: int = _CONTEXT) -> list[Event]:
         """这一批之前的最近几条，含自己的发言——模型要靠它接得上话、不重复。

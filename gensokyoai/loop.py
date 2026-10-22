@@ -219,11 +219,6 @@ class Loop:
     async def _step(self, shown: list[Event], gap: dict | None):
         """问模型一次；带图被端点拒了就去掉图再问一次（图不该让整轮失联）。"""
         images = _images_of(shown)
-        if not images:
-            # 这一批没图但刚才发过：把最近的图带上，否则"她是谁"接不上
-            images = _images_of(self.room.recent_images(shown))
-            if images:
-                _logger.debug(f"{self.room.name} 这批没图，带上 {len(images)} 张历史图")
         payload = await self._feed(shown, gap)
         try:
             return await self.mind.step(payload, self._scene, images=images)
