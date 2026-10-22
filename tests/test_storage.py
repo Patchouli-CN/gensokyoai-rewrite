@@ -58,7 +58,10 @@ async def test_idle_flushes_after_quiet(tmp_path):
     storage = _Counting(tmp_path / "e.jsonl", idle_ms=50)
     await storage.append("hello\n")
 
-    await asyncio.sleep(0.2)
+    for _ in range(40):  # 最多等 0.4 秒，别跟调度较劲
+        if storage.dirty is False:
+            break
+        await asyncio.sleep(0.01)
 
     assert storage.flushes >= 1, "安静后应该刷过"
     assert storage.dirty is False

@@ -63,6 +63,7 @@ class Storage:
         self._first_dirty = 0.0
         self._last_write = 0.0
         self._flusher: asyncio.Task | None = None
+        self._pending: set[asyncio.Task] = set()
         self._closing = False
 
     async def append(self, text: str) -> int:
@@ -92,6 +93,32 @@ class Storage:
         self._arm_flusher()
         return len(payload)
 
+    def write_soon(self, text: str) -> None:
+        """把一行排进事件循环（同步调用点用）；没有循环就当场同步写。
+
+        Args:
+            text: 要写的文本（调用方负责换行）
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write_sync(text)
+            return
+        task = loop.create_task(self.append(text))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    def _write_sync(self, text: str) -> None:
+        """没有事件循环时的兜底：直接追加（写穿到 OS 即返回）。"""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as file:
+                file.write(text)
+                self._size += len(text.encode())
+        except OSError as error:
+            if self._log is not None:
+                self._log.warning(f"写 {self.path.name} 失败: {error}")
+
     async def flush(self) -> None:
         """立刻落盘（没脏数据就什么都不做）。"""
         async with self._lock:
@@ -103,6 +130,8 @@ class Storage:
         task, self._flusher = self._flusher, None
         if task is not None and not task.done():
             task.cancel()
+        if self._pending:
+            await asyncio.gather(*self._pending, return_exceptions=True)
         async with self._lock:
             await self._flush_locked()
             await self._close_locked()

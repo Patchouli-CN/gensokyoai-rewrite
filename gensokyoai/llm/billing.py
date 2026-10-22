@@ -15,6 +15,7 @@ from typing import Protocol
 
 import msgspec
 
+from ..storage import Storage
 from .types import Usage
 
 PER_MILLION = 1_000_000.0
@@ -211,6 +212,10 @@ class UsageLedger:
         self.quotas = tuple(quotas)
         self._clock = clock
         self._path = Path(path) if path is not None else None
+        self._storage = (
+            Storage(self._path, idle_ms=1000, max_dirty_s=3.0) if self._path else None
+        )
+        """ 流水走 Storage：写穿（进程挂了也不丢），安静 1 秒后落盘 """
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.cached_tokens = 0
@@ -318,31 +323,27 @@ class UsageLedger:
                     break
 
     def _persist(self, now: float, usage: Usage, spent: float, model: str) -> None:
-        """记一行流水（不 flush：崩了最多丢最后几条）。"""
-        if self._path is None:
+        """记一行流水（交给 Storage：写穿 + 空闲落盘）。"""
+        if self._storage is None:
             return
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            line = json.dumps(
-                {
-                    "ts": now,
-                    "model": model,
-                    "prompt": usage.prompt_tokens,
-                    "completion": usage.completion_tokens,
-                    "cached": usage.cached_tokens,
-                    "cost": round(spent, 8),
-                    "currency": self.currency,
-                },
-                ensure_ascii=False,
-            )
-            with self._path.open("a", encoding="utf-8") as file:
-                file.write(line + "\n")
-        except OSError:
-            from ..utils.logger import LoggerManager
+        line = json.dumps(
+            {
+                "ts": now,
+                "model": model,
+                "prompt": usage.prompt_tokens,
+                "completion": usage.completion_tokens,
+                "cached": usage.cached_tokens,
+                "cost": round(spent, 8),
+                "currency": self.currency,
+            },
+            ensure_ascii=False,
+        )
+        self._storage.write_soon(line + "\n")
 
-            LoggerManager.get_logger("BILLING").warning(
-                f"用量流水写不进去: {self._path}"
-            )
+    async def aclose(self) -> None:
+        """收尾：把没落盘的流水刷掉、关句柄。"""
+        if self._storage is not None:
+            await self._storage.aclose()
 
     def _load(self) -> None:
         """读回窗口内的历史用量（坏的行走跳过）。"""

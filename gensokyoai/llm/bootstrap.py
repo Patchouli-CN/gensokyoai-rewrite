@@ -77,10 +77,13 @@ async def build_mind(
 
 async def close_mind(mind: Mind, manager: LLMManager | None) -> None:
     """收尾：管理器关所有端点，老路径关主模型。"""
+    ledger = mind.model.ledger if mind.model is not None else None
     if manager is not None:
         await manager.aclose()
-        return
-    await mind.close()
+    else:
+        await mind.close()
+    if ledger is not None:
+        await ledger.aclose()
 
 
 def build_mind_sync(**kwargs):
