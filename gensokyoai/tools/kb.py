@@ -10,6 +10,8 @@ import json
 import time
 from pathlib import Path
 
+from ..paths import storage_key
+
 DEFAULT_ROOT = Path("data/knowledge")
 """ 默认放在数据目录下的 knowledge/ """
 
@@ -76,7 +78,7 @@ class KnowledgeBase:
         """
         self.scope = scope if scope in ("global", "room") else "global"
         base = Path(root) if root is not None else DEFAULT_ROOT
-        name = "global" if self.scope == "global" or not room else room
+        name = "global" if self.scope == "global" or not room else storage_key(room)
         self.path = base / f"{name}.jsonl"
         self._clock = clock
         self._max = max(1, max_entries)

@@ -25,6 +25,7 @@ from .memory import Memory
 from .mind import Mind
 from .mouth import ConsoleMouth, WsMouth
 from .network.aiohttp_ws import AiohttpWebsocketServer
+from .paths import storage_key
 from .plugin import discover, load
 from .room import Room, RoomLog
 from .settings import load_settings
@@ -54,14 +55,14 @@ def _loop_factory(
 ):
     def factory(room_id: str) -> Loop:
         memory = (
-            Memory(storage / room_id / "memory.jsonl")
+            Memory(storage / storage_key(room_id) / "memory.jsonl")
             if storage is not None
             else Memory(None)
         )
         if health is not None:
             health.gauge(f"{room_id}.memory", lambda m=memory: m.size)
         log = (
-            RoomLog(storage / room_id / "events.jsonl", tasks)
+            RoomLog(storage / storage_key(room_id) / "events.jsonl", tasks)
             if storage is not None and tasks is not None
             else None
         )
