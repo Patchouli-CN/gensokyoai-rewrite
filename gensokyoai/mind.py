@@ -99,6 +99,7 @@ class Mind:
         persona: str,
         vision: ChatModel | None = None,
         manager=None,
+        cheap: ChatModel | None = None,
     ) -> None:
         """初始化。
 
@@ -108,17 +109,24 @@ class Mind:
             persona: 人设正文（角色卡提供）
             vision: 带图回合改用它（None = 一直用 model）
             manager: 模型管理器（有它就让 vlm 转述图片，主模型不必有视觉）
+            cheap: 便宜活用的端点（记忆压缩；None = 跟主模型一样）
         """
         self._model = model
         self._vision = vision
         self._manager = manager
+        self._cheap = cheap
         self.name = name
         self._persona = persona
 
     @property
     def model(self) -> ChatModel:
-        """底层模型端点（静息整理压缩记忆用）。"""
+        """底层模型端点。"""
         return self._model
+
+    @property
+    def cheap_model(self) -> ChatModel:
+        """便宜活用的端点（记忆压缩），没配就退回主模型。"""
+        return self._cheap or self._model
 
     async def step(
         self,
@@ -147,6 +155,7 @@ class Mind:
             story = await self._manager.describe(images, question=_last_text(feed))
             if story:
                 notes.append(story)
+                _logger.debug(f"图片已转述（主模型没有视觉）：{story[:40]}")
         payload = {**feed, "images": notes} if notes else feed
         return await chosen.chat(
             self._system(scene),

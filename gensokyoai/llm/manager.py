@@ -10,15 +10,27 @@
 上下文——对外看起来就是它自己看见了（中文房间）。
 """
 
+import base64
 import os
 from pathlib import Path
 
+import aiohttp
 import msgspec
 
 from ..model import ChatModel
 from .caps import Capability
 
 DEFAULT_ROOT = Path("config/llm")
+
+_AUDIO_NAME = {
+    "audio/amr": "voice.amr",
+    "audio/silk": "voice.silk",
+    "audio/mp3": "voice.mp3",
+    "audio/mpeg": "voice.mp3",
+    "audio/wav": "voice.wav",
+    "audio/ogg": "voice.ogg",
+}
+""" 转写时给文件起个合适的名字（端点按扩展名判格式） """
 
 _PROMPTS = {
     Capability.IMAGE: (
@@ -186,6 +198,55 @@ class LLMManager:
             self._warn(f"转述 {capability} 失败：{error!r}")
             return ""
         return (reply.text or "").strip()
+
+    async def transcribe(self, media, *, label: str = "") -> str:
+        """把语音转成文字（走 asr 任务的 /audio/transcriptions）。
+
+        Args:
+            media: `(说明, data URL)` 或 data URL 字符串
+            label: 日志用的说明
+
+        Returns:
+            str: 转写文本；没配 asr 或失败时返回空串
+        """
+        if not media:
+            return ""
+        url = media[1] if isinstance(media, tuple) else str(media)
+        head, _, payload = url.partition(",")
+        if not head.startswith("data:") or not payload:
+            return ""
+        mime = head[5:].split(";")[0] or "audio/amr"
+        try:
+            model = await self.get("asr")
+        except LookupError:
+            self._warn("没配 asr 任务，语音只能当没有")
+            return ""
+        raw = base64.b64decode(payload, validate=False)
+        provider = self._provider_of(self._pick("asr"))
+        endpoint = provider.base_url.rstrip("/") + "/audio/transcriptions"
+        form = aiohttp.FormData()
+        form.add_field("file", raw, filename=_AUDIO_NAME.get(mime, "audio.bin"), content_type=mime)
+        form.add_field("model", model.name)
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=provider.timeout)
+            ) as session:
+                async with session.post(
+                    endpoint,
+                    data=form,
+                    headers={"Authorization": f"Bearer {self._key_of(provider)}"},
+                ) as response:
+                    if response.status != 200:
+                        self._warn(
+                            f"转写失败 HTTP {response.status}: "
+                            f"{(await response.text())[:120]}"
+                        )
+                        return ""
+                    data = await response.json()
+        except Exception as error:  # noqa: BLE001 - 转写失败不该拖垮整轮
+            self._warn(f"转写请求失败（{label or mime}）：{error!r}")
+            return ""
+        return str(data.get("text") or "").strip()
 
     async def aclose(self) -> None:
         """关掉所有建过的端点。"""

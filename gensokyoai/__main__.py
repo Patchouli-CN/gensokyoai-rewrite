@@ -39,7 +39,7 @@ async def _tidy(loop: Loop) -> None:
     """静息整理：记忆超过压力线时压缩。"""
     memory = loop.memory
     if memory is not None and memory.needs_consolidation():
-        await memory.consolidate(loop.mind.model)
+        await memory.consolidate(loop.mind.cheap_model)
 
 
 def _loop_factory(
