@@ -56,7 +56,7 @@ async def build_mind(
     card = load_card(card_path)
     prompt = settings.prompt if settings is not None else PromptSettings()
     cache = (
-        PromptCache(log=log, fixed=prompt.fixed, name="提示词前缀")
+        PromptCache(log=log, align=prompt.align, name="提示词前缀")
         if prompt.cache
         else None
     )

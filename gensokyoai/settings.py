@@ -118,7 +118,7 @@ class PromptSettings(msgspec.Struct, frozen=True):
     cache: bool = True
     """ 关掉就每轮重拼提示词（不保证命中，也不压缩） """
 
-    fixed: int = 64
+    align: int = 64
     """ 对齐粒度（token）：云端缓存按 64 对齐 """
 
     compact_ratio: float = 0.75

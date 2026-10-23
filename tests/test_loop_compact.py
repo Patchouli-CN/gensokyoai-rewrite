@@ -34,7 +34,7 @@ class _Mind:
     def __init__(self) -> None:
         self.model = _Model()
         self.cheap_model = self.model
-        self.prompt_cache = PromptCache(fixed=0, name="t")
+        self.prompt_cache = PromptCache(align=0, name="t")
 
     async def step(self, feed, scene=None, images=None):
         del feed, scene, images

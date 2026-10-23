@@ -58,5 +58,5 @@ def test_example_parses_as_settings(tmp_path):
 
     settings = load_settings(EXAMPLE)
 
-    assert settings.prompt.fixed > 0
+    assert settings.prompt.align > 0
     assert settings.idle.patrol_s > 0

@@ -8,7 +8,7 @@
 增长，每轮只有尾巴是新的。压缩只替换历史那一段，系统块（通常最大、最贵）
 仍然命中。
 
-    cache = PromptCache(name="ds模型缓存", fixed=64)
+    cache = PromptCache(name="ds模型缓存", align=64)
     cache.stable_fixed("persona", 人设)        # 永不变
     cache.add("帕秋莉：借我书")                 # 尾巴
     cache.stabilize()                          # 一轮结束，按 64 token 对齐推入历史
@@ -40,16 +40,16 @@ def estimate_tokens(text: str) -> int:
 class PromptCache:
     """系统块 / 已稳定消息 / 尾巴，三区管理。"""
 
-    def __init__(self, name: str = "prompt", fixed: int = _GRID, log=None) -> None:
+    def __init__(self, name: str = "prompt", align: int = _GRID, log=None) -> None:
         """初始化。
 
         Args:
             name: 进日志与统计的名字（多份缓存时区分是谁）
-            fixed: 对齐粒度（token）；0 表示不对齐、每轮全推
+            align: 对齐粒度（token）；0 表示不对齐、每轮全推
             log: 日志器（前移、压缩、裂痕各记一行）
         """
         self.name = name
-        self.fixed = max(0, fixed)
+        self.align = max(0, align)
         self._log = log
         self._fixed: list[tuple[str, str]] = []
         self._fixed_index: dict[str, str] = {}
@@ -122,7 +122,7 @@ class PromptCache:
     # ---------- 稳定 ----------
 
     def stabilize(self) -> int:
-        """把尾巴尽可能多地推入历史，切点按 `fixed` 向下对齐。
+        """把尾巴尽可能多地推入历史，切点按 `align` 向下对齐。
 
         系统块不动、尾巴只移动到历史区——`build()` 永远是裸拼接。
 
@@ -146,7 +146,7 @@ class PromptCache:
                 self._log.info(
                     f"前缀 {self.name} 前移 {index} 块 → "
                     f"历史 {self.history_tokens} token"
-                    f"（对齐到 {self.fixed}）"
+                    f"（对齐到 {self.align}）"
                 )
         self._baseline = tuple(self._prefix_hashes())
         return index
@@ -256,10 +256,10 @@ class PromptCache:
 
     @property
     def aligned_tokens(self) -> int:
-        """按 `fixed` 对齐后，云端实际能复用的 token 数。"""
-        if self.fixed <= 0:
+        """按 `align` 对齐后，云端实际能复用的 token 数。"""
+        if self.align <= 0:
             return self.prefix_tokens
-        return self.prefix_tokens // self.fixed * self.fixed
+        return self.prefix_tokens // self.align * self.align
 
     @property
     def waste_tokens(self) -> int:
@@ -280,7 +280,7 @@ class PromptCache:
         """一眼看懂的统计（日志/面板用）。"""
         return {
             "name": self.name,
-            "fixed": self.fixed,
+            "align": self.align,
             "epoch": self.epoch,
             "system_tokens": self.system_tokens,
             "history_tokens": self.history_tokens,
@@ -311,11 +311,11 @@ class PromptCache:
         return sum(estimate_tokens(text) for text in self._fixed_msg)
 
     def _aligned_end(self) -> int:
-        """对齐后的可固定上限（整段提示词向下取整到 fixed 的倍数）。"""
+        """对齐后的可固定上限（整段提示词向下取整到 align 的倍数）。"""
         total = self.total_tokens
-        if self.fixed <= 0:
+        if self.align <= 0:
             return total
-        return total // self.fixed * self.fixed
+        return total // self.align * self.align
 
     def _first_difference(self, hashes: tuple[str, ...]) -> int:
         if self._baseline is None:

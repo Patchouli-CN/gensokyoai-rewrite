@@ -39,7 +39,7 @@ billing:
 # 前缀缓存与压缩
 prompt:
   cache: true           # false = 每轮重拼、不压缩（调试/回退用）
-  fixed: 64             # 对齐粒度（token），云端前缀缓存按 64 对齐
+  align: 64             # 对齐粒度（token），云端前缀缓存按 64 对齐
   compact_ratio: 0.75   # 上下文用到多少才压缩（1.0 = 塞满才压）
   compact_keep: 8       # 压缩时留最近几条历史不压
 

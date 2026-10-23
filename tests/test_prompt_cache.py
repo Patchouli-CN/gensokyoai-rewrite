@@ -40,7 +40,7 @@ def test_build_is_plain_concatenation():
 
 def test_stabilize_moves_messages_into_history():
     """稳定把消息推进历史区，系统块不动"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人" * 60)
     _talk(cache, 20)
 
@@ -54,19 +54,19 @@ def test_stabilize_moves_messages_into_history():
 
 def test_stabilize_aligns_to_grid():
     """切点对齐到 64：已固定部分不超出格子"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人设" * 30)
     _talk(cache, 15)
 
     cache.stabilize()
 
-    assert cache.waste_tokens < cache.fixed
+    assert cache.waste_tokens < cache.align
     assert cache.aligned_tokens <= cache.prefix_tokens
 
 
 def test_stabilize_keeps_tail_when_not_enough():
     """不够一格就不硬塞"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人" * 64)
     cache.add("尾")
 
@@ -88,7 +88,7 @@ def test_rollback_removes_tail():
 
 def test_rollback_cannot_touch_history():
     """撤不到已稳定的历史（它在另一个区，尾巴下标够不着）"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人" * 60)
     _talk(cache, 20)
     moved = cache.stabilize()
@@ -102,7 +102,7 @@ def test_rollback_cannot_touch_history():
 
 def test_compact_only_touches_history():
     """压缩只动历史，系统块逐字节不变"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人" * 60)
     cache.stable_fixed("tools", "工具清单" * 20)
     _talk(cache, 30)
@@ -120,7 +120,7 @@ def test_compact_only_touches_history():
 
 def test_compact_bumps_epoch_and_resets_baseline():
     """压缩进入新一代，报告基线清空"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人" * 60)
     _talk(cache, 30)
     cache.stabilize()
@@ -142,7 +142,7 @@ def test_compact_without_history_is_noop():
 
 def test_compact_drop_all_when_keep_zero():
     """keep=0 时旧历史全丢，只留摘要"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人" * 60)
     _talk(cache, 30)
     cache.stabilize()
@@ -154,7 +154,7 @@ def test_compact_drop_all_when_keep_zero():
 
 def test_report_is_none_when_prefix_intact():
     """前缀只增不改时报告为空"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人" * 60)
     _talk(cache, 20)
     cache.stabilize()
@@ -165,7 +165,7 @@ def test_report_is_none_when_prefix_intact():
 
 def test_report_catches_broken_prefix():
     """固定块被绕过 API 改掉时，报告指出位置"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人" * 60)
     _talk(cache, 20)
     cache.stabilize()
@@ -178,12 +178,12 @@ def test_report_catches_broken_prefix():
 
 def test_stats_splits_three_regions():
     """统计能分别看到系统/历史/尾巴"""
-    cache = PromptCache(name="ds模型缓存", fixed=64)
+    cache = PromptCache(name="ds模型缓存", align=64)
     cache.stable_fixed("persona", "人" * 100)
 
     stats = cache.stats()
     assert stats["name"] == "ds模型缓存"
-    assert stats["fixed"] == 64
+    assert stats["align"] == 64
     assert stats["system_tokens"] == 100
     assert stats["history_tokens"] == 0
     assert stats["epoch"] == 1
@@ -198,7 +198,7 @@ def test_estimate_tokens_mixed_text():
 
 def test_clear_rebuilds_everything():
     """系统块变了要能整份重建（人设热更新）"""
-    cache = PromptCache(fixed=64, name="qq")
+    cache = PromptCache(align=64, name="qq")
     cache.stable_fixed("persona", "旧人设" * 10)
     cache.add("一条消息")
 
@@ -211,7 +211,7 @@ def test_clear_rebuilds_everything():
 
 def test_transcript_excludes_system_blocks():
     """transcript 只给消息区（拼在 user 前面），不含系统块"""
-    cache = PromptCache(fixed=64)
+    cache = PromptCache(align=64)
     cache.stable_fixed("persona", "人设正文")
     cache.add("甲：你好")
     cache.add("觉：你也好")

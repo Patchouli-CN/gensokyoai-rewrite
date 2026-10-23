@@ -34,7 +34,7 @@ class _Mind:
 
     def __init__(self) -> None:
         self.feeds: list[dict] = []
-        self.prompt_cache = PromptCache(fixed=0, name="test")
+        self.prompt_cache = PromptCache(align=0, name="test")
 
     async def step(self, feed, scene=None, images=None):
         self.feeds.append(feed)
