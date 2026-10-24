@@ -130,11 +130,13 @@ class Loop:
         self._backoff = self._retry_backoff
         self._wake = asyncio.Event()
         self._revealed: list[Event] = []
-        self._prompted = 0
+        self._cached_ids: set[int] = set()
+        self._cache_started = False
         self._cache = mind.prompt_cache
         """ 前缀缓存（None = 关着，history 仍走 JSON） """
         self._revealed_gap: dict | None = None
         self._results: list[dict] = []
+        self._failed_ids: set[int] = set()
         self._dedup_window = max(0.0, dedup_window)
         self._said: deque[tuple[float, str]] = deque()
         """ 最近发出去的（时间, 文本），防同一句在短时间里说两遍 """
@@ -205,6 +207,7 @@ class Loop:
                 started = time.monotonic()
                 try:
                     await self._turn()
+                    self._failed_ids.clear()
                     await self._sync_cache()
                     await self.maybe_compact()
                 except asyncio.CancelledError:
@@ -219,7 +222,8 @@ class Loop:
                             f"（第 {self._attempts} 次）：{err}"
                         )
                         self._attempts = 0
-                        self.room.take_feed(self._window)  # 别拿坏输入卡死房间
+                        self.room.discard(self._failed_ids)
+                        self._failed_ids.clear()
                         break
                     _logger.warning(
                         f"{self.room.name} 回合失败，{self._backoff:.1f}s 后重试"
@@ -230,6 +234,7 @@ class Loop:
                     continue
                 self._backoff = self._retry_backoff
                 self._attempts = 0
+                self._failed_ids.clear()
                 if self._health is not None:
                     self._health.observe(
                         f"{self.room.name}.turn_s", time.monotonic() - started
@@ -261,6 +266,8 @@ class Loop:
         """一个回合：投递未读 → 模型选动作 → 照做 → 可能要再来一次。"""
         shown, gap = self.room.take_feed(self._window, self._revealed)
         self._revealed = []
+        taken = {event.msg_id: event for event in shown if event.kind == "message"}
+        gap_ids = {gap["gapId"]} if gap is not None else set()
         try:
             for _ in range(self._max_steps):
                 if not shown:
@@ -280,11 +287,20 @@ class Loop:
                         await self._say(_segments_of(call.arguments))
                         said += 1
                     elif call.name == "read_events":
+                        gap_id = _int(call.arguments.get("gap_id"), -1)
                         self._revealed, self._revealed_gap = self.room.reveal(
-                            _int(call.arguments.get("gap_id"), -1),
+                            gap_id,
                             side=str(call.arguments.get("side") or "latest"),
                             limit=_int(call.arguments.get("limit"), 0),
                         )
+                        gap_ids.add(gap_id)
+                        taken.update(
+                            (event.msg_id, event)
+                            for event in self._revealed
+                            if event.kind == "message"
+                        )
+                        if self._revealed_gap is not None:
+                            gap_ids.add(self._revealed_gap["gapId"])
                     elif call.name == "wait":
                         waited = max(waited or 0, _int(call.arguments.get("ms"), 0))
                     else:
@@ -302,8 +318,16 @@ class Loop:
                 if not await self._sleep_for_event(waited):
                     return
                 shown, gap = self.room.take_feed(self._window)
+                taken.update(
+                    (event.msg_id, event) for event in shown if event.kind == "message"
+                )
+                if gap is not None:
+                    gap_ids.add(gap["gapId"])
         except BaseException:
-            self.room.push_back(shown)
+            recovered = self.room.push_back(list(taken.values()), gap_ids=gap_ids)
+            if not self._failed_ids:
+                self._failed_ids = recovered
+            self._revealed, self._revealed_gap = [], None
             raise
 
     async def _feed(self, shown: list[Event], gap: dict | None) -> dict:
@@ -366,29 +390,42 @@ class Loop:
             int: 被压掉的条数（0 = 还没到阈值）
         """
         cache = self._cache
+        if cache is None:
+            return 0
         context = self.mind.model.context
-        if cache is None or context <= 0:
+        if context <= 0:
             return 0
         if cache.total_tokens < context * self._compact_ratio:
             return 0
         return await self.compact_cache()
 
     async def _sync_cache(self) -> None:
-        """把还没进历史的房间事件推入前缀，然后按对齐前移下界。"""
+        """把已处理事件推入前缀；未读与未展开 gap 留到以后。
+
+        第一轮只补最近一窗回放历史。编号集合而不是高水位允许模型先看到
+        早到的消息、后看到等待期间的新消息，同时仍保证每条只缓存一次。
+        """
         cache = self._cache
         if cache is None:
             return
         events = list(self.room.events)
-        if not events:
+        self._cached_ids.intersection_update(event.msg_id for event in events)
+        pending = self.room.pending_ids()
+        eligible = [
+            event
+            for event in events
+            if event.msg_id not in pending and event.msg_id not in self._cached_ids
+        ]
+        if not eligible:
             return
-        if self._prompted == 0:
-            events = events[-self._window :]  # 开机第一次：只补最近一窗
-        fresh = [event for event in events if event.msg_id > self._prompted]
-        if not fresh:
-            return
+        if not self._cache_started:
+            fresh = eligible[-self._window :] if self._window > 0 else eligible
+            self._cache_started = True
+        else:
+            fresh = eligible
+        self._cached_ids.update(event.msg_id for event in eligible)
         for event in fresh:
             cache.add(f"{event.sender}：{event.text}")
-        self._prompted = fresh[-1].msg_id
         cache.stabilize()
 
     async def _on_prose(self, text: str) -> None:

@@ -11,6 +11,7 @@ import html
 import ipaddress
 import re
 import socket
+from urllib.parse import urljoin
 
 import aiohttp
 
@@ -27,6 +28,8 @@ _MAX_BYTES = 2_000_000
 _MAX_TEXT = 3_000
 """ 交给模型的正文上限（字符） """
 _MAX_RESULTS = 8
+_MAX_REDIRECTS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -247,23 +250,58 @@ class WebClient:
         )
         return [hit for hit in hits if hit["url"].startswith("http")]
 
+    async def _validate(self, url: str, sites: ToolSites | None) -> None:
+        """在发起请求或接受最终地址前校验协议、站点和公网 IP。"""
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(f"只认 http(s) 地址: {url}")
+        if sites is not None and not sites.allows(url):
+            raise ValueError(f"站点规则不允许抓这个域名: {url}")
+        await _assert_public(url)
+
+    async def _read_public(
+        self, url: str, sites: ToolSites | None, max_bytes: int
+    ) -> tuple[str, int, bytes, str]:
+        """手动跟随有限次重定向，每一跳都在请求前重新校验。
+
+        Returns:
+            tuple: 最终 URL、状态码、最多 max_bytes 字节的正文和 Content-Type
+        """
+        current = url
+        for _ in range(_MAX_REDIRECTS + 1):
+            await self._validate(current, sites)
+            async with self._client().get(current, allow_redirects=False) as response:
+                if response.status in _REDIRECT_STATUSES:
+                    location = response.headers.get("Location")
+                    if not location:
+                        raise ValueError(f"重定向缺少 Location: {current}")
+                    current = urljoin(current, location)
+                    continue
+                raw = await response.content.read(max_bytes)
+                content_type = response.headers.get("Content-Type", "")
+                return str(response.url), response.status, raw, content_type
+        raise ValueError(f"重定向超过 {_MAX_REDIRECTS} 次: {url}")
+
     async def _resolve(self, hit: dict) -> None:
-        """把跳转链接换成真实地址（搜狗是 JS 跳页，地址写在响应头几百字节里）。"""
+        """安全地解析搜索跳转；拒绝的地址不再进入搜索结果。"""
         try:
-            async with self._client().get(hit["url"], allow_redirects=True) as response:
-                final = str(response.url)
-                if _REDIRECT_PAGE.match(final):
-                    body = (await response.content.read(1024)).decode("utf-8", "ignore")
-                    found = _JS_REDIRECT.search(body) or _META_REDIRECT.search(body)
-                    if found:
-                        final = html.unescape(found.group(1))
+            final, _status, raw, _content_type = await self._read_public(
+                hit["url"], None, 1024
+            )
+            if _REDIRECT_PAGE.match(final):
+                body = raw.decode("utf-8", "ignore")
+                found = _JS_REDIRECT.search(body) or _META_REDIRECT.search(body)
+                if found:
+                    final = html.unescape(found.group(1))
+            await self._validate(final, self.search_sites)
+        except ValueError:
+            hit["url"] = ""
+            return
         except (aiohttp.ClientError, TimeoutError):
             return
-        if final.startswith("http"):
-            hit["url"] = final
+        hit["url"] = final
 
     async def fetch(self, url: str) -> str:
-        """读一个网页的正文。
+        """读一个网页的正文，所有重定向都遵守相同的安全边界。
 
         Args:
             url: http(s) 地址
@@ -272,18 +310,13 @@ class WebClient:
             str: 正文（已截断）
 
         Raises:
-            ValueError: 不是 http(s)、内网地址、或站点规则不允许
+            ValueError: 协议、公网 IP、站点规则、重定向或大小校验失败
         """
-        if not url.startswith(("http://", "https://")):
-            raise ValueError(f"只认 http(s) 地址: {url}")
-        if not self.fetch_sites.allows(url):
-            raise ValueError(f"站点规则不允许抓这个域名: {url}")
-        await _assert_public(url)
-        async with self._client().get(url) as response:
-            if response.status != 200:
-                raise ValueError(f"抓取失败 HTTP {response.status}: {url}")
-            raw = await response.content.read(_MAX_BYTES + 1)
-            content_type = response.headers.get("Content-Type", "")
+        _final, status, raw, content_type = await self._read_public(
+            url, self.fetch_sites, _MAX_BYTES + 1
+        )
+        if status != 200:
+            raise ValueError(f"抓取失败 HTTP {status}: {url}")
         if len(raw) > _MAX_BYTES:
             raise ValueError(f"页面超过 {_MAX_BYTES} 字节，放弃: {url}")
         charset = "utf-8"

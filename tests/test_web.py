@@ -1,11 +1,9 @@
-"""联网工具测试 —— 解析、站点规则、内网拦截、继承发现。"""
-
-import pytest
+"""联网工具测试 —— 解析、站点规则、继承发现；安全边界见 security/。"""
 
 from gensokyoai.api import tools_of
 from gensokyoai.tools import ToolSites, html_to_text, parse_bing
 from gensokyoai.tools.config import load_sites
-from gensokyoai.tools.web import WebTools, _assert_public
+from gensokyoai.tools.web import WebTools
 
 BING_HTML = """
 <ol id="b_results">
@@ -87,18 +85,6 @@ def test_html_to_text_strips_scripts_and_blank_lines():
     assert "标题" in text and "第一段" in text
     assert "alert(1)" not in text and "color:red" not in text
     assert "\n\n\n" not in text
-
-
-async def test_private_hosts_are_rejected():
-    """内网地址一律不让抓（防 SSRF）"""
-    for url in (
-        "http://127.0.0.1/admin",
-        "http://localhost:8080/",
-        "http://192.168.1.1/",
-        "http://10.0.0.5/",
-    ):
-        with pytest.raises(ValueError):
-            await _assert_public(url)
 
 
 def test_inherited_tools_are_discovered():

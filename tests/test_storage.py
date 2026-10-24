@@ -161,3 +161,54 @@ async def test_worker_registered_in_bgtasks(tmp_path):
     assert (tmp_path / "e.jsonl").read_text(encoding="utf-8") == "a\n"
     assert storage._worker is not None
     await tasks.shutdown()
+
+
+@pytest.mark.parametrize("failure_at", ["open", "write"])
+async def test_io_failure_rejects_current_and_queued_writes(tmp_path, failure_at):
+    """open/write 故障不能让 Future 悬置，也不能让 sync/close 假装成功"""
+
+    class _Broken(Storage):
+        async def _ensure_open(self):
+            if failure_at == "open":
+                raise OSError("打开失败")
+            await super()._ensure_open()
+
+        async def _write_locked(self, text):
+            if failure_at == "write":
+                raise OSError("写入失败")
+            await super()._write_locked(text)
+
+    storage = _Broken(tmp_path / "e.jsonl", idle_ms=0)
+    first = storage.write("first\n")
+    second = storage.write("second\n")
+
+    with pytest.raises(OSError):
+        await first
+    with pytest.raises(OSError):
+        await second
+    with pytest.raises(RuntimeError):
+        await storage.sync()
+    with pytest.raises(RuntimeError):
+        storage.write("after-failure\n")
+    with pytest.raises(RuntimeError):
+        await storage.aclose()
+
+    assert storage._queue.empty()
+
+
+async def test_idle_flush_failure_is_visible(tmp_path):
+    """后台空闲 flush 失败也要在 sync 和关闭时暴露"""
+
+    class _BrokenFlush(Storage):
+        async def flush(self):
+            raise OSError("flush 失败")
+
+    storage = _BrokenFlush(tmp_path / "e.jsonl", idle_ms=1)
+    future = storage.write("written\n")
+    await future
+    await asyncio.wait_for(storage._worker, timeout=1)
+
+    with pytest.raises(RuntimeError):
+        await storage.sync()
+    with pytest.raises(RuntimeError):
+        await storage.aclose()

@@ -354,10 +354,53 @@ class Room:
             self._next_gap += 1
         return taken, gap
 
-    def push_back(self, events: list[Event]) -> None:
-        """把没消费完的消息退回未读（回合失败重试时用）。"""
-        if events:
-            self._unread = [*events, *self._unread]
+    def push_back(
+        self, events: list[Event], *, gap_ids: set[int] | None = None
+    ) -> set[int]:
+        """把失败批次及其 gap 退回未读，并按原顺序去重。
+
+        Args:
+            events: 本轮已取出或展开的事件
+            gap_ids: 本轮产生或展开的 gap；剩余事件也一并退回
+
+        Returns:
+            set[int]: 实际恢复的事件编号，供放弃时精确丢弃原批次
+        """
+        restored = {event.msg_id: event for event in events if event.kind == "message"}
+        for gap_id in gap_ids or set():
+            for event in self._gaps.pop(gap_id, []):
+                restored.setdefault(event.msg_id, event)
+        recovered = set(restored)
+        for event in self._unread:
+            restored.setdefault(event.msg_id, event)
+        self._unread = sorted(restored.values(), key=lambda event: event.msg_id)
+        return recovered
+
+    def pending_ids(self) -> set[int]:
+        """返回尚未给模型处理的事件编号，包括未读和未展开的 gap。
+
+        Returns:
+            set[int]: 当前不能作为稳定历史写入前缀的事件编号
+        """
+        return {event.msg_id for event in self._unread} | {
+            event.msg_id for items in self._gaps.values() for event in items
+        }
+
+    def discard(self, event_ids: set[int]) -> None:
+        """从未读和 gap 中丢弃指定消息，不影响其他期间新到的事件。
+
+        Args:
+            event_ids: 确认不再重试的原失败批次编号
+        """
+        self._unread = [
+            event for event in self._unread if event.msg_id not in event_ids
+        ]
+        for gap_id, items in list(self._gaps.items()):
+            remaining = [event for event in items if event.msg_id not in event_ids]
+            if remaining:
+                self._gaps[gap_id] = remaining
+            else:
+                del self._gaps[gap_id]
 
     def context(self, exclude: list[Event], limit: int = _CONTEXT) -> list[Event]:
         """这一批之前的最近几条，含自己的发言——模型要靠它接得上话、不重复。
@@ -376,10 +419,13 @@ class Room:
         return recent[-limit:]
 
     def _trim(self) -> None:
-        """超出上界时丢弃最老的整条。"""
+        """超出上界时丢弃最老事件，并同步清理未读和 gap 引用。"""
         overflow = len(self.events) - self._max_events
-        if overflow > 0:
-            del self.events[:overflow]
+        if overflow <= 0:
+            return
+        removed = self.events[:overflow]
+        del self.events[:overflow]
+        self.discard({event.msg_id for event in removed})
 
     def last_activity(self) -> float:
         """最后一条事件的时间戳（DMN 判安静用；空房为 0）。"""

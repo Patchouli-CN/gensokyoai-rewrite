@@ -4,6 +4,7 @@ import asyncio
 
 from gensokyoai.llm.prompt_cache import PromptCache
 from gensokyoai.loop import Loop
+from gensokyoai.mind import Mind
 from gensokyoai.model import Reply
 from gensokyoai.room import Room
 
@@ -90,13 +91,79 @@ async def test_turn_end_pushes_messages_into_prefix():
 
 
 async def test_sync_is_idempotent():
-    """同一批消息不会重复进前缀"""
+    """同一批已处理消息不会重复进前缀"""
     room = Room("g1")
     mind = _Mind()
     loop = Loop(room, mind, _Mouth(), scene=_Scene())
     room.append("message", "帕秋莉", "在吗", user_id="u1")
+    room.take_feed()
 
     await loop._sync_cache()
     await loop._sync_cache()
 
     assert mind.prompt_cache.transcript().count("帕秋莉：在吗") == 1
+
+
+async def test_sync_waits_for_messages_arriving_during_turn():
+    """回合期间新到的未读不能同时成为历史和下一轮当前事件"""
+    room = Room("g1")
+    mind = _Mind()
+    loop = Loop(room, mind, _Mouth(), scene=_Scene())
+    room.append("message", "帕秋莉", "本轮消息")
+    room.take_feed()
+    await loop._sync_cache()
+
+    room.append("message", "帕秋莉", "等待期间的新消息")
+    await loop._sync_cache()
+
+    assert "等待期间的新消息" not in mind.prompt_cache.transcript()
+    room.take_feed()
+    await loop._sync_cache()
+    assert mind.prompt_cache.transcript().count("等待期间的新消息") == 1
+
+
+async def test_sync_waits_for_unrevealed_gap():
+    """折进 gap 的旧消息只有展开后才进入稳定历史"""
+    room = Room("g1")
+    mind = _Mind()
+    loop = Loop(room, mind, _Mouth(), scene=_Scene())
+    for text in ("旧一", "旧二", "当前"):
+        room.append("message", "帕秋莉", text)
+    _, gap = room.take_feed(window=1)
+
+    await loop._sync_cache()
+
+    transcript = mind.prompt_cache.transcript()
+    assert "当前" in transcript
+    assert "旧一" not in transcript and "旧二" not in transcript
+    room.reveal(gap["gapId"])
+    await loop._sync_cache()
+    transcript = mind.prompt_cache.transcript()
+    assert "旧一" in transcript and "旧二" in transcript
+
+
+class _RequestModel:
+    capabilities = frozenset()
+    context = 1000
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, str]] = []
+
+    async def chat(self, system, user, **kwargs):
+        self.requests.append((system, user))
+        return Reply()
+
+
+async def test_mind_sends_cached_history_only_once():
+    """真实 Mind 的 system 有历史时，user 不再重复同一份 transcript"""
+    model = _RequestModel()
+    cache = PromptCache(align=0, name="test")
+    cache.add("帕秋莉：旧话")
+    mind = Mind(model, "觉", "人设", prompt_cache=cache)
+
+    await mind.step({"events": [{"text": "新话"}]})
+
+    system, user = model.requests[0]
+    assert system.count("帕秋莉：旧话") == 1
+    assert "帕秋莉：旧话" not in user
+    assert "新话" in user

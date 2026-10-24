@@ -91,7 +91,7 @@ billing:
 
 def test_zero_quota_entries_are_ignored():
     """额度和钱都为 0 的条目不算限额"""
-    settings = load_settings(path=None)
+    settings = Settings()
     assert settings.quotas() == ()
 
 

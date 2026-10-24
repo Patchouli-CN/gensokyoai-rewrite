@@ -77,36 +77,6 @@ def test_parse_binary_dropped():
     )
 
 
-# ---------- 握手策略 ----------
-
-
-async def test_reject_bad_channel():
-    gateway = _gateway()
-    assert (await gateway.validate(_FakePending("..%2f", {})))[0] == 400
-
-
-async def test_reject_bad_token():
-    gateway = _gateway(token="right")
-    assert (await gateway.validate(_FakePending("g1", {"token": "wrong"})))[0] == 403
-
-
-async def test_reject_unknown_style_from_loopback():
-    gateway = _gateway()
-    status, reason = await gateway.validate(
-        _FakePending("g1", {"style": "pure-dialogue"})
-    )
-    assert status == 400 and "pure_dialogue" in reason
-
-
-async def test_style_from_public_peer_ignored():
-    """公网自报 style 不认（信任边界），握手放行"""
-    gateway = _gateway()
-    assert (
-        await gateway.validate(_FakePending("g1", {"style": "rpg"}, remote="8.8.8.8"))
-        is None
-    )
-
-
 # ---------- 事件消费 ----------
 
 

@@ -3,10 +3,10 @@
 ## 核心：房间即事实源
 
 一间房（`Room`）是一条只追加的事件流。一个群、一个私聊、一个终端，都是一间房。
-事件只有三种：`message`（别人的话）、`reply`（角色发言）、`note`（系统注记：记忆召回、工具结果）。
+事件只有两种：`message`（别人的话）、`reply`（角色发言）。记忆召回与工具结果是运行时 feed 的派生数据，不是第三类房间事件。
 
 所有器官读房间，所有产出写房间。器官互相不见面，没有 event bus——日志本身就是状态。
-房间事件经 `RoomLog` 落盘（ayafileio，append-only JSONL），重启回放；`note` 是运行时派生物，不落盘。
+房间事件经 `RoomLog` 落盘（ayafileio，append-only JSONL），重启回放；运行时派生数据不随房间日志恢复。
 
 ## 一个回合
 
@@ -23,14 +23,17 @@ ws 连接 → Gateway（握手：频道/token/风格/房间上限）
 模型每轮拿到的是一段 JSON feed：`now / events（未读）/ gap（跳过段）/ memories / results`，
 返回的是工具调用，不是正文——正文会被丢弃，要说话只能调 `send_message`。
 
+启用前缀缓存时，`Mind` 为每个房间派生独立缓存，模型端点仍共享。历史只在前缀出现一次；
+当前未读和未展开 gap 不提前入史，一房压缩不会影响其他房间。
+
 ## 器官
 
 | 模块 | 干什么 |
 | --- | --- |
 | `room.py` | 事件流 + RoomLog 落盘回放 |
-| `loop.py` | 房间循环：唤醒、喂模型、执行动作；单轮失败退避重试 |
+| `loop.py` | 房间循环：唤醒、喂模型、执行动作；失败恢复批次与 gap，按原批次放弃 |
 | `hub.py` | 房间注册表，一间房一个 Loop |
-| `mind.py` | 组提示词（人设 + 场景 + 机制），调模型，返回动作 |
+| `mind.py` | 组提示词（人设 + 场景 + 机制），调模型，返回动作；每房独立缓存 |
 | `model.py` | OpenAI 兼容端点客户端，解析 tool_calls |
 | `mouth.py` | 投递出口：console 打印 / ws 广播；ReplyStyle 在这层生效 |
 | `style.py` | 回复风格预设（free / pure_dialogue / tavern / rpg） |

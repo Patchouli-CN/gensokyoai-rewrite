@@ -62,6 +62,7 @@ class Storage:
         self._first_dirty = 0.0
         self._worker: asyncio.Task | None = None
         self._closing = False
+        self._failure: Exception | None = None
         if tasks is not None:
             tasks.on_idle(self.sync)
 
@@ -75,9 +76,13 @@ class Storage:
 
         Returns:
             asyncio.Future | None: 这一行写完时 resolve；没有事件循环时为 None
+
+        Raises:
+            RuntimeError: 已关闭或此前写入已经失败
         """
         if self._closing:
             raise RuntimeError("storage 已关闭")
+        self._raise_failure()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -103,13 +108,22 @@ class Storage:
         return len(text.encode())
 
     async def sync(self) -> None:
-        """等队列里的东西都写下去（不等待 fsync）。"""
+        """等队列里的东西都写下去（不等待 fsync），故障必须传给调用方。"""
+        self._raise_failure()
         worker = self._worker
-        if worker is None or worker.done():
+        if worker is None:
+            if not self._queue.empty():
+                raise RuntimeError("storage worker 未运行，队列未排空")
+            return
+        if worker.done():
+            self._raise_failure()
+            if not self._queue.empty():
+                raise RuntimeError("storage worker 已停止，队列未排空")
             return
         marker = asyncio.get_running_loop().create_future()
         self._queue.put_nowait((None, marker))
         await marker
+        self._raise_failure()
 
     async def flush(self) -> None:
         """立刻落盘（没脏数据就什么都不做）。"""
@@ -120,8 +134,9 @@ class Storage:
         self._first_dirty = 0.0
 
     async def aclose(self) -> None:
-        """排空队列、刷盘、关句柄、停 worker（可重复调用）。"""
+        """排空队列、刷盘、关句柄、停 worker；已有故障不会被掩盖。"""
         if self._closing:
+            self._raise_failure()
             return
         self._closing = True
         worker, self._worker = self._worker, None
@@ -131,8 +146,15 @@ class Storage:
                 await asyncio.wait_for(worker, timeout=5.0)
             except (TimeoutError, asyncio.CancelledError):
                 worker.cancel()
-        await self.flush()
-        await self._close_file()
+        try:
+            await self.flush()
+        except Exception as err:  # noqa: BLE001 - 故障要记录并传给等待方
+            self._record_failure(err)
+        try:
+            await self._close_file()
+        except Exception as err:  # noqa: BLE001 - 故障要记录并传给等待方
+            self._record_failure(err)
+        self._raise_failure()
 
     @property
     def size(self) -> int:
@@ -159,25 +181,33 @@ class Storage:
             )
 
     async def _run(self) -> None:
-        """队列循环：取一批 → 写 → 必要时落盘；空闲超时就刷。"""
-        while True:
-            item = await self._next()
-            if item is None:
-                return
-            batch = [item]
-            return_now = False
-            while len(batch) < _BATCH:
-                try:
-                    more = self._queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                batch.append(more)
-                if more[0] is None:
-                    return_now = True
-                    break
-            await self._drain(batch)
-            if return_now:
-                return
+        """队列循环；首个 I/O 异常使存储进入可见的失败状态。"""
+        try:
+            while True:
+                item = await self._next()
+                if item is None:
+                    return
+                if item[0] is None:
+                    await self._drain([item])
+                    return
+                batch = [item]
+                return_now = False
+                while len(batch) < _BATCH:
+                    try:
+                        more = self._queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    batch.append(more)
+                    if more[0] is None:
+                        return_now = True
+                        break
+                await self._drain(batch)
+                if return_now:
+                    return
+        except Exception as err:  # noqa: BLE001 - 故障要记录并传给等待方
+            self._record_failure(err)
+            if self._log is not None:
+                self._log.opt(exception=err).error(f"存储 worker 失败: {self.path}")
 
     async def _next(self):
         """等下一件；空闲超过 idle 就先落盘再继续等。"""
@@ -190,36 +220,57 @@ class Storage:
             return await self._queue.get()
 
     async def _drain(self, batch) -> None:
-        """把这一批写下去，然后按需要落盘。
+        """把这一批写下去；任何异常都会结束本批所有等待者。
 
         句柄每轮重新取：轮转会换掉 `self._file`，抓旧句柄会写到已关闭的文件上。
         """
-        await self._ensure_open()
-        pending = []
-        for text, future in batch:
-            if text is None:
-                if future is not None:
-                    pending.append(future)
-                continue
-            payload = text.encode()
-            if self._size + len(payload) > self._max_bytes:
-                await self._rotate()
-            await self._write_locked(text)
-            self._size += len(payload)
-            self._mark_dirty()
-            if future is not None:
-                pending.append(future)
-        if (
-            self._dirty
-            and self._max_dirty > 0
-            and self._clock() - self._first_dirty >= self._max_dirty
-        ):
-            await self.flush()
-        for future in pending:
-            if not future.done():
-                future.set_result(None)
+        pending = [future for _text, future in batch if future is not None]
+        try:
+            await self._ensure_open()
+            for text, _future in batch:
+                if text is None:
+                    continue
+                payload = text.encode()
+                if self._size + len(payload) > self._max_bytes:
+                    await self._rotate()
+                await self._write_locked(text)
+                self._size += len(payload)
+                self._mark_dirty()
+            if (
+                self._dirty
+                and self._max_dirty > 0
+                and self._clock() - self._first_dirty >= self._max_dirty
+            ):
+                await self.flush()
+            for future in pending:
+                if not future.done():
+                    future.set_result(None)
+        except Exception as err:
+            for future in pending:
+                if not future.done():
+                    future.set_exception(err)
+                    future.exception()
+            raise
 
     # ---------- 内部 ----------
+
+    def _record_failure(self, error: Exception) -> None:
+        """记录首个故障，并让尚未接受的排队写入全部以异常结束。"""
+        if self._failure is None:
+            self._failure = error
+        while True:
+            try:
+                _text, future = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if future is not None and not future.done():
+                future.set_exception(error)
+                future.exception()
+
+    def _raise_failure(self) -> None:
+        """如果存储已经进入故障状态，向当前调用方抛出明确异常。"""
+        if self._failure is not None:
+            raise RuntimeError("storage 此前写入失败") from self._failure
 
     def _mark_dirty(self) -> None:
         if not self._dirty:
@@ -267,15 +318,17 @@ class Storage:
             self._log.debug(f"日志已轮转: {self.path.name} -> {backup.name}")
 
     def _write_sync(self, text) -> None:
-        """没有事件循环时的兜底（脚本/同步单测）。"""
+        """没有事件循环时同步写入，失败同样记录并抛给调用方。"""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as file:
                 file.write(text)
             self._size += len(text.encode())
         except OSError as error:
+            self._record_failure(error)
             if self._log is not None:
                 self._log.warning(f"写 {self.path.name} 失败: {error}")
+            raise RuntimeError("storage 同步写入失败") from error
 
 
 __all__ = ["Storage"]

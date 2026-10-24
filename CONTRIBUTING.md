@@ -21,6 +21,7 @@
 
 - 新代码必须包含对应测试，`pytest` 全绿才能提 PR
 - 测试命名：`test_<功能名>`
+- 安全边界回归测试放 `tests/security/`；QQ 桥接层对应放 `nb2_plugin/tests/security/`
 - 核心逻辑覆盖率不低于 80%
 
 ## 文档同步

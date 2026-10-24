@@ -135,6 +135,28 @@ class Mind:
         """前缀缓存（None = 没装）。"""
         return self._prompt_cache
 
+    def for_room(self, room_id: str) -> "Mind":
+        """返回房间专用心智；端点共享，前缀缓存按房间独立。
+
+        Args:
+            room_id: 房间标识，用于区分缓存日志
+
+        Returns:
+            Mind: 无缓存时返回自身，有缓存时返回带空缓存的浅层分支
+        """
+        if self._prompt_cache is None:
+            return self
+        cache = self._prompt_cache.fork(f"{self._prompt_cache.name}/{room_id}")
+        return Mind(
+            self._model,
+            self.name,
+            self._persona,
+            vision=self._vision,
+            manager=self._manager,
+            cheap=self._cheap,
+            prompt_cache=cache,
+        )
+
     @property
     def cheap_model(self) -> ChatModel:
         """便宜活用的端点（记忆压缩），没配就退回主模型。"""
@@ -170,10 +192,6 @@ class Mind:
                 _logger.debug(f"图片已转述（主模型没有视觉）：{story[:40]}")
         payload = {**feed, "images": notes} if notes else feed
         body = json.dumps(payload, ensure_ascii=False)
-        if self._prompt_cache is not None:
-            transcript = self._prompt_cache.transcript()
-            if transcript:
-                body = f"{transcript}\n\n{body}"
         return await chosen.chat(
             self._system(scene),
             body,
@@ -188,10 +206,10 @@ class Mind:
         await self._model.close()
 
     def _system(self, scene) -> str:
-        """人设 + 场景 + 机制。顺序有讲究：人设在前、硬禁止在最后（实测）。
+        """人设 + 场景 + 机制 + 该房间的一份缓存历史。
 
-        有前缀缓存时按场景冻住：同一场景每轮拿到**同一份字符串**，
-        云端的前缀缓存才会命中（一个字符不同就全部重算）。
+        系统块逐字冻住以命中前缀缓存；当前 feed 只在 user 中携带，
+        不再把同一份 transcript 重复拼进 user。
         """
         if self._prompt_cache is None:
             return self._build_system(scene)

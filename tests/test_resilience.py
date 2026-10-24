@@ -157,12 +157,13 @@ async def test_consolidate_leaves_no_temp_file(tmp_path):
 
 
 async def test_consolidate_failure_keeps_original_file(tmp_path, monkeypatch):
-    """替换失败时旧文件不变"""
+    """替换失败时旧文件和内存都不变"""
     path = tmp_path / "m.jsonl"
     memory = Memory(path)
     for i in range(8):
         await memory.note(f"旧记忆{i}", 0.5)
     before = path.read_text(encoding="utf-8")
+    before_items = list(memory._items)
 
     def _boom(src, dst):
         raise OSError("替换失败")
@@ -172,12 +173,43 @@ async def test_consolidate_failure_keeps_original_file(tmp_path, monkeypatch):
         await memory.consolidate(_DigestModel(), keep=3)
 
     assert path.read_text(encoding="utf-8") == before
+    assert memory._items == before_items
     assert not (tmp_path / "m.jsonl.tmp").exists()
 
 
 class _DigestModel:
     async def chat(self, system: str, user: str, **kwargs) -> Reply:
         return Reply(text="概要：帕秋莉借书，恋来过。")
+
+
+async def test_consolidate_preserves_notes_added_while_waiting(tmp_path):
+    """模型等待期间发起的新记忆最终同时留在内存和文件里"""
+    path = tmp_path / "m.jsonl"
+    memory = Memory(path)
+    for index in range(6):
+        await memory.note(f"旧记忆{index}", 0.5)
+
+    class _BlockingDigest(_DigestModel):
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.resume = asyncio.Event()
+
+        async def chat(self, system: str, user: str, **kwargs) -> Reply:
+            self.entered.set()
+            await self.resume.wait()
+            return await super().chat(system, user, **kwargs)
+
+    model = _BlockingDigest()
+    consolidating = asyncio.create_task(memory.consolidate(model, keep=2))
+    await model.entered.wait()
+    noting = asyncio.create_task(memory.note("等待期间的新记忆", 0.9))
+    await asyncio.sleep(0)
+    model.resume.set()
+    await asyncio.gather(consolidating, noting)
+
+    assert any(item.text == "等待期间的新记忆" for item in memory._items)
+    reloaded = Memory(path)
+    assert any(item.text == "等待期间的新记忆" for item in reloaded._items)
 
 
 # ---------- 投递失败 ----------

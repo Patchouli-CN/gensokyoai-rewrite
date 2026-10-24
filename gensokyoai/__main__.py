@@ -8,6 +8,7 @@
 
 import argparse
 import asyncio
+import inspect
 from pathlib import Path
 
 from . import scenes as _builtin_scenes  # noqa: F401  注册内置场景
@@ -53,6 +54,7 @@ def _loop_factory(
     tools_config: str = "",
 ):
     def factory(room_id: str) -> Loop:
+        room_mind = mind.for_room(room_id)
         memory = (
             Memory(storage / storage_key(room_id) / "memory.jsonl")
             if storage is not None
@@ -66,17 +68,26 @@ def _loop_factory(
             else None
         )
         mouth = mouth_for(room_id)
-        scene = (
-            scene_cls(
-                SceneContext(mouth=mouth, name=mind.name, room=room_id, log=_scene_log),
-                tools_config=tools_config or None,
+        scene = None
+        if scene_cls is not None:
+            parameters = inspect.signature(scene_cls).parameters
+            accepts_config = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            ) or (
+                "tools_config" in parameters
+                and parameters["tools_config"].kind != inspect.Parameter.POSITIONAL_ONLY
             )
-            if scene_cls is not None
-            else None
-        )
+            kwargs = {"tools_config": tools_config or None} if accepts_config else {}
+            scene = scene_cls(
+                SceneContext(
+                    mouth=mouth, name=room_mind.name, room=room_id, log=_scene_log
+                ),
+                **kwargs,
+            )
         loop = Loop(
             room=Room(room_id, log=log),
-            mind=mind,
+            mind=room_mind,
             mouth=mouth,
             memory=memory,
             health=health,

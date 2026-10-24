@@ -60,6 +60,17 @@ class PromptCache:
         self.epoch = 1
         self.compacts = 0
 
+    def fork(self, name: str) -> "PromptCache":
+        """复制配置并返回一份空缓存，历史与系统块都不共享。
+
+        Args:
+            name: 新缓存的日志与统计名称
+
+        Returns:
+            PromptCache: 对齐和日志配置相同的独立缓存
+        """
+        return PromptCache(name=name, align=self.align, log=self._log)
+
     # ---------- 系统块 ----------
 
     def stable_fixed(self, name: str, value: str) -> None:
@@ -184,10 +195,10 @@ class PromptCache:
     # ---------- 产出 ----------
 
     def transcript(self) -> str:
-        """只取消息区（历史 + 尾巴），不含系统块——拼在 user 消息最前面。
+        """只取该房间的消息区（历史 + 尾巴），不含系统块。
 
         Returns:
-            str: 空字符串表示还没有任何消息
+            str: 用于检查和测试缓存内容；空字符串表示还没有任何消息
         """
         texts = list(self._fixed_msg) + list(self._volatile)
         return "\n".join(texts)

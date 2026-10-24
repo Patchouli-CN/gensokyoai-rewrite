@@ -1,6 +1,6 @@
 """记忆（Memory）—— 写入按注意力强度，召回注记进房间，窗口压力下压缩。
 
-存储与房间同一哲学：每房间一个 JSONL 文件，只追加。召回先用子串匹配 +
+每房间一个 JSONL 文件，平时追加、整理时原子重写。召回先用子串匹配 +
 新近度（向量召回等 embedder 端口以后再开旋钮——不为以后预留）。
 """
 
@@ -29,7 +29,7 @@ class MemoryItem(msgspec.Struct, frozen=True):
 
 
 class Memory:
-    """一个房间的记忆库（JSONL 只追加）。"""
+    """一个房间的记忆库（平时追加，整理时原子重写 JSONL）。"""
 
     def __init__(self, path: Path | None) -> None:
         """初始化。
@@ -39,6 +39,7 @@ class Memory:
         """
         self._path = path
         self._items: list[MemoryItem] = []
+        self._lock = asyncio.Lock()
         if path is not None and path.exists():
             self._load(path)
 
@@ -63,15 +64,16 @@ class Memory:
         return len(self._items) > _MAX_ITEMS
 
     async def note(self, text: str, importance: float) -> None:
-        """记一笔（低强度的附和直接不记）。"""
+        """记一笔；与整理串行，文件写成功后才提交内存。"""
         if importance < 0.3 or not text.strip():
             return
         item = MemoryItem(text=text.strip(), importance=importance)
-        self._items.append(item)
-        if self._path is not None:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            line = msgspec.json.encode(item).decode() + "\n"
-            await asyncio.to_thread(self._append_line, line)
+        async with self._lock:
+            if self._path is not None:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                line = msgspec.json.encode(item).decode() + "\n"
+                await asyncio.to_thread(self._append_line, line)
+            self._items.append(item)
 
     def _append_line(self, line: str) -> None:
         path = self._path
@@ -98,32 +100,34 @@ class Memory:
         return [text for _, _, _, text in hits[:limit]]
 
     async def consolidate(self, model: ChatModel, keep: int = 20) -> None:
-        """窗口整理：让模型把旧记忆压缩成一段概要，文件重写（保留最近 keep 条）。
+        """整理旧记忆；与新增串行，原子替换成功后才提交内存。
 
         Args:
             model: 压缩用的模型端点
             keep: 原样保留的最近条数
         """
-        if len(self._items) <= keep:
-            return
-        old, recent = self._items[:-keep], self._items[-keep:]
-        digest_source = "\n".join(f"- {item.text}" for item in old)
-        reply = await model.chat(
-            "你是记忆整理员。把零散的对话记忆压缩成一段连贯概要，"
-            "保留人名、约定、事实与情感转折，丢弃寒暄与重复。直接输出概要。",
-            digest_source,
-            max_tokens=600,
-            temperature=0.3,
-        )
-        self._items = [
-            MemoryItem(text=f"（往事概要）{reply.text}", importance=0.8),
-            *recent,
-        ]
-        if self._path is not None:
-            payload = "".join(
-                msgspec.json.encode(item).decode() + "\n" for item in self._items
+        async with self._lock:
+            if len(self._items) <= keep:
+                return
+            old, recent = self._items[:-keep], self._items[-keep:]
+            digest_source = "\n".join(f"- {item.text}" for item in old)
+            reply = await model.chat(
+                "你是记忆整理员。把零散的对话记忆压缩成一段连贯概要，"
+                "保留人名、约定、事实与情感转折，丢弃寒暄与重复。直接输出概要。",
+                digest_source,
+                max_tokens=600,
+                temperature=0.3,
             )
-            await asyncio.to_thread(self._rewrite_atomic, payload)
+            replacement = [
+                MemoryItem(text=f"（往事概要）{reply.text}", importance=0.8),
+                *recent,
+            ]
+            if self._path is not None:
+                payload = "".join(
+                    msgspec.json.encode(item).decode() + "\n" for item in replacement
+                )
+                await asyncio.to_thread(self._rewrite_atomic, payload)
+            self._items = replacement
 
     def _rewrite_atomic(self, payload: str) -> None:
         """写临时文件再原子替换，失败时旧文件保留。"""

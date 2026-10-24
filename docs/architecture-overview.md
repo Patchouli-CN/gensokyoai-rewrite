@@ -180,20 +180,21 @@ data/
 |---|---|---|
 | 房间循环 | `Hub`（`add_done_callback` 监督） | 该房静默，下次收消息重启 |
 | 引擎后台任务 | `BgTasks` | 退出时按序取消并清理 |
-| 存储 worker | `Storage` + `BgTasks.spawn_worker` | 队列积压；`aclose` 投毒丸等它收 |
+| 存储 worker | `Storage` + `BgTasks.spawn_worker` | 写入故障传给 Future / `sync` / `aclose`，不伪装成功 |
 | 静息整理 | `DmnKeeper`（60s 巡逻） | 记忆不压缩，对话照常 |
 | 协议端 | 插件 `link.py`（30s 巡检） | 只告警，不自动拉起 |
 
 并发模型：单个事件循环 + 房间隔离；跨房间共享只有模型端点和任务登记处。
+`Mind` 为每房派生独立 `PromptCache`，模型端点仍共享；缓存历史、压缩和未读状态不跨房。
 
 ---
 
 ## 六、四条不变量
 
 1. **平台差异止步于插件**：引擎只认 `text` / `images` / `say`；转发、引用、@、语音全在插件翻译。
-2. **能力缺了要降级**：无视觉 → vlm 转述；转述失败 → 当没图；媒体取不到 → 留标记；handler 出错 → 纯文本再入房。
-3. **写穿 + 批量落盘**：`write()` 写穿（进程死也不丢），`flush()` 是 `FlushFileBuffers`（40–120 ms），所以空闲 6 秒或脏 30 秒才刷。
-4. **配置只有一处**：模型在 `config/llm/`，`settings.yaml` 只剩计费。
+2. **能力缺了要降级**：无视觉 → vlm 转述；转述失败 → 当没图；媒体取不到 → 留标记；handler 出错 → 纯文本再入房，且两条路径都先过群白名单。
+3. **队列 + 批量落盘**：`write()` 先提交队列，worker 写穿；`sync()` / `aclose()` 等待并报告故障。`flush()` 是 `FlushFileBuffers`（40–120 ms），所以空闲 6 秒或脏 30 秒才刷。
+4. **配置只有一处**：模型在 `config/llm/`，`settings.yaml` 只剩计费覆盖、前缀缓存与静息参数。
 
 ---
 

@@ -1,6 +1,6 @@
 """配置能被覆盖：prompt / idle 两块从 settings.yaml 读进来。"""
 
-from gensokyoai.settings import load_settings
+from gensokyoai.settings import Settings, load_settings
 
 SAMPLE = """prompt:
   cache: false
@@ -14,8 +14,8 @@ idle:
 
 
 def test_prompt_defaults():
-    """默认值：缓存开、对齐 64、75% 压、留 8 条"""
-    settings = load_settings(None)
+    """默认值独立可用，不读取开发者本机配置"""
+    settings = Settings()
 
     assert settings.prompt.cache is True
     assert settings.prompt.align == 64
@@ -38,9 +38,9 @@ def test_prompt_overrides(tmp_path):
     assert settings.idle.patrol_s == 30
 
 
-def test_repo_settings_parse():
-    """仓库里的 config/settings.yaml 能被读（键名对得上）"""
-    settings = load_settings("config/settings.yaml")
+def test_repo_settings_example_parse():
+    """已跟踪的配置模板可解析，干净 CI 不需要本地 settings.yaml"""
+    settings = load_settings("config/settings.example.yaml")
 
     assert settings.prompt.align > 0
     assert 0 < settings.prompt.compact_ratio <= 1
