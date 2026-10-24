@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9",
-    "ayafileio>=1.14",
+    "ayafileio>=1.16.0",
     "loguru>=0.7",
     "msgspec>=0.18",
     "pyyaml>=6",
